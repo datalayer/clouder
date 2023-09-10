@@ -60,8 +60,10 @@ class ClouderApp(DatalayerApp):
 
     def start(self):
         super(ClouderApp, self).start()
-        self.log.info("Clouder - Version %s - Cloud %s ", self.version, self.cloud)
-        self.log.error(f"One of `{'` `'.join(ClouderApp.subcommands.keys())}` must be specified.")
+#        self.log.info("Clouder - Version %s - Cloud %s ", self.version, self.cloud)
+#        self.log.error(f"One of `{'` `'.join(ClouderApp.subcommands.keys())}` must be specified.")
+        clouder_shell = ClouderShellApp(is_shell_command=False)
+        clouder_shell.start()
 
 
 # -----------------------------------------------------------------------------
