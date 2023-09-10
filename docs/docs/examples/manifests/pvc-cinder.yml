@@ -1,0 +1,14 @@
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: nginx-logs
+  namespace: nginx-example
+  labels:
+    app: nginx
+spec:
+  storageClassName: csi-cinder-high-speed
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

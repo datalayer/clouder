@@ -1,0 +1,8 @@
+{
+  "jupyter.lab.shortcuts": [],
+  "title": "@datalayer/clouder",
+  "description": "@datalayer/clouder settings.",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}

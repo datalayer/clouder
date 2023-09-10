@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: nginx-example
+spec:
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      volumes:
+        - name: nginx-logs
+          persistentVolumeClaim:
+            claimName: nginx-logs
+      containers:
+        - image: nginx:1.7.9
+          name: nginx
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - mountPath: "/var/log/nginx"
+              name: nginx-logs
+              readOnly: false
