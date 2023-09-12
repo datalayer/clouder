@@ -26,6 +26,7 @@ dependencies = [
     "boto3",
     "datalayer",
     "kopf",
+    "pykube_ng",
     "ovh",
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
