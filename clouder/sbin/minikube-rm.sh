@@ -3,7 +3,7 @@
 # Copyright (c) Datalayer, Inc. https://datalayer.io
 # Distributed under the terms of the MIT License.
 
-DATALAYER_SKIP_HEADER=true clouder minikube-stop
+CLOUDER_SKIP_HEADER=true clouder minikube-stop
 
 echo
 echo -e $BOLD$YELLOW"Removing Minikube..."$NOCOLOR$NOBOLD
@@ -32,4 +32,4 @@ rm -fr ~/.minikube
 # docker rm -f $(docker ps -a -q) || true
 
 # echo
-# DATALAYER_SKIP_HEADER=true clouder minikube-status "$@"
+# CLOUDER_SKIP_HEADER=true clouder minikube-status "$@"

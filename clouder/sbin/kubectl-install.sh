@@ -20,15 +20,23 @@ install_on_macos() {
     echo
 }
 
+# https://github.com/kubernetes-sigs/krew
 install_crew() {
 (
   set -x; cd "$(mktemp -d)" &&
   OS="$(uname | tr '[:upper:]' '[:lower:]')" &&
   ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" &&
-  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/krew.tar.gz" &&
-  tar zxvf krew.tar.gz &&
+  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/download/v0.4.4/krew-${OS}_${ARCH}.tar.gz" &&
+  tar xvfz krew-${OS}_${ARCH}.tar.gz &&
   KREW=./krew-"${OS}_${ARCH}" &&
   "$KREW" install krew
+  rm ./krew-*
+    cat << 'EOF'
+Add this to your PATH:
+
+export PATH=\"${KREW_ROOT:-$HOME/.krew}/bin:$PATH\"
+
+EOF
 )
 }
 
@@ -38,13 +46,7 @@ case "${OS}" in
     *)         echo "Unsupported operating system ${OS}"
 esac
 
+echo -e $BOLD$YELLOW"Installing Crew"$NOCOLOR$NOBOLD
 install_crew
 
-dla kubectl-help
-
-cat << 'EOF'
-Add this to your PATH:
-
-export PATH=\"${KREW_ROOT:-$HOME/.krew}/bin:$PATH\"
-
-EOF
+CLOUDER_SKIP_HEADER=true clouder kubectl-help

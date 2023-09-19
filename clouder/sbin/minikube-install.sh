@@ -6,6 +6,8 @@
 echo -e $BOLD$YELLOW"Installing Minikube"$NOCOLOR$NOBOLD
 echo
 
+CLOUDER_MINIKUBE_VERSION=1.30.1
+
 install_on_linux() {
 
     echo -e $YELLOW"Installing kvm2 driver"$NOCOLOR
@@ -31,9 +33,9 @@ install_on_linux() {
       && rm docker-machine-driver-kvm2
     echo
 
-    echo -e $YELLOW"Installing Minikube ${DATALAYER_MINIKUBE_VERSION} into /usr/local/bin"$NOCOLOR
+    echo -e $YELLOW"Installing Minikube ${CLOUDER_MINIKUBE_VERSION} into /usr/local/bin"$NOCOLOR
     echo
-    curl -Lo /usr/local/bin/minikube https://storage.googleapis.com/minikube/releases/v${DATALAYER_MINIKUBE_VERSION}/minikube-linux-amd64 \
+    curl -Lo /usr/local/bin/minikube https://storage.googleapis.com/minikube/releases/v${CLOUDER_MINIKUBE_VERSION}/minikube-linux-amd64 \
         && chmod +x /usr/local/bin/minikube
     echo
 
@@ -58,15 +60,15 @@ install_on_macos() {
     brew install hyperkit
     echo
 
-    echo -e $YELLOW"Installing Minikube ${DATALAYER_MINIKUBE_VERSION} into /usr/local/bin"$NOCOLOR
+    echo -e $YELLOW"Installing Minikube ${CLOUDER_MINIKUBE_VERSION} into /usr/local/bin"$NOCOLOR
     echo
-    curl -Lo /usr/local/bin/minikube https://storage.googleapis.com/minikube/releases/v${DATALAYER_MINIKUBE_VERSION}/minikube-darwin-amd64 \
+    curl -Lo /usr/local/bin/minikube https://storage.googleapis.com/minikube/releases/v${CLOUDER_MINIKUBE_VERSION}/minikube-darwin-amd64 \
         && chmod +x /usr/local/bin/minikube
     echo
 
 }
 
-DATALAYER_SKIP_HEADER=true clouder minikube-rm || true
+CLOUDER_SKIP_HEADER=true clouder minikube-rm || true
 
 case "${OS}" in
     LINUX)     install_on_linux;;
@@ -76,4 +78,4 @@ esac
 
 docker network create minikube
 
-DATALAYER_SKIP_HEADER=true clouder minikube-help "$@"
+CLOUDER_SKIP_HEADER=true clouder minikube-help "$@"

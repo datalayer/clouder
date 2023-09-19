@@ -6,7 +6,7 @@
 echo -e $BOLD$YELLOW"Stopping Minikube on Local Node"$NOCOLOR$NOBOLD
 echo
 
-DATALAYER_SKIP_HEADER=true clouder minikube-stop-novm "$@"
+CLOUDER_SKIP_HEADER=true clouder minikube-stop-novm "$@"
 
 sudo rm -fr /var/lib/localkube
 sudo rm -fr /var/lib/kubelet

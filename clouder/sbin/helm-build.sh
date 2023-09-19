@@ -9,9 +9,9 @@ echo
 function build_helm_chart() {
   echo -e $YELLOW"Building Helm Chart ["$GREEN$1$YELLOW"]"$NOCOLOR
   echo
-  rm -fr $DATALAYER_HOME/etc/helm/$1/*tmpcharts || true
-  rm -fr $DATALAYER_HOME/etc/helm/$1/*.lock || true
-  helm dependency build $DATALAYER_HOME/etc/helm/$1
+  rm -fr $CLOUDER_HOME/etc/helm/$1/*tmpcharts || true
+  rm -fr $CLOUDER_HOME/etc/helm/$1/*.lock || true
+  helm dependency build $CLOUDER_HOME/etc/helm/$1
 }
 
 CMDS="$1"

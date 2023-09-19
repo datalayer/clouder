@@ -6,7 +6,10 @@
 echo -e $BOLD$YELLOW"Starting Minikube"$NOCOLOR$NOBOLD
 echo
 
-minikube config set kubernetes-version v${DATALAYER_K8S_VERSION}
+export CLOUDER_KUBERNETES_VERSION=1.25.4
+
+
+minikube config set kubernetes-version v${CLOUDER_KUBERNETES_VERSION}
 minikube config set bootstrapper kubeadm
 minikube config set cpus 8
 minikube config set memory 10192
@@ -79,10 +82,10 @@ minikube addons enable registry
 minikube addons enable storage-provisioner
 
 echo
-DATALAYER_SKIP_HEADER=true clouder minikube-help "$@"
-DATALAYER_SKIP_HEADER=true clouder minikube-status "$@"
+CLOUDER_SKIP_HEADER=true clouder minikube-help "$@"
+CLOUDER_SKIP_HEADER=true clouder minikube-status "$@"
 echo
-DATALAYER_SKIP_HEADER=true clouder k8s-status "$@"
+CLOUDER_SKIP_HEADER=true clouder k8s-status "$@"
 
 echo -e $YELLOW$BOLD"""
 Helm$NOBOLD

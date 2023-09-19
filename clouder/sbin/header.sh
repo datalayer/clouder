@@ -1,12 +1,12 @@
 # Copyright (c) Datalayer, Inc. https://datalayer.io
 # Distributed under the terms of the MIT License.
 
-if [ "$DATALAYER_SHOW_HEADER" == "false" ]
+if [ "$CLOUDER_SHOW_HEADER" == "false" ]
 then
   exit 0
 fi
 
-if [ "$DATALAYER_SKIP_HEADER" == "true" ]
+if [ "$CLOUDER_SKIP_HEADER" == "true" ]
 then
   exit 0
 fi

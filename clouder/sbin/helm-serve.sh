@@ -6,7 +6,7 @@
 echo -e $BOLD$YELLOW"Serving Helm Repository..."$NOCOLOR$NOBOLD
 echo
 
-cd $DATALAYER_HOME/etc/helm
+cd $CLOUDER_HOME/etc/helm
 
 for chart in */ ; do
   helm package "$chart" .

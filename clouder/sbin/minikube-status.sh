@@ -6,7 +6,7 @@
 echo -e $BOLD$YELLOW"Minikube Status"$NOCOLOR$NOBOLD
 echo
 
-DATALAYER_SKIP_HEADER=true clouder k8s-status "$@"
+CLOUDER_SKIP_HEADER=true clouder k8s-status "$@"
 
 # minikube get-k8s-versions
 minikube version

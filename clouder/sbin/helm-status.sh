@@ -9,4 +9,4 @@ echo
 helm version
 
 echo
-DATALAYER_SHOW_HEADER=false dla helm-ls
+CLOUDER_SHOW_HEADER=false dla helm-ls

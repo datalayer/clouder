@@ -19,6 +19,6 @@ sudo -E minikube start \
   --vm-driver=none \
   "$@"
 
-DATALAYER_SKIP_HEADER=true clouder kubectl-check "$@"
+CLOUDER_SKIP_HEADER=true clouder kubectl-check "$@"
 
-DATALAYER_SKIP_HEADER=true clouder minikube-help "$@"
+CLOUDER_SKIP_HEADER=true clouder minikube-help "$@"

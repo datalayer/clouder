@@ -3,6 +3,6 @@
 # Copyright (c) Datalayer, Inc. https://datalayer.io
 # Distributed under the terms of the MIT License.
 
-DATALAYER_SKIP_HEADER=true clouder minikube-stop
+CLOUDER_SKIP_HEADER=true clouder minikube-stop
 
-DATALAYER_SKIP_HEADER=true clouder minikube-start
+CLOUDER_SKIP_HEADER=true clouder minikube-start

@@ -6,7 +6,7 @@
 echo -e $BOLD$YELLOW"Stopping Minikube on Local Node"$NOCOLOR$NOBOLD
 echo
 
-DATALAYER_SKIP_HEADER=true clouder minikube-help "$@"
+CLOUDER_SKIP_HEADER=true clouder minikube-help "$@"
 
 sudo systemctl stop localkube
 sudo systemctl disable localkube
