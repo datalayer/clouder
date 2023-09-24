@@ -18,7 +18,6 @@ export type ClouderProps = {
   app?: JupyterFrontEnd;
 }
 
-
 const Clouder = observer((props: ClouderProps): JSX.Element => {
   const [version, setVersion] = useState('');
   useEffect(() => {

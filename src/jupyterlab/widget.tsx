@@ -4,7 +4,7 @@ import Clouder from '../Clouder';
 export class ClouderWidget extends ReactWidget {
   constructor() {
     super();
-    this.addClass('dla-Container');
+    this.addClass('dla-Clouder');
   }
 
   render(): JSX.Element {
