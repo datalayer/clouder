@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Box, Text } from '@primer/react';
-import { Table, DataTable } from '@primer/react/drafts';
+import { Table, DataTable, PageHeader } from '@primer/react/drafts';
 import { requestAPI } from '../../jupyterlab/handler';
 
 type OvhProject = {
@@ -8,7 +8,7 @@ type OvhProject = {
   projectId: string;
 }
 
-const KeysTab = () => {
+const SSHKeysTab = () => {
   const [projects, setProjects] = useState(new Array<OvhProject>());
   useEffect(() => {
     requestAPI<any>('ovh')
@@ -29,6 +29,11 @@ const KeysTab = () => {
   }, []);
   return (
     <>
+      <PageHeader>
+        <PageHeader.TitleArea>
+          <PageHeader.Title>SSH Keys</PageHeader.Title>
+        </PageHeader.TitleArea>
+      </PageHeader>
       <Box>
         <Table.Container>
           <Table.Title as="h2" id="ssh-keys">
@@ -55,4 +60,4 @@ const KeysTab = () => {
   )
 }
 
-export default KeysTab;
+export default SSHKeysTab;

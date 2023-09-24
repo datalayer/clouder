@@ -16,7 +16,7 @@ const devtool = IS_PRODUCTION ? false : "inline-cheap-source-map";
 const minimize = IS_PRODUCTION ? true : false;
 
 module.exports = {
-  entry: "./src/ClouderDev",
+  entry: "./src/ClouderApp",
   mode: mode,
   devServer: {
     port: 3063,

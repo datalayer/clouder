@@ -13,8 +13,8 @@ const ClouderJupyterLab = () => (
     ]}
     extensionPromises={extensionPromises}
     mimeExtensionPromises={mimeExtensionPromises}
+    hostId="jupyterlab-clouder-id"
     position="absolute"
-    hostId="jupyterlab-app-id"
     height="100vh"
   />
 )

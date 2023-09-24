@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Box, NavList } from '@primer/react';
 import { CloudVirtualMachineIcon, KeyOutlineIcon, KubernetesIcon } from '@datalayer/icons-react';
-import SshKeysTab from './ovh/SshKeysTab';
+import SSHKeysTab from './ovh/SSH2KeysTab';
 import VirtualMachinesTab from './ovh/VirtualMachinesTab';
 import KubernetesTab from './ovh/KubernetesTab';
 
@@ -37,7 +37,7 @@ const OVHTab = () => {
           </NavList>
         </Box>
         <Box ml={3} sx={{ width: '100%'}}>
-          {(nav === 1) && <SshKeysTab />}
+          {(nav === 1) && <SSHKeysTab />}
           {(nav === 2) && <VirtualMachinesTab />}
           {(nav === 3) && <KubernetesTab />}
         </Box>
