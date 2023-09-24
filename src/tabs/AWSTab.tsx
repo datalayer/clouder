@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Box, NavList } from '@primer/react';
 import { CloudVirtualMachineIcon, KeyOutlineIcon, KubernetesIcon } from '@datalayer/icons-react';
-import SSHKeysTab from './aws/SSH2KeysTab';
+import SSHKeysTab from './aws/SSHKeysTab';
 import VirtualMachinesTab from './aws/VirtualMachinesTab';
 import KubernetesTab from './aws/KubernetesTab';
 
