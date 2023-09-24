@@ -26,6 +26,8 @@ clouder_flags["dev-build"] = (
 
 
 class ClouderApp(DatalayerApp):
+    """The Clouder application."""
+
     name = "clouder"
     description = """
     Import or export a JupyterLab workspace or list all the JupyterLab workspaces

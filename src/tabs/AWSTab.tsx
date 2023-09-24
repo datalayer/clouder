@@ -20,7 +20,7 @@ const AWSTab = () => {
               <NavList.LeadingVisual>
                 <KeyOutlineIcon/>
               </NavList.LeadingVisual>
-              Keys
+              SSH Keys
             </NavList.Item>
             <NavList.Item aria-current={nav === 2 ? 'page' : undefined} onClick={e => setNav(2)}>
               <NavList.LeadingVisual>

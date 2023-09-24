@@ -44,7 +44,7 @@ test = [
 [project.scripts]
 clouder = "clouder.application:main"
 c = "clouder.application:main"
-clouder-serve = "clouder.serverapplication:main"
+clouder-server = "clouder.serverapplication:main"
 
 [tool.hatch.version]
 source = "nodejs"
