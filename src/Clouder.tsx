@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { ThemeProvider, BaseStyles, Box } from '@primer/react';
-import { observer } from 'mobx-react';
-import { ThemeProvider as BrandThemeProvider } from '@primer/react-brand'
 import { UnderlineNav } from '@primer/react/drafts';
+import { ThemeProvider as BrandThemeProvider } from '@primer/react-brand'
 import { CloudGreyIcon, OvhCloudIcon, AwsIcon } from '@datalayer/icons-react';
-import { requestAPI } from './handler';
+import { JupyterFrontEnd } from '@jupyterlab/application';
+import { observer } from 'mobx-react';
+import { requestAPI } from './jupyterlab/handler';
 import ClouderTab from './tabs/ClouderTab';
 import OVHTab from './tabs/OVHTab';
 import AWSTab from './tabs/AWSTab';
@@ -13,7 +14,12 @@ import appState from "./state";
 
 import '@primer/react-brand/lib/css/main.css';
 
-const Clouder = observer((): JSX.Element => {
+export type ClouderProps = {
+  app?: JupyterFrontEnd;
+}
+
+
+const Clouder = observer((props: ClouderProps): JSX.Element => {
   const [version, setVersion] = useState('');
   useEffect(() => {
     requestAPI<any>('config')
@@ -34,7 +40,7 @@ const Clouder = observer((): JSX.Element => {
             <Box className="datalayer-Primer-Brand">
               <Box>
                 <UnderlineNav aria-label="clouder">
-                  <UnderlineNav.Item aria-label="clouder" aria-current={appState.tab === 1 ? "page" : undefined} icon={CloudGreyIcon} onSelect={e => {e.preventDefault(); appState.setTab(1);}}>
+                  <UnderlineNav.Item aria-label="clouder" aria-current={appState.tab === 1 ? "page" : undefined} onSelect={e => {e.preventDefault(); appState.setTab(1);}}>
                     Clouder
                   </UnderlineNav.Item>
                   <UnderlineNav.Item aria-label="ovh-cloud" aria-current={appState.tab === 2 ? "page" : undefined} icon={OvhCloudIcon} onSelect={e => {e.preventDefault(); appState.setTab(2);}}>

@@ -1,5 +1,5 @@
 import { ReactWidget } from '@jupyterlab/apputils';
-import Clouder from './Clouder';
+import Clouder from '../Clouder';
 
 export class ClouderWidget extends ReactWidget {
   constructor() {

@@ -6,7 +6,7 @@ import icon from '@datalayer/icons-react/data2/CloudGreyIconLabIcon';
 import { requestAPI } from './handler';
 import { ClouderWidget } from './widget';
 
-import '../style/index.css';
+import '../../style/index.css';
 
 /**
  * The command IDs used by the plugin.

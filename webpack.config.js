@@ -9,8 +9,6 @@ function shim(regExp) {
   return new webpack.NormalModuleReplacementPlugin(regExp, shimJS);
 }
 
-const JUPYTER_HOST = 'http://localhost:8888';
-
 const IS_PRODUCTION = process.argv.indexOf('--mode=production') > -1;
 const mode = IS_PRODUCTION ? "production" : "development";
 // inline-source-map
@@ -18,7 +16,7 @@ const devtool = IS_PRODUCTION ? false : "inline-cheap-source-map";
 const minimize = IS_PRODUCTION ? true : false;
 
 module.exports = {
-  entry: "./src/App",
+  entry: "./src/ClouderDev",
   mode: mode,
   devServer: {
     port: 3063,

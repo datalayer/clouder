@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Box, Text } from '@primer/react';
 import { Table, DataTable } from '@primer/react/drafts';
-import { requestAPI } from '../../handler';
+import { requestAPI } from '../../jupyterlab/handler';
 
 type OvhProject = {
   id: number,

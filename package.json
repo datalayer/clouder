@@ -48,11 +48,12 @@
     "eslint:check": "eslint . --cache --ext .ts,.tsx",
     "install:extension": "jlpm build",
     "jupyterlab": "run-p -c 'jupyterlab:*'",
-    "jupyterlab:start": "jupyter lab --watch --config=./dev/config/jupyter_server_config.py",
-    "jupyterlab:watch": "run-p -c watch:src watch:labextension",
+    "jupyterlab:server": "jupyter server --config=./dev/config/jupyter_server_config.py",
+    "jupyterlab:webpack": "webpack serve",
     "kill": "./dev/sh/kill.sh || true",
     "lint": "jlpm stylelint && jlpm prettier && jlpm eslint",
     "lint:check": "jlpm stylelint:check && jlpm prettier:check && jlpm eslint:check",
+    "postinstall": "patch-package",
     "prettier": "jlpm prettier:base --write --list-different",
     "prettier:base": "prettier \"**/*{.ts,.tsx,.js,.jsx,.css,.json,.md}\"",
     "prettier:check": "jlpm prettier:base --check",
@@ -65,11 +66,11 @@
     "typedoc": "typedoc ./src",
     "watch": "run-p watch:src watch:labextension",
     "watch:labextension": "jupyter labextension watch .",
-    "watch:src": "tsc -w",
-    "postinstall": "patch-package"
+    "watch:src": "tsc -w"
   },
   "dependencies": {
-    "@datalayer/primer-addons": "0.1.4",
+    "@datalayer/jupyter-react": "0.7.7",
+    "@jupyter/collaboration-extension": "1.2.0",
     "@jupyterlab/application": "4.0.3",
     "@jupyterlab/coreutils": "6.0.3",
     "@jupyterlab/services": "7.0.3",
@@ -249,7 +250,7 @@
         }
       }
     },
-    "extension": true,
+    "extension": "./lib/jupyterlab/index.js",
     "outputDir": "clouder/labextension",
     "schemaDir": "schema"
   },
