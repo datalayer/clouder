@@ -2,20 +2,19 @@ import warnings
 
 from pathlib import Path
 
-from datalayer.application import DatalayerApp, NoStart
+from datalayer.application import NoStart
 
-from .._version import __version__
+from .base import ClouderApp
 
 
 SSH_FOLDER = Path.home() / ".ssh"
 
 
-class VirtualMachineListApp(DatalayerApp):
+class VirtualMachineListApp(ClouderApp):
     """An application to list the virtual machines."""
 
-    version = __version__
     description = """
-   An application to list the virtual machines
+      An application to list the virtual machines
     """
 
     def initialize(self, *args, **kwargs):
@@ -32,12 +31,11 @@ class VirtualMachineListApp(DatalayerApp):
                 print(file.name.replace(".pub", ""))
 
 
-class ClouderVirtualMachineApp(DatalayerApp):
+class ClouderVirtualMachineApp(ClouderApp):
     """An application for the key pairs."""
 
-    version = __version__
     description = """
-    Manage the virtual machines
+      Manage the virtual machines
     """
 
     subcommands = {

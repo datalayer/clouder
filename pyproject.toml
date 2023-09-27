@@ -28,6 +28,7 @@ dependencies = [
     "kopf",
     "pykube_ng",
     "ovh",
+    "rich",
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 

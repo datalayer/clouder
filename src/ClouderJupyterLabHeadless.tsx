@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createGlobalStyle } from 'styled-components';
-import { Jupyter, JupyterLabApp, JupyterLabCorePlugins } from '@datalayer/jupyter-react';
 import { JupyterLab } from '@jupyterlab/application';
 import * as collaborationExtension from '@jupyter/collaboration-extension';
+import { Jupyter, JupyterLabApp, JupyterLabAppAdapter, JupyterLabAppCorePlugins } from '@datalayer/jupyter-react';
 import * as clouderExtension from './jupyterlab/index';
 import Clouder from './Clouder';
 
-const { extensionPromises, mimeExtensionPromises } = JupyterLabCorePlugins;
+const { extensionPromises, mimeExtensionPromises } = JupyterLabAppCorePlugins;
 
 const ThemeGlobalStyle = createGlobalStyle<any>`
   body {
@@ -16,13 +16,13 @@ const ThemeGlobalStyle = createGlobalStyle<any>`
 `
 
 const ClouderJupyterLabHeadless = () => {
-  const [jupyterLab, setJupyterLab] = useState<JupyterLab>();
-  const onReady = (jupyterLab: JupyterLab) => {
-    setJupyterLab(jupyterLab);
+  const [jupyterlab, setJupyterLab] = useState<JupyterLab>();
+  const onReady = (jupyterlabAdapter: JupyterLabAppAdapter) => {
+    setJupyterLab(jupyterlabAdapter.jupyterlab);
   }
   return (
     <>
-      {jupyterLab && <Clouder app={jupyterLab}/>}
+      {jupyterlab && <Clouder app={jupyterlab}/>}
       <JupyterLabApp
         extensions={[
           clouderExtension,

@@ -1,4 +1,4 @@
-"""The Datalayer Server application."""
+"""The Clouder Server application."""
 
 import os
 
@@ -6,8 +6,6 @@ from jupyter_server.utils import url_path_join
 from jupyter_server.extension.application import ExtensionApp, ExtensionAppJinjaMixin
 
 from .handlers import IndexHandler, ConfigHandler, OVHHandler
-
-from .operator.operator import operate
 
 
 DEFAULT_STATIC_FILES_PATH = os.path.join(os.path.dirname(__file__), "./static")
@@ -37,7 +35,6 @@ class ClouderApp(ExtensionAppJinjaMixin, ExtensionApp):
             (url_path_join("clouder", "ovh"), OVHHandler),
         ]
         self.handlers.extend(handlers)
-        operate()
 
 
 # -----------------------------------------------------------------------------

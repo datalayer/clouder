@@ -1,4 +1,3 @@
-# A demo custom resource for the Kopf example operators.
 apiVersion: kopf.dev/v1
 kind: KopfExample
 metadata:

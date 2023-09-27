@@ -1,14 +1,13 @@
 import warnings
 
-from datalayer.application import DatalayerApp, NoStart
+from datalayer.application import NoStart
 
-from .._version import __version__
+from .base import ClouderApp
 
 
-class ConfigExportApp(DatalayerApp):
+class ConfigExportApp(ClouderApp):
     """An application to export the configuration."""
 
-    version = __version__
     description = """
    An application to export the configuration
     """
@@ -25,10 +24,9 @@ class ConfigExportApp(DatalayerApp):
         self.log.info("ClouderConfigApp %s", self.version)
 
 
-class ClouderConfigApp(DatalayerApp):
+class ClouderConfigApp(ClouderApp):
     """An application for the configuration."""
 
-    version = __version__
     description = """
     Manage the configuration
     """

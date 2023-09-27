@@ -8,7 +8,7 @@ from ._version import __version__
 
 from .apps import (
     ClouderConfigApp, ClouderKeyPairApp, ClouderKubernetesApp, ClouderShellApp,
-    ClouderUpApp, ClouderVirtualMachineApp,
+    ClouderUpApp, ClouderVirtualMachineApp, ClouderOperatorApp,
 )
 
 
@@ -51,6 +51,7 @@ class ClouderApp(DatalayerApp):
         "config": (ClouderConfigApp, ClouderConfigApp.description.splitlines()[0]),
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),
         "kp": (ClouderKeyPairApp, ClouderKeyPairApp.description.splitlines()[0]),
+        "operator": (ClouderOperatorApp, ClouderOperatorApp.description.splitlines()[0]),
         "sh": (ClouderShellApp, ClouderShellApp.description.splitlines()[0]),
         "up": (ClouderUpApp, ClouderUpApp.description.splitlines()[0]),
         "vm": (ClouderVirtualMachineApp, ClouderVirtualMachineApp.description.splitlines()[0]),

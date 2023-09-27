@@ -1,18 +1,16 @@
 import os
 import sys
 
-from datalayer.application import DatalayerApp
+from .base import ClouderApp
 
-from .._version import __version__
 from ..util.shell import run_command
 
 
-class ClouderShellApp(DatalayerApp):
+class ClouderShellApp(ClouderApp):
     """A shell application for Clouder."""
 
-    version = __version__
     description = """
-    Run predefined shell scripts.
+      Run predefined shell scripts.
     """
 
     is_shell_command = True

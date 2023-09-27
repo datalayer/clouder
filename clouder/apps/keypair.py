@@ -2,20 +2,19 @@ import warnings
 
 from pathlib import Path
 
-from datalayer.application import DatalayerApp, NoStart
+from datalayer.application import NoStart
 
-from .._version import __version__
+from .base import ClouderApp
 
 
 SSH_FOLDER = Path.home() / ".ssh"
 
 
-class KeyPairListApp(DatalayerApp):
+class KeyPairListApp(ClouderApp):
     """An application to list the key pairs."""
 
-    version = __version__
     description = """
-   An application to list the key pairs
+      An application to list the key pairs
     """
 
     def initialize(self, *args, **kwargs):
@@ -32,12 +31,11 @@ class KeyPairListApp(DatalayerApp):
                 print(file.name.replace(".pub", ""))
 
 
-class ClouderKeyPairApp(DatalayerApp):
+class ClouderKeyPairApp(ClouderApp):
     """An application for the key pairs."""
 
-    version = __version__
     description = """
-    Manage the key pairs
+      Manage the key pairs
     """
 
     subcommands = {

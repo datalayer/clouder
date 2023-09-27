@@ -1,6 +1,6 @@
-import { JupyterFrontEnd, JupyterFrontEndPlugin } from '@jupyterlab/application';
+import { JupyterFrontEnd, JupyterFrontEndPlugin, ILayoutRestorer } from '@jupyterlab/application';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
-import { MainAreaWidget, ICommandPalette } from '@jupyterlab/apputils';
+import { MainAreaWidget, ICommandPalette, WidgetTracker } from '@jupyterlab/apputils';
 import { ILauncher } from '@jupyterlab/launcher';
 import icon from '@datalayer/icons-react/data2/CloudGreyIconLabIcon';
 import { requestAPI } from './handler';
@@ -15,22 +15,38 @@ namespace CommandIDs {
   export const create = 'create-clouder-widget';
 }
 
+export const PLUGIN_ID = '@datalayer/clouder:plugin';
+
+let tracker: WidgetTracker<MainAreaWidget<ClouderWidget>>;
+
 /**
  * Initialization data for the @datalayer/clouder extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
-  id: '@datalayer/clouder:plugin',
+  id: PLUGIN_ID,
   autoStart: true,
   requires: [ICommandPalette],
-  optional: [ISettingRegistry, ILauncher],
+  optional: [ISettingRegistry, ILauncher, ILayoutRestorer],
   activate: (
     app: JupyterFrontEnd,
     palette: ICommandPalette,
     settingRegistry: ISettingRegistry | null,
-    launcher: ILauncher
+    launcher: ILauncher,
+    restorer?: ILayoutRestorer,
   ) => {
     const { commands } = app;
+    if (!tracker) {
+      tracker = new WidgetTracker<MainAreaWidget<ClouderWidget>>({
+        namespace: 'datalayer',
+      });
+    }
     const command = CommandIDs.create;
+    if (restorer) {
+      void restorer.restore(tracker, {
+        command,
+        name: () => 'datalayer',
+      });
+    }
     commands.addCommand(command, {
       caption: 'Show Clouder',
       label: 'Clouder',
@@ -52,7 +68,6 @@ const plugin: JupyterFrontEndPlugin<void> = {
         rank: 1.2,
       });
     }
-    console.log('JupyterLab plugin @datalayer/clouder is activated!');
     if (settingRegistry) {
       settingRegistry
         .load(plugin.id)
@@ -71,7 +86,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
         console.error(
           `Error while accessing the jupyter server extension.\n${reason}`
         );
-      });
+      }
+    );
+    console.log('JupyterLab plugin @datalayer/clouder is activated!');
   }
 };
 
