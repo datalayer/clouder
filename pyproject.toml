@@ -43,8 +43,8 @@ test = [
 ]
 
 [project.scripts]
-clouder = "clouder.application:main"
 c = "clouder.application:main"
+clouder = "clouder.application:main"
 clouder-server = "clouder.serverapplication:main"
 
 [tool.hatch.version]
