@@ -2,9 +2,8 @@
 
 import tornado
 
-from ..base import BaseTemplateHandler
-
 from ..._version import __version__
+from ..base import BaseTemplateHandler
 
 
 class IndexHandler(BaseTemplateHandler):

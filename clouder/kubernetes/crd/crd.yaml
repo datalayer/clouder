@@ -1,0 +1,45 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sshkeys.clouder.sh
+spec:
+  scope: Namespaced
+  group: clouder.sh
+  names:
+    kind: SSHKey
+    plural: sshkeys
+    singular: sshkey
+    shortNames:
+      - sk
+      - ssh
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources: { status: { } }
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      additionalPrinterColumns:
+        - name: Duration
+          type: string
+          priority: 0
+          jsonPath: .spec.duration
+          description: For how long the pod should sleep.
+        - name: Children
+          type: string
+          priority: 0
+          jsonPath: .status.create_sskey_fn.children
+          description: The children pods created.
+        - name: Message
+          type: string
+          priority: 0
+          jsonPath: .status.create_sskey_fn.message
+          description: As returned from the handler (sometimes).

@@ -1,25 +1,44 @@
 import { useState, useEffect } from 'react';
-import { Box, Text } from '@primer/react';
+import { Box, Text, Truncate, LabelGroup, Label } from '@primer/react';
 import { Table, DataTable, PageHeader } from '@primer/react/drafts';
 import { requestAPI } from '../../jupyterlab/handler';
 
-type OvhProject = {
+type OvhSSHKey = {
   id: number,
-  projectId: string;
+  name: string;
+  publicKey: string;
+  fingerPrint?: string;
+  regions: string[];
 }
 
 const SSHKeysTab = () => {
-  const [projects, setProjects] = useState(new Array<OvhProject>());
+  const [sshKeys, setSSHKeys] = useState(new Array<OvhSSHKey>());
+  const [managedSSHKeys, setManagedSSHKeys] = useState(new Array<OvhSSHKey>());
   useEffect(() => {
-    requestAPI<any>('ovh')
+    requestAPI<any>('ovh/keys')
     .then(data => {
-      const projects = (data.projects as [any]).map((project, id) => {
+      const sshKeys = (data.keys as [any]).map((key, id) => {
         return {
           id,
-          projectId: project,
-        }
-      }) as [OvhProject];
-      setProjects(projects);
+          name: key['name'],
+          publicKey: key['publicKey'],
+          regions: key['regions']
+        } as OvhSSHKey
+      });
+      setSSHKeys(sshKeys);
+      const items = data.managed_keys['items'];
+      const managedSSHhKeys = (items as [any]).map((key, id) => {
+        const status = key.status.create_sskey_fn;
+        return {
+          id,
+          name: status['name'],
+          publicKey: status['publicKey'],
+          fingerPrint: status['fingerPrint'],
+          regions: [], // key['regions']
+        } as OvhSSHKey
+      });
+      console.log('---', managedSSHKeys)
+      setManagedSSHKeys(managedSSHhKeys);
     })
     .catch(reason => {
       console.error(
@@ -34,23 +53,86 @@ const SSHKeysTab = () => {
           <PageHeader.Title>SSH Keys</PageHeader.Title>
         </PageHeader.TitleArea>
       </PageHeader>
-      <Box>
+      <Box mt={1}>
         <Table.Container>
-          <Table.Title as="h2" id="ssh-keys">
-            SSH Keys
+          <Table.Title as="h2" id="ssh-managed-keys">
+            Managed SSH Keys
           </Table.Title>
-          <Table.Subtitle as="p" id="ssh-keys-subtitle">
+          <Table.Subtitle as="p" id="ssh-managed-keys-subtitle">
+            List of managed SSH keys.
+          </Table.Subtitle>
+          <DataTable
+            aria-labelledby="ssh-managed-keys"
+            aria-describedby="ssh-managed-keys-subtitle" 
+            data={managedSSHKeys}
+            columns={[
+              {
+                header: 'Name',
+                field: 'name',
+                renderCell: row => <Text>{row.name}</Text>
+              },
+              {
+                header: 'Public Key',
+                field: 'publicKey',
+                renderCell: row => (
+                  <Truncate maxWidth={200} title={row.publicKey} expandable={true}>
+                    {row.publicKey}
+                  </Truncate>
+                )
+              },
+              {
+                header: 'Fingerprint',
+                field: 'fingerPrint',
+                renderCell: row => (
+                  <Text>
+                    {row.fingerPrint}
+                  </Text>
+                )
+              },
+              {
+                header: 'Regions',
+                field: 'regions',
+                renderCell: row => {
+                  return <LabelGroup>{row.regions.map(region => <Label variant="primary">{region}</Label>)}</LabelGroup>
+                }
+              },
+            ]}
+          />
+        </Table.Container>
+      </Box>
+      <Box mt={1}>
+        <Table.Container>
+          <Table.Title as="h2" id="sshkeys">
+            All SSH Keys
+          </Table.Title>
+          <Table.Subtitle as="p" id="sshkeys-subtitle">
             List of SSH keys.
           </Table.Subtitle>
           <DataTable
-            aria-labelledby="ssh-keys"
-            aria-describedby="ssh-keys-subtitle" 
-            data={projects}
+            aria-labelledby="sshkeys"
+            aria-describedby="sshkeys-subtitle" 
+            data={sshKeys}
             columns={[
               {
-                header: 'Id',
-                field: 'projectId',
-                renderCell: row => <Text>{row.projectId}</Text>
+                header: 'Name',
+                field: 'name',
+                renderCell: row => <Text>{row.name}</Text>
+              },
+              {
+                header: 'Public Key',
+                field: 'publicKey',
+                renderCell: row => (
+                  <Truncate maxWidth={200} title={row.publicKey} expandable={true}>
+                    {row.publicKey}
+                  </Truncate>
+                )
+              },
+              {
+                header: 'Regions',
+                field: 'regions',
+                renderCell: row => {
+                  return <LabelGroup>{row.regions.map(region => <Label variant="primary">{region}</Label>)}</LabelGroup>
+                }
               },
             ]}
           />

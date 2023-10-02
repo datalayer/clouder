@@ -13,14 +13,16 @@ const IS_PRODUCTION = process.argv.indexOf('--mode=production') > -1;
 const mode = IS_PRODUCTION ? "production" : "development";
 const devtool = IS_PRODUCTION ? false : "inline-cheap-source-map";
 const minimize = IS_PRODUCTION ? true : false;
+const publicPath = IS_PRODUCTION ? "/static/clouder/" : "http://localhost:3063/";
 
 module.exports = {
-  entry: "./src/ClouderJupyterLabHeadless",
+  entry: "./src/ClouderApp",
   mode: mode,
   devServer: {
     port: 3063,
     client: { overlay: false },
     historyApiFallback: true,
+    hot: !IS_PRODUCTION,
   },
   watchOptions: {
     aggregateTimeout: 300,
@@ -33,7 +35,7 @@ module.exports = {
 //    usedExports: true,
   },
   output: {
-    publicPath: "http://localhost:3063/",
+    publicPath,
     filename: '[name].clouder.js',
   },
   resolve: {
@@ -126,13 +128,13 @@ module.exports = {
           openAnalyzer: false,
           generateStatsFile: false,
         }),
-    shim(/@fortawesome/),
-    shim(/moment/),
-    shim(/react-jvectormap/),
-    shim(/react-slick/),
-    shim(/react-tagsinput/),
-    new HtmlWebpackPlugin({
-      template: "./public/index.html",
-    }),
+      shim(/@fortawesome/),
+      shim(/moment/),
+      shim(/react-jvectormap/),
+      shim(/react-slick/),
+      shim(/react-tagsinput/),
+      new HtmlWebpackPlugin({
+        template: "./public/index.html",
+      }),
   ],
 };

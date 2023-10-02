@@ -7,7 +7,7 @@ import { JupyterFrontEnd } from '@jupyterlab/application';
 import { observer } from 'mobx-react';
 import { requestAPI } from './jupyterlab/handler';
 import ClouderTab from './tabs/ClouderTab';
-import OVHTab from './tabs/OVHTab';
+import OVHcloudTab from './tabs/OVHcloudTab';
 import AWSTab from './tabs/AWSTab';
 import AboutTab from './tabs/AboutTab';
 import appState from "./state";
@@ -15,7 +15,7 @@ import appState from "./state";
 import '@primer/react-brand/lib/css/main.css';
 
 export type ClouderProps = {
-  app?: JupyterFrontEnd;
+  jupyterFrontEnd?: JupyterFrontEnd;
 }
 
 const Clouder = observer((props: ClouderProps): JSX.Element => {
@@ -31,6 +31,7 @@ const Clouder = observer((props: ClouderProps): JSX.Element => {
       );
     });
   });
+  const tabIndex = Math.floor(appState.tab)
   return (
     <>
       <BrandThemeProvider>
@@ -39,25 +40,25 @@ const Clouder = observer((props: ClouderProps): JSX.Element => {
             <Box className="datalayer-Primer-Brand">
               <Box>
                 <UnderlineNav aria-label="clouder">
-                  <UnderlineNav.Item aria-label="clouder" aria-current={appState.tab === 1 ? "page" : undefined} onSelect={e => {e.preventDefault(); appState.setTab(1);}}>
+                  <UnderlineNav.Item aria-label="clouder" aria-current={tabIndex === 0 ? "page" : undefined} onSelect={e => {e.preventDefault(); appState.setTab(0.0);}}>
                     Clouder
                   </UnderlineNav.Item>
-                  <UnderlineNav.Item aria-label="ovh-cloud" aria-current={appState.tab === 2 ? "page" : undefined} icon={OvhCloudIcon} onSelect={e => {e.preventDefault(); appState.setTab(2);}}>
+                  <UnderlineNav.Item aria-label="ovh-cloud" aria-current={tabIndex === 1 ? "page" : undefined} icon={OvhCloudIcon} onSelect={e => {e.preventDefault(); appState.setTab(1.0);}}>
                     OVHcloud
                   </UnderlineNav.Item>
-                  <UnderlineNav.Item aria-label="aws" aria-current={appState.tab === 3 ? "page" : undefined} icon={AwsIcon} onSelect={e => {e.preventDefault(); appState.setTab(3);}}>
+                  <UnderlineNav.Item aria-label="aws" aria-current={tabIndex === 2 ? "page" : undefined} icon={AwsIcon} onSelect={e => {e.preventDefault(); appState.setTab(2.0);}}>
                     AWS
                   </UnderlineNav.Item>
-                  <UnderlineNav.Item aria-label="about" aria-current={appState.tab === 4 ? "page" : undefined} icon={CloudGreyIcon} onSelect={e => {e.preventDefault(); appState.setTab(4);}}>
+                  <UnderlineNav.Item aria-label="about" aria-current={tabIndex === 3 ? "page" : undefined} icon={CloudGreyIcon} onSelect={e => {e.preventDefault(); appState.setTab(3.0);}}>
                     About
                   </UnderlineNav.Item>
                 </UnderlineNav>
               </Box>
               <Box m={3}>
-                {(appState.tab === 1) && <ClouderTab/>}
-                {(appState.tab === 2) && <OVHTab/>}
-                {(appState.tab === 3) && <AWSTab/>}
-                {(appState.tab === 4) && <AboutTab version={version}/>}
+                {(tabIndex === 0) && <ClouderTab/>}
+                {(tabIndex === 1) && <OVHcloudTab/>}
+                {(tabIndex === 2) && <AWSTab/>}
+                {(tabIndex === 3) && <AboutTab version={version}/>}
               </Box>
             </Box>
           </BaseStyles>

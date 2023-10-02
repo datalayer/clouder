@@ -4,35 +4,31 @@ from pathlib import Path
 
 from datalayer.application import NoStart
 
-from .base import ClouderApp
+from .base import ClouderBaseApp
 
 
 SSH_FOLDER = Path.home() / ".ssh"
 
 
-class VirtualMachineListApp(ClouderApp):
+class VirtualMachineListApp(ClouderBaseApp):
     """An application to list the virtual machines."""
 
     description = """
       An application to list the virtual machines
     """
 
-    def initialize(self, *args, **kwargs):
-        """Initialize the app."""
-        super().initialize(*args, **kwargs)
-
     def start(self):
         """Start the app."""
         if len(self.extra_args) > 1:  # pragma: no cover
-            warnings.warn("Too many arguments were provided for workspace export.")
+            warnings.warn("Too many arguments were provided.")
             self.exit(1)
         for file in SSH_FOLDER.iterdir():
             if file.name.endswith(".pub"):
                 print(file.name.replace(".pub", ""))
 
 
-class ClouderVirtualMachineApp(ClouderApp):
-    """An application for the key pairs."""
+class ClouderVirtualMachineApp(ClouderBaseApp):
+    """An application for the virtual machines."""
 
     description = """
       Manage the virtual machines
@@ -45,7 +41,7 @@ class ClouderVirtualMachineApp(ClouderApp):
     def start(self):
         try:
             super().start()
-            self.log.error("One of `list` must be specified.")
+            self.log.error(f"One of `{'` `'.join(ClouderVirtualMachineApp.subcommands.keys())}` must be specified.")
             self.exit(1)
         except NoStart:
             pass

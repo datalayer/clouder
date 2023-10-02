@@ -2,29 +2,25 @@ import warnings
 
 from datalayer.application import NoStart
 
-from .base import ClouderApp
+from .base import ClouderBaseApp
 
 
-class ConfigExportApp(ClouderApp):
+class ConfigExportApp(ClouderBaseApp):
     """An application to export the configuration."""
 
     description = """
    An application to export the configuration
     """
 
-    def initialize(self, *args, **kwargs):
-        """Initialize the app."""
-        super().initialize(*args, **kwargs)
-
     def start(self):
         """Start the app."""
         if len(self.extra_args) > 1:  # pragma: no cover
-            warnings.warn("Too many arguments were provided for workspace export.")
+            warnings.warn("Too many arguments were provided.")
             self.exit(1)
         self.log.info("ClouderConfigApp %s", self.version)
 
 
-class ClouderConfigApp(ClouderApp):
+class ClouderConfigApp(ClouderBaseApp):
     """An application for the configuration."""
 
     description = """
@@ -38,7 +34,8 @@ class ClouderConfigApp(ClouderApp):
     def start(self):
         try:
             super().start()
-            self.log.error("One of `export` must be specified.")
+            self.log.info("Clouder - Version %s - Cloud %s ", super().version, super().cloud)
+            self.log.error(f"One of `{'` `'.join(ClouderConfigApp.subcommands.keys())}` must be specified.")
             self.exit(1)
         except NoStart:
             pass

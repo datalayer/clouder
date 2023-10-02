@@ -1,12 +1,13 @@
-import os
+"""Clouder shell."""
+
 import sys
 
-from .base import ClouderApp
+from .base import ClouderBaseApp
 
 from ..util.shell import run_command
 
 
-class ClouderShellApp(ClouderApp):
+class ClouderShellApp(ClouderBaseApp):
     """A shell application for Clouder."""
 
     description = """
@@ -27,11 +28,9 @@ class ClouderShellApp(ClouderApp):
             args = args + sys.argv
         else:
             args = sys.argv
-        # TODO Move this to a shell.
-        os.environ["OS"] = "MACOS"
-        os.environ["DATALAYER_K8S_VERSION"] = "1.25.4"
-        #
         if len(args) > 2:
-            run_command(args)
+            cmd = "-".join(args[2:])
+            cmd_args = args[0:2] + [cmd]
+            run_command(cmd_args)
         else:
             self.log.error("You must provide a shell script to run.")

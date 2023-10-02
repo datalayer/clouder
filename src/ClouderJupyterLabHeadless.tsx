@@ -1,13 +1,12 @@
 import { useState } from 'react';
-import { createRoot } from 'react-dom/client';
 import { createGlobalStyle } from 'styled-components';
 import { JupyterLab } from '@jupyterlab/application';
-import * as collaborationExtension from '@jupyter/collaboration-extension';
-import { Jupyter, JupyterLabApp, JupyterLabAppAdapter, JupyterLabAppCorePlugins } from '@datalayer/jupyter-react';
-import * as clouderExtension from './jupyterlab/index';
+import { Jupyter, JupyterLabApp, JupyterLabAppAdapter } from '@datalayer/jupyter-react';
 import Clouder from './Clouder';
 
-const { extensionPromises, mimeExtensionPromises } = JupyterLabAppCorePlugins;
+import * as lightThemeExtension from '@jupyterlab/theme-light-extension';
+import * as collaborationExtension from '@jupyter/collaboration-extension';
+import * as clouderExtension from './jupyterlab/index';
 
 const ThemeGlobalStyle = createGlobalStyle<any>`
   body {
@@ -15,22 +14,20 @@ const ThemeGlobalStyle = createGlobalStyle<any>`
   }
 `
 
-const ClouderJupyterLabHeadless = () => {
+const ClouderJupyterLabHeadlessComponent = () => {
   const [jupyterlab, setJupyterLab] = useState<JupyterLab>();
   const onReady = (jupyterlabAdapter: JupyterLabAppAdapter) => {
     setJupyterLab(jupyterlabAdapter.jupyterlab);
   }
   return (
     <>
-      {jupyterlab && <Clouder app={jupyterlab}/>}
+      {jupyterlab && <Clouder jupyterFrontEnd={jupyterlab}/>}
       <JupyterLabApp
         extensions={[
+          lightThemeExtension,
           clouderExtension,
           collaborationExtension,
         ]}
-        extensionPromises={extensionPromises}
-        mimeExtensionPromises={mimeExtensionPromises}
-        hostId="clouder-jupyterlab-id"
         headless={true}
         onReady={onReady}
       />
@@ -38,13 +35,11 @@ const ClouderJupyterLabHeadless = () => {
   )
 }
 
-const div = document.createElement('div');
-document.body.appendChild(div);
-const root = createRoot(div);
-
-root.render(
+export const ClouderJupyterLabHeadless = () => (
   <Jupyter startDefaultKernel={false} disableCssLoading={true}>
     <ThemeGlobalStyle />
-    <ClouderJupyterLabHeadless/>
+    <ClouderJupyterLabHeadlessComponent/>
   </Jupyter>
 );
+
+export default ClouderJupyterLabHeadless;

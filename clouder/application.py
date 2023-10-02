@@ -1,59 +1,30 @@
-from pathlib import Path
-
-from traitlets import Bool, Unicode
-
-from datalayer.application import DatalayerApp, base_aliases, base_flags
+"""Clouder application."""
 
 from ._version import __version__
-
-from .apps import (
-    ClouderConfigApp, ClouderKeyPairApp, ClouderKubernetesApp, ClouderShellApp,
-    ClouderUpApp, ClouderVirtualMachineApp, ClouderOperatorApp,
-)
-
-
-HERE = Path(__file__).parent
+from .apps import (ClouderBaseApp, ClouderConfigApp, ClouderKeysApp,
+                   ClouderKubernetesApp, ClouderMeApp, ClouderOperatorApp,
+                   ClouderSetupApp, ClouderShellApp, ClouderStatusApp,
+                   ClouderVirtualMachineApp, ClouderProjectsApp)
 
 
-clouder_aliases = dict(base_aliases)
-clouder_aliases["cloud"] = "ClouderApp.cloud"
-
-clouder_flags = dict(base_flags)
-clouder_flags["dev-build"] = (
-    {"ClouderApp": {"dev_build": True}},
-    "Build in development mode.",
-)
-
-
-class ClouderApp(DatalayerApp):
-    """The Clouder application."""
+class ClouderApp(ClouderBaseApp):
+    """The main Clouder application."""
 
     name = "clouder"
     description = """
-    Import or export a JupyterLab workspace or list all the JupyterLab workspaces
-
-    You can use the "config" sub-commands.
+      The main Clouder application.
     """
-    version = __version__
-
-    aliases = clouder_aliases
-    flags = clouder_flags
-
-    cloud = Unicode("ovh", config=True, help="The cloud to use.")
-
-    minimize = Bool(
-        True,
-        config=True,
-        help="Whether to minimize a production build (defaults to True).",
-    )
 
     subcommands = {
         "config": (ClouderConfigApp, ClouderConfigApp.description.splitlines()[0]),
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),
-        "kp": (ClouderKeyPairApp, ClouderKeyPairApp.description.splitlines()[0]),
+        "keys": (ClouderKeysApp, ClouderKeysApp.description.splitlines()[0]),
         "operator": (ClouderOperatorApp, ClouderOperatorApp.description.splitlines()[0]),
+        "setup": (ClouderSetupApp, ClouderSetupApp.description.splitlines()[0]),
         "sh": (ClouderShellApp, ClouderShellApp.description.splitlines()[0]),
-        "up": (ClouderUpApp, ClouderUpApp.description.splitlines()[0]),
+        "status": (ClouderStatusApp, ClouderStatusApp.description.splitlines()[0]),
+        "me": (ClouderMeApp, ClouderMeApp.description.splitlines()[0]),
+        "projects": (ClouderProjectsApp, ClouderProjectsApp.description.splitlines()[0]),
         "vm": (ClouderVirtualMachineApp, ClouderVirtualMachineApp.description.splitlines()[0]),
     }
 
@@ -63,8 +34,6 @@ class ClouderApp(DatalayerApp):
 
     def start(self):
         super(ClouderApp, self).start()
-#        self.log.info("Clouder - Version %s - Cloud %s ", self.version, self.cloud)
-#        self.log.error(f"One of `{'` `'.join(ClouderApp.subcommands.keys())}` must be specified.")
         clouder_shell = ClouderShellApp(is_shell_command=False)
         clouder_shell.start()
 

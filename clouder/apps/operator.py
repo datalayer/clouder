@@ -1,22 +1,53 @@
-from .base import ClouderApp
+from datalayer.application import NoStart
 
-from ..operator.operations import (
-  start_operator, stop_operator, test_operator
-)
+from ..operator.operator import start_operator, stop_operator
+from .base import ClouderBaseApp
 
 
-class ClouderOperatorApp(ClouderApp):
+class ClouderOperatorStartApp(ClouderBaseApp):
+    """An application to start the operator."""
+
+    description = """
+      An application to start the operator
+    """
+
+    def start(self):
+        """Start the app."""
+        start_operator()
+        import time 
+        while True:
+            time.sleep(100)
+
+
+class ClouderOperatorStopApp(ClouderBaseApp):
+    """An application to stop the operator."""
+
+    description = """
+      An application to stop the operator
+    """
+
+    def start(self):
+        """Start the app."""
+        stop_operator()
+
+
+class ClouderOperatorApp(ClouderBaseApp):
     """An application to get you started with Clouder."""
 
     description = """
       Get you started with Clouder.
     """
 
+    subcommands = {
+        "stop": (ClouderOperatorStopApp, ClouderOperatorStopApp.description.splitlines()[0]),
+        "start": (ClouderOperatorStartApp, ClouderOperatorStartApp.description.splitlines()[0]),
+    }
+
     def start(self):
-        super().start()
-        self.log.info("Testing operator...")
-        start_operator()
-        test_operator()
-        import time
-        time.sleep(3)
-        stop_operator()
+        try:
+            super().start()
+            self.log.error(f"One of `{'` `'.join(ClouderOperatorApp.subcommands.keys())}` must be specified.")
+            self.exit(1)
+        except NoStart:
+            pass
+        self.exit(0)

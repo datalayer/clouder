@@ -1,30 +1,37 @@
-import { createRoot } from 'react-dom/client';
-import { Jupyter, JupyterLabApp, JupyterLabAppCorePlugins } from '@datalayer/jupyter-react';
+import { useState } from 'react';
+import { JupyterLab } from '@jupyterlab/application';
+import { Jupyter, JupyterLabApp, JupyterLabAppAdapter } from '@datalayer/jupyter-react';
+
+import * as lightThemeExtension from '@jupyterlab/theme-light-extension';
 import * as collaborationExtension from '@jupyter/collaboration-extension';
 import * as clouderExtension from './jupyterlab/index';
 
-const { extensionPromises, mimeExtensionPromises } = JupyterLabAppCorePlugins;
+const ClouderJupyterLabComponent = () => {
+  const [jupyterlab, setJupyterLab] = useState<JupyterLab>();
+  const onReady = (jupyterlabAdapter: JupyterLabAppAdapter) => {
+    setJupyterLab(jupyterlabAdapter.jupyterlab);
+  }
+  return (
+    <>
+      {jupyterlab && <></>}
+      <JupyterLabApp
+        extensions={[
+          lightThemeExtension,
+          collaborationExtension,
+          clouderExtension,
+        ]}
+        position="absolute"
+        height="100vh"
+        onReady={onReady}
+      />
+    </>
+  )
+}
 
-const ClouderJupyterLab = () => (
-  <JupyterLabApp
-    extensions={[
-      clouderExtension,
-      collaborationExtension,
-    ]}
-    extensionPromises={extensionPromises}
-    mimeExtensionPromises={mimeExtensionPromises}
-    hostId="jupyterlab-clouder-id"
-    position="absolute"
-    height="100vh"
-  />
-)
-
-const div = document.createElement('div');
-document.body.appendChild(div);
-const root = createRoot(div);
-
-root.render(
+export const ClouderJupyterLab = () => (
   <Jupyter startDefaultKernel={false} disableCssLoading={true}>
-    <ClouderJupyterLab/>
+    <ClouderJupyterLabComponent/>
   </Jupyter>
 );
+
+export default ClouderJupyterLab;

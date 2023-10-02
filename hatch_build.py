@@ -1,8 +1,7 @@
+import glob
 import os
-
-from subprocess import check_call
-
 import shutil
+from subprocess import check_call
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
@@ -16,13 +15,14 @@ def build_javascript():
         cwd=here,
     )
     check_call(
-        ['yarn', 'build:webpack'],
+        ['yarn', 'build:webpack', '--mode=production'],
         cwd=here,
     )
-    shutil.copyfile(
-        './dist/main.clouder.js',
-        './clouder/static/main.clouder.js'
-    )
+    for file in glob.glob(r'./dist/*.js'):
+        shutil.copy(
+            file,
+            './clouder/static/'
+        )
 
 
 class JupyterBuildHook(BuildHookInterface):

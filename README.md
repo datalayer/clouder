@@ -14,6 +14,70 @@ Clouder allows you to:
 - Take backup and restore for disaster recovery.
 - Share the cluster and give controlled access to other users.
 
+## Install
+
+```bash
+pip install clouder
+```
+
+```bash
+git clone https://github.com/datalayer/clouder && \
+  cd clouder && \
+  pip install -e .
+```
+
+## Use
+
+```bash
+clouder -h
+clouder about
+```
+
+```bash
+clouder setup
+clouder status
+```
+
+```bash
+# Start the Clouder operator.
+clouder operator start
+```
+
+```bash
+# Get account details.
+clouder me
+```
+
+```bash
+# Manage Projects.
+clouder projects list
+```
+
+```bash
+# Manage Keys.
+clouder keys list
+```
+
+```bash
+# Manage Virtual Machines.
+clouder vm list
+```
+
+```bash
+# Manage Kubernetes.
+clouder k8s list
+```
+
+```bash
+# Start the Clouder server.
+clouder server
+```
+
+```bash
+# Stop the Clouder operator.
+clouder operator stop
+```
+
 ## Develop
 
 ```bash

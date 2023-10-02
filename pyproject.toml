@@ -27,6 +27,7 @@ dependencies = [
     "datalayer",
     "kopf",
     "pykube_ng",
+    "sshkey-tools",
     "ovh",
     "rich",
 ]

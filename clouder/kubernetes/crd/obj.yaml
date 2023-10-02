@@ -1,0 +1,12 @@
+apiVersion: clouder.sh/v1
+kind: SSHKey
+metadata:
+  name: sshkey-1
+  labels:
+    somelabel: somevalue
+  annotations:
+    someannotation: somevalue
+spec:
+  items:
+  - key1
+  - key2
