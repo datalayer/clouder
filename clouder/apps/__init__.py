@@ -4,8 +4,8 @@ from .base import ClouderBaseApp
 from .config import ClouderConfigApp
 from .keys import ClouderKeysApp
 from .kubernetes import ClouderKubernetesApp
-from .me import ClouderMeApp
 from .operator import ClouderOperatorApp
+from .profile import ClouderProfileApp
 from .projects import ClouderProjectsApp
 from .setup import ClouderSetupApp
 from .shell import ClouderShellApp
@@ -18,7 +18,7 @@ __all__ = [
   ClouderConfigApp,
   ClouderKeysApp,
   ClouderKubernetesApp,
-  ClouderMeApp,
+  ClouderProfileApp,
   ClouderOperatorApp,
   ClouderProjectsApp,
   ClouderSetupApp,

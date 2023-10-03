@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import contextlib
 import threading
 
@@ -15,10 +16,17 @@ operator_stop_flag = threading.Event()
 
 THREAD = None
 
+def is_it_not_a_timer(record: logging.LogRecord) -> bool:
+    txt = record.getMessage()
+    return not txt.startswith("Timer ")
 
 @kopf.on.startup()
-def sshkey_startup(**_):
-    print('Clouder operator starting with handlers', sshkey)
+def configure(settings: kopf.OperatorSettings, logger, **_):
+#    kopf.configure(quiet=True)
+#    settings.posting.level = logging.ERROR
+    objlogger = logging.getLogger('kopf.objects')
+    objlogger.addFilter(is_it_not_a_timer)
+    logger.info('Clouder operator starting.')
 
 
 def kopf_thread(ready_flag: threading.Event, stop_flag: threading.Event):
@@ -30,14 +38,14 @@ def kopf_thread(ready_flag: threading.Event, stop_flag: threading.Event):
             ready_flag=ready_flag,
             stop_flag=stop_flag,
             memo=kopf.Memo(
-                create_tpl="Hello, {name}!",
-                delete_tpl="Good bye, {name}!",
+                create_tpl="Create tpl {name}.",
+                delete_tpl="Delete tpl {name}.",
             ),
         ))
 
 
 def start_operator():
-    print("Starting the operator.")
+    print("Starting the Clouder operator.")
     global THREAD
     THREAD = threading.Thread(
         target = kopf_thread,
@@ -51,6 +59,6 @@ def start_operator():
 
 
 def stop_operator():
-    print("Stopping the operator.")
+    print("Stopping the Clouder operator.")
     operator_stop_flag.set()
     THREAD.join()

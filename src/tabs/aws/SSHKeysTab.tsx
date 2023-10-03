@@ -10,7 +10,7 @@ const SSHKeysTab = (): JSX.Element => {
         </PageHeader.TitleArea>
       </PageHeader>
       <Box>
-        <Text>SSH keys.</Text>
+        <Text>SSH eys.</Text>
       </Box>
     </>
   );

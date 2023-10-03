@@ -7,6 +7,7 @@ metadata:
   annotations:
     someannotation: somevalue
 spec:
-  items:
-  - key1
-  - key2
+  project: a56bb1e272d5438aad6c84c5540906d8
+  regions:
+  - BSH
+  - SGB

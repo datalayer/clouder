@@ -28,18 +28,18 @@ spec:
               type: object
               x-kubernetes-preserve-unknown-fields: true
       additionalPrinterColumns:
-        - name: Duration
+        - name: Project
           type: string
           priority: 0
-          jsonPath: .spec.duration
-          description: For how long the pod should sleep.
+          jsonPath: .spec.project
+          description: The project the SSH Key is created on.
         - name: Children
           type: string
           priority: 0
-          jsonPath: .status.create_sskey_fn.children
+          jsonPath: .status.create_sshkey_fn.children
           description: The children pods created.
         - name: Message
           type: string
           priority: 0
-          jsonPath: .status.create_sskey_fn.message
+          jsonPath: .status.create_sshkey_handler.message
           description: As returned from the handler (sometimes).

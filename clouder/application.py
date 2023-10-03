@@ -2,7 +2,7 @@
 
 from ._version import __version__
 from .apps import (ClouderBaseApp, ClouderConfigApp, ClouderKeysApp,
-                   ClouderKubernetesApp, ClouderMeApp, ClouderOperatorApp,
+                   ClouderKubernetesApp, ClouderProfileApp, ClouderOperatorApp,
                    ClouderSetupApp, ClouderShellApp, ClouderStatusApp,
                    ClouderVirtualMachineApp, ClouderProjectsApp)
 
@@ -20,10 +20,10 @@ class ClouderApp(ClouderBaseApp):
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),
         "keys": (ClouderKeysApp, ClouderKeysApp.description.splitlines()[0]),
         "operator": (ClouderOperatorApp, ClouderOperatorApp.description.splitlines()[0]),
+        "profile": (ClouderProfileApp, ClouderProfileApp.description.splitlines()[0]),
         "setup": (ClouderSetupApp, ClouderSetupApp.description.splitlines()[0]),
         "sh": (ClouderShellApp, ClouderShellApp.description.splitlines()[0]),
         "status": (ClouderStatusApp, ClouderStatusApp.description.splitlines()[0]),
-        "me": (ClouderMeApp, ClouderMeApp.description.splitlines()[0]),
         "projects": (ClouderProjectsApp, ClouderProjectsApp.description.splitlines()[0]),
         "vm": (ClouderVirtualMachineApp, ClouderVirtualMachineApp.description.splitlines()[0]),
     }

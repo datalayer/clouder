@@ -4,8 +4,9 @@ from datalayer.application import NoStart
 
 from ..cloud.local.api import get_local_ssh_keys
 from ..cloud.ovh.api import get_ovh_projects, get_ovh_ssh_keys
-from ..operator.handlers.sshkey import (create_sshkeys, delete_sshkeys,
-                                        get_sshkeys)
+from ..operator.commands.sshkey import (create_clouder_sshkey,
+                                        delete_clouder_sshkey,
+                                        get_clouder_sshkeys)
 from .base import ClouderBaseApp
 
 
@@ -17,7 +18,7 @@ class KeysCreateApp(ClouderBaseApp):
     """
     def start(self):
         """Start the app."""
-        create_sshkeys()
+        create_clouder_sshkey("ssh-clouder-key-1")
 
 
 class KeysDeleteApp(ClouderBaseApp):
@@ -32,7 +33,7 @@ class KeysDeleteApp(ClouderBaseApp):
     """
     def start(self):
         """Start the app."""
-        delete_sshkeys()
+        delete_clouder_sshkey("ssh-clouder-key-1")
 
 
 class KeysListApp(ClouderBaseApp):
@@ -47,15 +48,13 @@ class KeysListApp(ClouderBaseApp):
         if len(self.extra_args) > 1:
             warnings.warn("Too many arguments were provided.")
             self.exit(1)
-        ssh_keys = get_sshkeys()
-        print(ssh_keys)
-        print('Local SSH keys')
-        print(get_local_ssh_keys())
+        print('Clouder SSH Keys', get_clouder_sshkeys())
+        print()
+        print('Local SSH Keys', get_local_ssh_keys())
         print()
         ovh_projects = get_ovh_projects()
         for ovh_project in ovh_projects:
-            print('OVHcloud project', ovh_project)
-            print('OVHcloud SSH keys', get_ovh_ssh_keys(ovh_project))
+            print('All SSH Keys in project', ovh_project, get_ovh_ssh_keys(ovh_project))
             print()
 
 

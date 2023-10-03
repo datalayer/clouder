@@ -11,8 +11,8 @@ Clouder allows you to:
 - Create and monitor Kubernetes clusters.
 - Manage Helm deployments.
 - Schedule the size of the Kubernetes clusters.
-- Take backup and restore for disaster recovery.
 - Share the cluster and give controlled access to other users.
+- Take backup and restore for disaster recovery.
 
 ## Install
 
@@ -26,7 +26,7 @@ git clone https://github.com/datalayer/clouder && \
   pip install -e .
 ```
 
-## Use
+## Start
 
 ```bash
 clouder -h
@@ -43,9 +43,11 @@ clouder status
 clouder operator start
 ```
 
+## Use
+
 ```bash
-# Get account details.
-clouder me
+# Get your profile details.
+clouder profile
 ```
 
 ```bash
@@ -55,7 +57,9 @@ clouder projects list
 
 ```bash
 # Manage Keys.
+clouder keys create
 clouder keys list
+clouder keys delete
 ```
 
 ```bash
@@ -72,6 +76,8 @@ clouder k8s list
 # Start the Clouder server.
 clouder server
 ```
+
+## Stop
 
 ```bash
 # Stop the Clouder operator.

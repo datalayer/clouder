@@ -8,7 +8,7 @@ from jupyter_server.extension.handler import ExtensionHandlerMixin
 
 from ..._version import __version__
 from ...cloud.ovh.api import get_ovh_projects, get_ovh_ssh_keys
-from ...operator.handlers.sshkey import get_sshkeys
+from ...operator.commands.sshkey import get_clouder_sshkeys
 
 
 class OVHKeysHandler(ExtensionHandlerMixin, APIHandler):
@@ -26,6 +26,6 @@ class OVHKeysHandler(ExtensionHandlerMixin, APIHandler):
             "success": True,
             "message": "List of OVHcloud keys.",
             "keys": keys,
-            "managed_keys": get_sshkeys(),
+            "managed_keys": get_clouder_sshkeys(),
         }, default=str)
         self.finish(res)

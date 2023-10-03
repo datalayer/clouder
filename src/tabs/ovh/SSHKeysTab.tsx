@@ -59,7 +59,7 @@ const SSHKeysTab = () => {
             Managed SSH Keys
           </Table.Title>
           <Table.Subtitle as="p" id="ssh-managed-keys-subtitle">
-            List of managed SSH keys.
+            List of managed SSH Keys.
           </Table.Subtitle>
           <DataTable
             aria-labelledby="ssh-managed-keys"
@@ -106,7 +106,7 @@ const SSHKeysTab = () => {
             All SSH Keys
           </Table.Title>
           <Table.Subtitle as="p" id="sshkeys-subtitle">
-            List of SSH keys.
+            List of SSH Keys.
           </Table.Subtitle>
           <DataTable
             aria-labelledby="sshkeys"

@@ -2,9 +2,8 @@
 
 import sys
 
-from .base import ClouderBaseApp
-
 from ..util.shell import run_command
+from .base import ClouderBaseApp
 
 
 class ClouderShellApp(ClouderBaseApp):
