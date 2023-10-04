@@ -7,9 +7,9 @@ import * as collaborationExtension from '@jupyter/collaboration-extension';
 import * as clouderExtension from './jupyterlab/index';
 
 const ClouderJupyterLabComponent = () => {
-  const [jupyterlab, setJupyterLab] = useState<JupyterLab>();
+  const [jupyterlab, setJupyterlab] = useState<JupyterLab>();
   const onReady = (jupyterlabAdapter: JupyterLabAppAdapter) => {
-    setJupyterLab(jupyterlabAdapter.jupyterlab);
+    setJupyterlab(jupyterlabAdapter.jupyterlab);
   }
   return (
     <>
