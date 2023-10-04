@@ -21,7 +21,7 @@ const ClouderJupyterLabHeadlessComponent = () => {
   }
   return (
     <>
-      {jupyterlab && <Clouder jupyterFrontEnd={jupyterlab}/>}
+      {jupyterlab && <Clouder jupyterFrontend={jupyterlab}/>}
       <JupyterLabApp
         extensions={[
           lightThemeExtension,
@@ -36,7 +36,7 @@ const ClouderJupyterLabHeadlessComponent = () => {
 }
 
 export const ClouderJupyterLabHeadless = () => (
-  <Jupyter startDefaultKernel={false} disableCssLoading={true}>
+  <Jupyter startDefaultKernel={false} disableCssLoading={true} collaborative={true}>
     <ThemeGlobalStyle />
     <ClouderJupyterLabHeadlessComponent/>
   </Jupyter>

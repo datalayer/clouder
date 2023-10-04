@@ -10,6 +10,7 @@ from ..._version import __version__
 from ...cloud.ovh.api import get_ovh_projects
 
 
+# pylint: disable=abstract-method
 class OVHProjectsHandler(ExtensionHandlerMixin, APIHandler):
     """The handler for OVHcloud."""
 

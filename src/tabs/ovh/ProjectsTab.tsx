@@ -37,7 +37,7 @@ const ProjectsTab = () => {
       <Box>
         <Table.Container>
           <Table.Title as="h2" id="projects">
-            Projects
+            OVHcloud Projects
           </Table.Title>
           <Table.Subtitle as="p" id="projects-subtitle">
             List of projects.

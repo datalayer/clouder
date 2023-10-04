@@ -11,21 +11,22 @@ from ...cloud.ovh.api import get_ovh_projects, get_ovh_ssh_keys
 from ...operator.commands.sshkey import get_clouder_sshkeys
 
 
+# pylint: disable=abstract-method
 class OVHKeysHandler(ExtensionHandlerMixin, APIHandler):
     """The handler for OVHcloud."""
 
     @tornado.web.authenticated
     def get(self):
-        """Returns the OVHcloud projects."""
+        """Returns the OVHcloud keys."""
         projects = get_ovh_projects()
-        keys = []
+        ssh_keys = []
         for project in projects:
             ssh_keys = get_ovh_ssh_keys(project)
-            keys.extend(ssh_keys)
+            ssh_keys.extend(ssh_keys)
         res = json.dumps({
             "success": True,
             "message": "List of OVHcloud keys.",
-            "keys": keys,
-            "managed_keys": get_clouder_sshkeys(),
+            "ssh_keys": ssh_keys,
+            "clouder_ssh_keys": get_clouder_sshkeys(),
         }, default=str)
         self.finish(res)

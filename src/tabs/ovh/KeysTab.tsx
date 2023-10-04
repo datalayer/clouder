@@ -11,13 +11,13 @@ type OvhSSHKey = {
   regions: string[];
 }
 
-const SSHKeysTab = () => {
-  const [sshKeys, setSSHKeys] = useState(new Array<OvhSSHKey>());
-  const [managedSSHKeys, setManagedSSHKeys] = useState(new Array<OvhSSHKey>());
+const KeysTab = () => {
+  const [allSSHKeys, setAllSSHKeys] = useState(new Array<OvhSSHKey>());
+  const [clouderSSHKeys, setClouderSSHKeys] = useState(new Array<OvhSSHKey>());
   useEffect(() => {
     requestAPI<any>('ovh/keys')
     .then(data => {
-      const sshKeys = (data.keys as [any]).map((key, id) => {
+      const allSSHKeys = (data.ssh_keys as [any]).map((key, id) => {
         return {
           id,
           name: key['name'],
@@ -25,20 +25,19 @@ const SSHKeysTab = () => {
           regions: key['regions']
         } as OvhSSHKey
       });
-      setSSHKeys(sshKeys);
-      const items = data.managed_keys['items'];
-      const managedSSHhKeys = (items as [any]).map((key, id) => {
-        const status = key.status.create_sskey_fn;
+      setAllSSHKeys(allSSHKeys);
+      const items = data.clouder_ssh_keys.items;
+      const clouderSSHhKeys = (items as [any]).map((key, id) => {
+        const status = key.status.create_sshkey_handler;
         return {
           id,
           name: status['name'],
           publicKey: status['publicKey'],
           fingerPrint: status['fingerPrint'],
-          regions: [], // key['regions']
+          regions: (status['regions'] as string).split(","),
         } as OvhSSHKey
       });
-      console.log('---', managedSSHKeys)
-      setManagedSSHKeys(managedSSHhKeys);
+      setClouderSSHKeys(clouderSSHhKeys);
     })
     .catch(reason => {
       console.error(
@@ -50,21 +49,21 @@ const SSHKeysTab = () => {
     <>
       <PageHeader>
         <PageHeader.TitleArea>
-          <PageHeader.Title>SSH Keys</PageHeader.Title>
+          <PageHeader.Title>Keys</PageHeader.Title>
         </PageHeader.TitleArea>
       </PageHeader>
       <Box mt={1}>
         <Table.Container>
-          <Table.Title as="h2" id="ssh-managed-keys">
-            Managed SSH Keys
+          <Table.Title as="h2" id="clouder-ssh-keys">
+            Clouder SSH Keys
           </Table.Title>
-          <Table.Subtitle as="p" id="ssh-managed-keys-subtitle">
-            List of managed SSH Keys.
+          <Table.Subtitle as="p" id="clouder-ssh-keys-subtitle">
+            List the Clouder SSH Keys.
           </Table.Subtitle>
           <DataTable
-            aria-labelledby="ssh-managed-keys"
-            aria-describedby="ssh-managed-keys-subtitle" 
-            data={managedSSHKeys}
+            aria-labelledby="clouder-ssh-keys"
+            aria-describedby="clouder-ssh-keys-subtitle" 
+            data={clouderSSHKeys}
             columns={[
               {
                 header: 'Name',
@@ -103,15 +102,15 @@ const SSHKeysTab = () => {
       <Box mt={1}>
         <Table.Container>
           <Table.Title as="h2" id="sshkeys">
-            All SSH Keys
+            All OVHcloud SSH Keys
           </Table.Title>
           <Table.Subtitle as="p" id="sshkeys-subtitle">
-            List of SSH Keys.
+            List all the SSH Keys.
           </Table.Subtitle>
           <DataTable
             aria-labelledby="sshkeys"
             aria-describedby="sshkeys-subtitle" 
-            data={sshKeys}
+            data={allSSHKeys}
             columns={[
               {
                 header: 'Name',
@@ -142,4 +141,4 @@ const SSHKeysTab = () => {
   )
 }
 
-export default SSHKeysTab;
+export default KeysTab;

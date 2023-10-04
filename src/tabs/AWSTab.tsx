@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Box, NavList } from '@primer/react';
 import { CloudVirtualMachineIcon, KeyOutlineIcon, KubernetesIcon } from '@datalayer/icons-react';
-import SSHKeysTab from './aws/SSHKeysTab';
+import KeysTab from './aws/KeysTab';
 import VirtualMachinesTab from './aws/VirtualMachinesTab';
 import KubernetesTab from './aws/KubernetesTab';
 
@@ -20,7 +20,7 @@ const AWSTab = () => {
               <NavList.LeadingVisual>
                 <KeyOutlineIcon/>
               </NavList.LeadingVisual>
-              SSH Keys
+              Keys
             </NavList.Item>
             <NavList.Item aria-current={nav === 2 ? 'page' : undefined} onClick={e => setNav(2)}>
               <NavList.LeadingVisual>
@@ -37,7 +37,7 @@ const AWSTab = () => {
           </NavList>
         </Box>
         <Box ml={3} sx={{ width: '100%'}}>
-          {(nav === 1) && <SSHKeysTab />}
+          {(nav === 1) && <KeysTab />}
           {(nav === 2) && <VirtualMachinesTab />}
           {(nav === 3) && <KubernetesTab />}
         </Box>

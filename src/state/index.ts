@@ -14,6 +14,6 @@ export class AppState {
   }
 }
 
-const appState = new AppState();
+const store = new AppState();
 
-export default appState;
+export default store;

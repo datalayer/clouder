@@ -6,6 +6,6 @@ from jupyter_server.extension.handler import ExtensionHandlerMixin, ExtensionHan
 from .._version import __version__
 
 
-# pylint: disable=W0223
+# pylint: disable=abstract-method
 class BaseTemplateHandler(ExtensionHandlerJinjaMixin, ExtensionHandlerMixin, JupyterHandler):
     """The Base handler for the templates."""

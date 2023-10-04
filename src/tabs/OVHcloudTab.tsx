@@ -2,10 +2,10 @@ import { Box, NavList } from '@primer/react';
 import { ProjectIcon } from '@primer/octicons-react';
 import { KeyOutlineIcon, CloudVirtualMachineIcon, KubernetesIcon } from '@datalayer/icons-react';
 import ProjectsTab from './ovh/ProjectsTab';
-import SSHKeysTab from './ovh/SSHKeysTab';
+import KeysTab from './ovh/KeysTab';
 import VirtualMachinesTab from './ovh/VirtualMachinesTab';
 import KubernetesTab from './ovh/KubernetesTab';
-import appState from "./../state";
+import store from "./../state";
 
 const OVHcloudTab = () => {
   return (
@@ -17,25 +17,25 @@ const OVHcloudTab = () => {
                 paddingTop: '0px',
               }
             }}>
-            <NavList.Item aria-current={appState.tab === 1.0 ? 'page' : undefined} onClick={e => appState.setTab(1.0)}>
+            <NavList.Item aria-current={store.tab === 1.0 ? 'page' : undefined} onClick={e => store.setTab(1.0)}>
               <NavList.LeadingVisual>
                 <ProjectIcon/>
               </NavList.LeadingVisual>
               Projects
             </NavList.Item>
-            <NavList.Item aria-current={appState.tab === 1.1 ? 'page' : undefined} onClick={e => appState.setTab(1.1)}>
+            <NavList.Item aria-current={store.tab === 1.1 ? 'page' : undefined} onClick={e => store.setTab(1.1)}>
               <NavList.LeadingVisual>
                 <KeyOutlineIcon/>
               </NavList.LeadingVisual>
-              SSH Keys
+              Keys
             </NavList.Item>
-            <NavList.Item aria-current={appState.tab === 1.2 ? 'page' : undefined} onClick={e => appState.setTab(1.2)}>
+            <NavList.Item aria-current={store.tab === 1.2 ? 'page' : undefined} onClick={e => store.setTab(1.2)}>
               <NavList.LeadingVisual>
                 <CloudVirtualMachineIcon/>
               </NavList.LeadingVisual>
               Machines
             </NavList.Item>
-            <NavList.Item aria-current={appState.tab === 1.3 ? 'page' : undefined} onClick={e => appState.setTab(1.3)}>
+            <NavList.Item aria-current={store.tab === 1.3 ? 'page' : undefined} onClick={e => store.setTab(1.3)}>
               <NavList.LeadingVisual>
                 <KubernetesIcon/>
               </NavList.LeadingVisual>
@@ -44,10 +44,10 @@ const OVHcloudTab = () => {
           </NavList>
         </Box>
         <Box ml={3} sx={{ width: '100%'}}>
-          {(appState.tab === 1.0) && <ProjectsTab />}
-          {(appState.tab === 1.1) && <SSHKeysTab />}
-          {(appState.tab === 1.2) && <VirtualMachinesTab />}
-          {(appState.tab === 1.3) && <KubernetesTab />}
+          {(store.tab === 1.0) && <ProjectsTab />}
+          {(store.tab === 1.1) && <KeysTab />}
+          {(store.tab === 1.2) && <VirtualMachinesTab />}
+          {(store.tab === 1.3) && <KubernetesTab />}
         </Box>
       </Box>
     </>

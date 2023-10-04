@@ -1,19 +1,19 @@
 import { Box, Text } from "@primer/react";
 import { PageHeader } from '@primer/react/drafts';
 
-const SSHKeysTab = (): JSX.Element => {
+const KeysTab = (): JSX.Element => {
   return (
     <>
       <PageHeader>
         <PageHeader.TitleArea>
-          <PageHeader.Title>SSH Keys</PageHeader.Title>
+          <PageHeader.Title>Keys</PageHeader.Title>
         </PageHeader.TitleArea>
       </PageHeader>
       <Box>
-        <Text>SSH eys.</Text>
+        <Text>Keys.</Text>
       </Box>
     </>
   );
 }
 
-export default SSHKeysTab;
+export default KeysTab;
