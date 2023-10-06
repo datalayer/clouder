@@ -30,21 +30,21 @@ const plugin: JupyterFrontEndPlugin<void> = {
   activate: (
     app: JupyterFrontEnd,
     palette: ICommandPalette,
-    settingRegistry: ISettingRegistry | null,
-    launcher: ILauncher,
+    settingRegistry?: ISettingRegistry,
+    launcher?: ILauncher,
     restorer?: ILayoutRestorer,
   ) => {
     const { commands } = app;
     if (!tracker) {
       tracker = new WidgetTracker<MainAreaWidget<ClouderWidget>>({
-        namespace: 'datalayer',
+        namespace: 'clouder',
       });
     }
     const command = CommandIDs.create;
     if (restorer) {
       void restorer.restore(tracker, {
         command,
-        name: () => 'datalayer',
+        name: () => 'clouder',
       });
     }
     commands.addCommand(command, {
@@ -57,6 +57,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         widget.title.label = 'Clouder';
         widget.title.icon = icon;
         app.shell.add(widget, 'main');
+        tracker.add(widget);
       }
     });
     const category = 'Datalayer';

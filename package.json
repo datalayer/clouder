@@ -75,12 +75,11 @@
     "@jupyterlab/coreutils": "6.0.3",
     "@jupyterlab/services": "7.0.3",
     "@jupyterlab/settingregistry": "4.0.3",
-    "mobx": "6.10.0",
-    "mobx-react": "9.0.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-is": "18.2.0",
-    "styled-components": "5.3.10"
+    "styled-components": "5.3.10",
+    "zustand": "4.4.1"
   },
   "devDependencies": {
     "@babel/core": "7.21.0",

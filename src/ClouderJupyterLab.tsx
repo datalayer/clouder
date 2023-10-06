@@ -7,13 +7,13 @@ import * as collaborationExtension from '@jupyter/collaboration-extension';
 import * as clouderExtension from './jupyterlab/index';
 
 const ClouderJupyterLabComponent = () => {
-  const [jupyterlab, setJupyterlab] = useState<JupyterLab>();
-  const onReady = (jupyterlabAdapter: JupyterLabAppAdapter) => {
-    setJupyterlab(jupyterlabAdapter.jupyterlab);
+  const [jupyterLab, setJupyterLab] = useState<JupyterLab>();
+  const onJupyterLab = (jupyterlabAdapter: JupyterLabAppAdapter) => {
+    setJupyterLab(jupyterlabAdapter.jupyterLab);
   }
   return (
     <>
-      {jupyterlab && <></>}
+      {jupyterLab && <></>}
       <JupyterLabApp
         extensions={[
           lightThemeExtension,
@@ -22,7 +22,7 @@ const ClouderJupyterLabComponent = () => {
         ]}
         position="absolute"
         height="100vh"
-        onReady={onReady}
+        onJupyterLab={onJupyterLab}
       />
     </>
   )

@@ -15,13 +15,13 @@ const ThemeGlobalStyle = createGlobalStyle<any>`
 `
 
 const ClouderJupyterLabHeadlessComponent = () => {
-  const [jupyterlab, setJupyterlab] = useState<JupyterLab>();
-  const onReady = (jupyterlabAdapter: JupyterLabAppAdapter) => {
-    setJupyterlab(jupyterlabAdapter.jupyterlab);
+  const [jupyterLab, setJupyterLab] = useState<JupyterLab>();
+  const onJupyterLab = (jupyterlabAdapter: JupyterLabAppAdapter) => {
+    setJupyterLab(jupyterlabAdapter.jupyterLab);
   }
   return (
     <>
-      {jupyterlab && <Clouder jupyterFrontend={jupyterlab}/>}
+      {jupyterLab && <Clouder jupyterFrontend={jupyterLab}/>}
       <JupyterLabApp
         extensions={[
           lightThemeExtension,
@@ -29,7 +29,7 @@ const ClouderJupyterLabHeadlessComponent = () => {
           collaborationExtension,
         ]}
         headless={true}
-        onReady={onReady}
+        onJupyterLab={onJupyterLab}
       />
     </>
   )

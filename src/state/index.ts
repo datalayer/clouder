@@ -1,19 +1,15 @@
-import { makeObservable, observable, action } from "mobx";
+import { create } from 'zustand';
 
-export class AppState {
+export type ZustandState = {
   tab: number;
-  constructor(tab: number = 0.0) {
-    makeObservable(this, {
-      tab: observable,
-      setTab: action,
-    });
-    this.tab = tab;
-  }
-  setTab(tab: number) {
-    this.tab = tab;
-  }
+  getIntTab: () => number;
+  setTab: (tab: number) => void,
 }
 
-const store = new AppState();
+export const useStore = create<ZustandState>((set, get) => ({
+  tab: 0.0,
+  getIntTab: () => Math.floor(get().tab),
+  setTab: (tab: number) => set((state: ZustandState) => ({ tab })),
+}));
 
-export default store;
+export default useStore;
