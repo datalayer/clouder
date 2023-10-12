@@ -34,6 +34,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     launcher?: ILauncher,
     restorer?: ILayoutRestorer,
   ) => {
+    app.version
     const { commands } = app;
     if (!tracker) {
       tracker = new WidgetTracker<MainAreaWidget<ClouderWidget>>({
