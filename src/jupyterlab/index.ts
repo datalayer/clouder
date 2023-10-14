@@ -2,7 +2,7 @@ import { JupyterFrontEnd, JupyterFrontEndPlugin, ILayoutRestorer } from '@jupyte
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 import { MainAreaWidget, ICommandPalette, WidgetTracker } from '@jupyterlab/apputils';
 import { ILauncher } from '@jupyterlab/launcher';
-import icon from '@datalayer/icons-react/data2/CloudGreyIconLabIcon';
+import icon from '@datalayer/icons-react/data2/CloudGreyIconJupyterLab';
 import { requestAPI } from './handler';
 import { ClouderWidget } from './widget';
 
@@ -90,7 +90,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         );
       }
     );
-    console.log('JupyterLab plugin @datalayer/clouder is activated!');
+    console.log('JupyterLab plugin @datalayer/clouder:plugin is activated.');
   }
 };
 
