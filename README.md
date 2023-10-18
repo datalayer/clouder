@@ -6,7 +6,13 @@
 
 > Create, manage and share Kubernetes clusters.
 
-Clouder allows you to:
+Clouder is a JupyterLab extension to interact with cloud services.
+
+Devops can manage SSH Keys, virtual machines and Kubernetes clusters.
+
+OVHcloud is supported for now. More cloud support is planned in subsequent Datalayer releases.
+
+Clouder aims to:
 
 - Create and monitor Kubernetes clusters.
 - Manage Helm deployments.
