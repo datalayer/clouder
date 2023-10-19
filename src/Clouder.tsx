@@ -9,7 +9,7 @@ import ClouderTab from './tabs/ClouderTab';
 import OVHcloudTab from './tabs/OVHcloudTab';
 import AWSTab from './tabs/AWSTab';
 import AboutTab from './tabs/AboutTab';
-import useStore from "./state";
+import useStore from "./state/zustand";
 
 import '@primer/react-brand/lib/css/main.css';
 

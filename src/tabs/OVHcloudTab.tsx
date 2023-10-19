@@ -5,7 +5,7 @@ import ProjectsTab from './ovh/ProjectsTab';
 import KeysTab from './ovh/KeysTab';
 import VirtualMachinesTab from './ovh/VirtualMachinesTab';
 import KubernetesTab from './ovh/KubernetesTab';
-import useStore from "./../state";
+import useStore from "../state/zustand";
 
 const OVHcloudTab = () => {
   const { tab, setTab } = useStore();

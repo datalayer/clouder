@@ -1,6 +1,6 @@
 import { Stack, Card } from '@primer/react-brand';
 import { OvhCloudIcon, AwsIcon, CloudGreyIcon } from '@datalayer/icons-react';
-import useStore from "../state";
+import useStore from "../state/zustand";
 
 const ClouderTab = (): JSX.Element => {
   const { setTab } = useStore();
