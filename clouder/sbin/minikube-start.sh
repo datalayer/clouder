@@ -94,7 +94,7 @@ clouder helm-deploy
 $BOLD
 K8S Dashboard$NOBOLD
 
-dla up minikube k8s-dashboard
+dla plane-up minikube k8s-dashboard
 clouder k8s-dashboard
 $BOLD
 Use Minikube Docker Process$NOBOLD
