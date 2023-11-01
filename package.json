@@ -71,10 +71,6 @@
   "dependencies": {
     "@datalayer/jupyter-react": "0.7.14",
     "@jupyter/collaboration-extension": "1.2.0",
-    "@jupyterlab/application": "4.0.3",
-    "@jupyterlab/coreutils": "6.0.3",
-    "@jupyterlab/services": "7.0.3",
-    "@jupyterlab/settingregistry": "4.0.3",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-is": "18.2.0",
