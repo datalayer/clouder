@@ -35,7 +35,7 @@ class ClouderConfigApp(ClouderBaseApp):
         try:
             super().start()
             self.log.info("Clouder - Version %s - Cloud %s ", super().version, super().cloud)
-            self.log.error(f"One of `{'` `'.join(ClouderConfigApp.subcommands.keys())}` must be specified.")
+            self.log.error(f"One of `{'`, `'.join(ClouderConfigApp.subcommands.keys())}` must be specified.")
             self.exit(1)
         except NoStart:
             pass

@@ -41,7 +41,7 @@ class ClouderVirtualMachineApp(ClouderBaseApp):
     def start(self):
         try:
             super().start()
-            self.log.error(f"One of `{'` `'.join(ClouderVirtualMachineApp.subcommands.keys())}` must be specified.")
+            self.log.error(f"One of `{'`, `'.join(ClouderVirtualMachineApp.subcommands.keys())}` must be specified.")
             self.exit(1)
         except NoStart:
             pass
