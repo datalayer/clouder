@@ -30,6 +30,7 @@ dependencies = [
     "sshkey-tools",
     "ovh",
     "rich",
+    "tabulate",
 ]
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 
