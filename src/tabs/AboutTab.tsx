@@ -15,7 +15,7 @@ const AboutTab = (props: Props): JSX.Element => {
       <Box>
         <Text>Create, manage and share Kubernetes clusters.</Text>
       </Box>
-      <Box mt={3} style={{height: 350}}>
+      <Box mt={3} style={{width: 350}}>
         {!egg ?
           <img src="https://assets.datalayer.tech/releases/datalayer-0.3.0-black-snake_1024.png" onClick={e => setEgg(true)}/>
             :
