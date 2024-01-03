@@ -90,14 +90,6 @@ module.exports = {
               href: 'https://datalayer.io',
             },
             {
-              label: 'Datalayer IO',
-              href: 'https://datalayer.io',
-            },
-            {
-              label: 'Datalayer Run',
-              href: 'https://datalayer.run',
-            },
-            {
               label: 'Datalayer Tech',
               href: 'https://datalayer.tech',
             },

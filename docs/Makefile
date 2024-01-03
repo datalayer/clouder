@@ -59,7 +59,7 @@ publish: build ## publish
 		--recursive \
 		--profile datalayer && \
 	  aws cloudfront create-invalidation \
-		--distribution-id E2HH170L55IOAN	 \
+		--distribution-id E2HH170L55IOAN \
 		--paths "/*" \
 		--profile datalayer && \
 	echo open ✨  https://clouder.sh )
