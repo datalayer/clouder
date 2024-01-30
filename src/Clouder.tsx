@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ThemeProvider, BaseStyles, Box } from '@primer/react';
-import { UnderlineNav } from '@primer/react/drafts';
+import { UnderlineNav } from '@primer/react';
 import { ThemeProvider as BrandThemeProvider } from '@primer/react-brand'
 import { CloudGreyIcon, OvhCloudIcon, AwsIcon } from '@datalayer/icons-react';
 import { JupyterFrontEnd } from '@jupyterlab/application';
