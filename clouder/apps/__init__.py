@@ -1,28 +1,25 @@
-"""The clouder applications."""
+"""The Clouder applications."""
 
-from .base import ClouderBaseApp
-from .config import ClouderConfigApp
-from .keys import ClouderKeysApp
-from .kubernetes import ClouderKubernetesApp
+from ._base import ClouderBaseApp
+from .context import ClouderContextApp
+from .k8s import ClouderKubernetesApp
+from .me import ClouderMeApp
 from .operator import ClouderOperatorApp
-from .profile import ClouderProfileApp
-from .projects import ClouderProjectsApp
-from .setup import ClouderSetupApp
-from .shell import ClouderShellApp
-from .status import ClouderStatusApp
+from .box import ClouderBoxApp
+from .run import ClouderRunSbinApp, ClouderRunShellApp
+from .ssh_key import ClouderSSHKeyApp
 from .virtual_machine import ClouderVirtualMachineApp
 
 # pylint: disable=invalid-all-object
 __all__ = [
   ClouderBaseApp,
-  ClouderConfigApp,
-  ClouderKeysApp,
+  ClouderContextApp,
   ClouderKubernetesApp,
-  ClouderProfileApp,
+  ClouderMeApp,
   ClouderOperatorApp,
-  ClouderProjectsApp,
-  ClouderSetupApp,
-  ClouderShellApp,
-  ClouderStatusApp,
+  ClouderBoxApp,
+  ClouderSSHKeyApp,
+  ClouderRunSbinApp,
+  ClouderRunShellApp,
   ClouderVirtualMachineApp,
 ]

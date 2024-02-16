@@ -8,12 +8,8 @@ echo
 
 export DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-
 echo $DIR
-
-qsdf
-
 
 kubectl apply -f $DIR/crd.yml
 echo
-kubectl describe crd sshkey.clouder.sh
+kubectl describe crd ssh-key.clouder.sh

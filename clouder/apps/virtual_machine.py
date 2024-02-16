@@ -1,20 +1,18 @@
-import warnings
+"""Clouder virtual machine application."""
 
-from pathlib import Path
+import warnings
 
 from datalayer.application import NoStart
 
-from .base import ClouderBaseApp
-
-
-SSH_FOLDER = Path.home() / ".ssh"
+from ._base import ClouderBaseApp
+from ..util.utils import SSH_FOLDER
 
 
 class VirtualMachineListApp(ClouderBaseApp):
     """An application to list the virtual machines."""
 
     description = """
-      An application to list the virtual machines
+      An application to list the virtual machines.
     """
 
     def start(self):
@@ -31,11 +29,11 @@ class ClouderVirtualMachineApp(ClouderBaseApp):
     """An application for the virtual machines."""
 
     description = """
-      Manage the virtual machines
+      Manage the virtual machines.
     """
 
     subcommands = {
-        "list": (VirtualMachineListApp, VirtualMachineListApp.description.splitlines()[0]),
+        "ls": (VirtualMachineListApp, VirtualMachineListApp.description.splitlines()[0]),
     }
 
     def start(self):

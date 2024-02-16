@@ -5,7 +5,7 @@ import threading
 
 import kopf
 
-from .handlers import sshkey
+from .handlers import ssh_key
 
 
 # registry = kopf.OperatorRegistry()

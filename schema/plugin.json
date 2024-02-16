@@ -1,7 +1,7 @@
 {
   "jupyter.lab.shortcuts": [],
-  "title": "@datalayer/clouder",
-  "description": "@datalayer/clouder settings.",
+  "title": "Clouder",
+  "description": "Clouder - Create, manage and share Kubernetes clusters.",
   "type": "object",
   "properties": {},
   "additionalProperties": false

@@ -1,41 +1,42 @@
 """Clouder application."""
 
 from ._version import __version__
-from .apps import (ClouderBaseApp, ClouderConfigApp, ClouderKeysApp,
-                   ClouderKubernetesApp, ClouderProfileApp, ClouderOperatorApp,
-                   ClouderSetupApp, ClouderShellApp, ClouderStatusApp,
-                   ClouderVirtualMachineApp, ClouderProjectsApp)
+from .apps._base import ClouderBaseApp
+from .apps import (ClouderBaseApp, ClouderContextApp,
+                   ClouderSSHKeyApp, ClouderRunSbinApp,
+                   ClouderKubernetesApp, ClouderOperatorApp,
+                   ClouderMeApp, ClouderRunShellApp,
+                   ClouderVirtualMachineApp, ClouderBoxApp)
 
 
 class ClouderApp(ClouderBaseApp):
     """The main Clouder application."""
 
     name = "clouder"
+
     description = """
       The main Clouder application.
     """
 
     subcommands = {
-        "config": (ClouderConfigApp, ClouderConfigApp.description.splitlines()[0]),
+        "context": (ClouderContextApp, ClouderContextApp.description.splitlines()[0]),
+        "box": (ClouderBoxApp, ClouderBoxApp.description.splitlines()[0]),
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),
-        "keys": (ClouderKeysApp, ClouderKeysApp.description.splitlines()[0]),
+        "me": (ClouderMeApp, ClouderMeApp.description.splitlines()[0]),
         "operator": (ClouderOperatorApp, ClouderOperatorApp.description.splitlines()[0]),
-        "profile": (ClouderProfileApp, ClouderProfileApp.description.splitlines()[0]),
-        "setup": (ClouderSetupApp, ClouderSetupApp.description.splitlines()[0]),
-        "sh": (ClouderShellApp, ClouderShellApp.description.splitlines()[0]),
-        "status": (ClouderStatusApp, ClouderStatusApp.description.splitlines()[0]),
-        "projects": (ClouderProjectsApp, ClouderProjectsApp.description.splitlines()[0]),
+        "sh": (ClouderRunShellApp, ClouderRunShellApp.description.splitlines()[0]),
+        "ssh-key": (ClouderSSHKeyApp, ClouderSSHKeyApp.description.splitlines()[0]),
         "vm": (ClouderVirtualMachineApp, ClouderVirtualMachineApp.description.splitlines()[0]),
     }
 
     def initialize(self, argv=None):
         """Subclass because the ExtensionApp.initialize() method does not take arguments"""
-        super().initialize()
+        super(ClouderApp, self).initialize(argv)
 
     def start(self):
         super(ClouderApp, self).start()
-        clouder_shell = ClouderShellApp(is_shell_command=False)
-        clouder_shell.start()
+        clouder_sbin = ClouderRunSbinApp()
+        clouder_sbin.start()
 
 
 # -----------------------------------------------------------------------------

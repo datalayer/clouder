@@ -1,14 +1,12 @@
 """Local API."""
-from pathlib import Path
 
-
-SSH_FOLDER = Path.home() / ".ssh"
+from ...util.utils import SSH_FOLDER
 
 
 def get_local_ssh_keys():
     """Get the local SSH Keys."""
-    keys = []
+    ssh_keys = []
     for file in SSH_FOLDER.iterdir():
         if file.name.endswith(".pub"):
-            keys.append(file.name.replace(".pub", ""))
-    return keys
+            ssh_keys.append(file.name.replace(".pub", ""))
+    return ssh_keys

@@ -6,4 +6,4 @@
 echo -e $BOLD$YELLOW"Apply CRD"$NOCOLOR$NOBOLD
 echo
 
-kubectl apply -f $CLOUDER_SBIN/../operator/crd/sshkeys.yaml
+kubectl apply -f $CLOUDER_SBIN/../operator/crd/ssh-keys.yaml

@@ -1,0 +1,13 @@
+apiVersion: clouder.sh/v1
+kind: SSHKey
+metadata:
+  name: ssh-key-1
+  labels:
+    somelabel: somevalue
+  annotations:
+    someannotation: somevalue
+spec:
+  project: a56bb1e272d5438aad6c84c5540906d8
+  regions:
+  - BSH
+  - SGB

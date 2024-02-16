@@ -6,7 +6,7 @@ from jupyter_server.extension.application import (ExtensionApp,
                                                   ExtensionAppJinjaMixin)
 from jupyter_server.utils import url_path_join
 
-from .handlers import (ConfigHandler, IndexHandler, OVHKeysHandler,
+from .handlers import (ConfigHandler, IndexHandler, OVHSSHKeysHandler,
                        OVHProjectsHandler)
 
 DEFAULT_STATIC_FILES_PATH = os.path.join(os.path.dirname(__file__), "./static")
@@ -14,7 +14,7 @@ DEFAULT_STATIC_FILES_PATH = os.path.join(os.path.dirname(__file__), "./static")
 DEFAULT_TEMPLATE_FILES_PATH = os.path.join(os.path.dirname(__file__), "./templates")
 
 
-class ClouderApp(ExtensionAppJinjaMixin, ExtensionApp):
+class ClouderServerApp(ExtensionAppJinjaMixin, ExtensionApp):
     """The Jupyter Server extension."""
 
     name = "clouder"
@@ -34,7 +34,7 @@ class ClouderApp(ExtensionAppJinjaMixin, ExtensionApp):
             ("clouder", IndexHandler),
             (url_path_join("clouder", "config"), ConfigHandler),
             (url_path_join("clouder", "ovh", "projects"), OVHProjectsHandler),
-            (url_path_join("clouder", "ovh", "keys"), OVHKeysHandler),
+            (url_path_join("clouder", "ovh", "keys"), OVHSSHKeysHandler),
         ]
         self.handlers.extend(handlers)
 
@@ -43,4 +43,4 @@ class ClouderApp(ExtensionAppJinjaMixin, ExtensionApp):
 # Main entry point
 # -----------------------------------------------------------------------------
 
-main = launch_new_instance = ClouderApp.launch_instance
+main = launch_new_instance = ClouderServerApp.launch_instance

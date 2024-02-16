@@ -1,8 +1,10 @@
+"""Clouder operator application."""
+
 from datalayer.application import NoStart
 
 from ..operator.operator import start_operator, stop_operator
-from ..util.shell import run_command
-from .base import ClouderBaseApp
+from ..util.utils import run_sbin_direct
+from ._base import ClouderBaseApp
 
 
 class ClouderOperatorStartApp(ClouderBaseApp):
@@ -24,7 +26,7 @@ class ClouderOperatorStopApp(ClouderBaseApp):
     """An application to stop the operator."""
 
     description = """
-      An application to stop the operator
+      An application to stop the operator.
     """
 
     def start(self):
@@ -41,7 +43,8 @@ class ClouderOperatorCRDApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        run_command(["", "", "crd-apply"])
+        run_sbin_direct(["", "", "crd-apply"])
+
 
 class ClouderOperatorApp(ClouderBaseApp):
     """An application to get you started with Clouder."""
@@ -51,9 +54,9 @@ class ClouderOperatorApp(ClouderBaseApp):
     """
 
     subcommands = {
-        "stop": (ClouderOperatorStopApp, ClouderOperatorStopApp.description.splitlines()[0]),
-        "start": (ClouderOperatorStartApp, ClouderOperatorStartApp.description.splitlines()[0]),
         "crd": (ClouderOperatorCRDApp, ClouderOperatorCRDApp.description.splitlines()[0]),
+        "start": (ClouderOperatorStartApp, ClouderOperatorStartApp.description.splitlines()[0]),
+        "stop": (ClouderOperatorStopApp, ClouderOperatorStopApp.description.splitlines()[0]),
     }
 
     def start(self):

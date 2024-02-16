@@ -1,15 +1,16 @@
 {
   "name": "@datalayer/clouder",
   "version": "0.0.6",
-  "description": "☁️ Clouder.",
+  "description": "☁️ Clouder - Create, manage and share Kubernetes clusters.",
   "keywords": [
     "clouder",
+    "datalayer",
     "jupyter",
     "jupyterlab",
     "jupyterlab-extension",
     "kubernetes",
     "operator",
-    "datalayer"
+    "share"
   ],
   "homepage": "https://github.com/datalayer/clouder",
   "bugs": {
@@ -237,6 +238,7 @@
     },
     "extension": "./lib/jupyterlab/index.js",
     "outputDir": "clouder/labextension",
+    "webpackConfig": "./webpack.lab-config.js",
     "schemaDir": "schema"
   },
   "jupyter-releaser": {

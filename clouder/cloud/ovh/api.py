@@ -1,19 +1,18 @@
 """
 OVHcloud API.
-
-- https://api.ovh.com/console/
-- https://api.ovh.com/console/#/cloud
 """
 
 import datetime
-
+import ovh
 from tabulate import tabulate
 
-import ovh
+from ...util.utils import OVH_CONFIG_FILE
 
 ###
 
-ovh_client = ovh.Client()
+ovh_client = ovh.Client(
+  config_file=OVH_CONFIG_FILE
+)
 
 ###
 
@@ -109,24 +108,49 @@ def delete_ovh_ssh_key(project_name, key_id):
 
 ### Kubernetes.
 
-def create_ovh_kubernetes(project_name):
-    return ovh_client.post(f'/cloud/project/{project_name}/kube',
-        name         = "kube-1",
-        version      = "8",
-        plan         = "essential",
-        nodesList    = [
+"""
+        nodepool    = [
             {
-                "flavor": "db1-7",
-                "region": "BHS"
+                "desiredNodes": 1,
+                "minNodes": 1,
+                "maxNodes": 1,
+                "name": "datalayer-router",
+                "flavorName": "b2-7",
+                "region": "BHS5",
             }
         ]
+"""
+def create_ovh_kubernetes(project_id, kubernetes_name):
+    return ovh_client.post(f'/cloud/project/{project_id}/kube',
+        name         = kubernetes_name,
+        version      = "1.28",
+        region       = "BHS5",
     )
+
+def get_ovh_kubernetess(project_id):
+    return ovh_client.get(f'/cloud/project/{project_id}/kube')
+
+def get_ovh_kubernetes(project_id, kubernetes_id):
+    return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}')
+
+def get_ovh_kubernetes_nodepools(project_id, kubernetes_id):
+    return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool')
+
+def get_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_id):
+    return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool/{nodepool_id}')
+
+def get_ovh_kubernetes_nodepool_nodes(project_id, kubernetes_id, nodepool_id):
+    return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool/{nodepool_id}/nodes')
 
 ### Projects.
 
 def get_ovh_projects():
     """Get the OVHcloud projects."""
     return ovh_client.get(f'/cloud/project')
+
+def get_ovh_project(project_id):
+    """Get the OVHcloud project."""
+    return ovh_client.get(f'/cloud/project/{project_id}')
 
 ### Applications.
 
@@ -174,7 +198,6 @@ def get_ovh_mysql_database(project):
             }
         ]
     )
-
 
 def get_ovh_mysql_databases(project):
     mysqls = ovh_client.get(f'/cloud/project/{project}/database/mysql')

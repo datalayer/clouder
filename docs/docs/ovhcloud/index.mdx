@@ -1,0 +1,160 @@
+# OVHcloud
+
+## Requirements
+
+Create a [free OVH account](https://www.ovhcloud.com/en/lp/public-cloud-trial) if you don't have one yet.
+
+You have to manually [create your cloud projects](https://support.us.ovhcloud.com/hc/en-us/articles/360002245784-Creating-Your-First-Public-Cloud-Project) to be able to create and manage cloud resources.
+
+## API
+
+Useful links to interact with the OVHcloud API.
+
+- [API Landing page](https://api.ovh.com).
+- [API Console](https://api.ovh.com/console).
+- [API Console (Cloud methods)](https://api.ovh.com/console/#/cloud).
+- [API Console New (Preview)](https://eu.api.ovh.com/console-preview).
+- [API Documentation](https://docs.ovh.com/gb/en/api/first-steps-with-ovh-api).
+
+API Endpoints by region.
+
+```bash
+ovh-eu          https://eu.api.ovh.com/v2
+ovh-us          https://api.us.ovhcloud.com/v2
+ovh-ca          https://ca.api.ovh.com/v2
+kimsufi-eu      https://eu.api.kimsufi.com/v2
+kimsufi-ca      https://ca.api.kimsufi.com/v2
+soyoustart-eu   https://eu.api.soyoustart.com/v2
+soyoustart-ca   https://ca.api.soyoustart.com/v2
+```
+
+## Application Create Token
+
+Get your credentials from one the following URL.
+
+- https://www.ovh.com/auth/api/createToken
+- https://api.ovh.com/createToken/?GET=/me
+- https://api.ovh.com/createToken/?GET=/me
+- https://api.ovh.com/createToken/?GET=/*&POST=/*&PUT=/*&DELETE=/*
+
+Once created, you will obtain.
+
+- APPLICATION_KEY (Application Key).
+- APPLICATION_SECRET (Application Secret).
+- CONSUMER_KEY (Consumer Key).
+
+## Application Create App
+
+Register an application.
+
+- https://www.ovh.com/auth/api/createApp
+
+Once created, you will obtain.
+
+- APPLICATION_KEY (Application Key).
+- APPLICATION_SECRET (Application Secret).
+
+You still need a Consumer Key (CONSUMER_KEY). Create one with the following command.
+
+```bash
+curl -X POST \
+  -H "X-Ovh-Application: ${APPLICATION_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "accessRules" :
+      [
+        {"method": "GET","path":"/*"},
+        {"method": "POST","path":"/*"},
+        {"method": "DELETE","path":"/*"},
+        {"method": "PUT","path":"/*"}
+    ],
+    "redirection" : "http://ovh.com"
+  }' \
+  https://eu.api.ovh.com/1.0/auth/credential
+```
+
+This will return a JSON like below with your Consumer Key (CONSUMER_KEY) `consumerKey` and a Validation URL `validationUrl`. Follow the `validationUrl` link to validate your key.
+
+```json
+{
+  "validationUrl": "https://eu.api.ovh.com/auth/?credentialToken=fIDK6KCVHfEMuSTP3LV84D3CsHTq4T3BhOrmEEdd2hQ0CNcfVgGVWZRqIlolDJ3W",
+  "consumerKey": "y7epYeHCIqoO17BzBgxluvB4XLedpba9",
+  "state": "pendingValidation"
+}
+```
+
+## Python Client
+
+[Configure your connection](https://github.com/ovh/python-ovh#configuration).
+
+The easiest and safest way to use your application's credentials is to create an `ovh.conf` configuration file in application's working directory.
+
+```conf
+[default]
+; general configuration: default endpoint
+endpoint=ovh-eu
+
+[ovh-eu]
+; configuration specific to 'ovh-eu' endpoint
+application_key=my_app_key
+application_secret=my_application_secret
+; uncomment following line when writing a script application with a single consumer key.
+consumer_key=my_consumer_key
+```
+
+The Python OVHcloud library will first look for direct instantiation parameters then `OVH_ENDPOINT`, `OVH_APPLICATION_KEY`, `OVH_APPLICATION_SECRET` and `OVH_CONSUMER_KEY` environment variables.
+
+If either of these parameter is not provided, Clouder will look for the configuration file in `~/.clouder/ovh/ovh.conf`.
+
+## CURL Client
+
+For managing API Keys, an API Key is required...
+
+```bash
+# https://eu.api.ovh.com/createToken/?GET=/me/api/application&POST=/me/api/application/*&PUT=/me/api/application/*&DELETE=/me/api/application/*
+APPLICATION_KEY="...."
+APPLICATION_SECRET="...."
+CONSUMER_KEY="...."
+```
+
+```bash
+# Application ids list.
+# GET /me/api/application
+METHOD=GET
+QUERY="https://eu.api.ovh.com/1.0/me/api/application"
+BODY=""
+TIMESTAMP=$(date +%s)
+SHA=$(echo -n $APPLICATION_SECRET+$CONSUMER_KEY+$METHOD+$QUERY+$BODY+$TIMESTAMP | shasum | cut -d ' ' -f 1)
+SIGNATURE="\$1\$$SHA"
+curl -X $METHOD -H "Content-type: application/json" -H "X-Ovh-Application: $APPLICATION_KEY" -H "X-Ovh-Consumer: $CONSUMER_KEY" -H "X-Ovh-Signature: $SIGNATURE" -H "X-Ovh-Timestamp: $TIMESTAMP" $QUERY
+# Response
+# [...,...]
+```
+
+```bash
+# Application detail by id.
+# GET /me/api/application/{id}
+METHOD=GET
+ID=...
+QUERY="https://eu.api.ovh.com/1.0/me/api/application/$ID"
+BODY=""
+TIMESTAMP=$(date +%s)
+SHA=$(echo -n $APPLICATION_SECRET+$CONSUMER_KEY+$METHOD+$QUERY+$BODY+$TIMESTAMP | shasum | cut -d ' ' -f 1)
+SIGNATURE="\$1\$$SHA"
+curl -X $METHOD -H "Content-type: application/json" -H "X-Ovh-Application: $APPLICATION_KEY" -H "X-Ovh-Consumer: $CONSUMER_KEY" -H "X-Ovh-Signature: $SIGNATURE" -H "X-Ovh-Timestamp: $TIMESTAMP" $QUERY
+# Response
+# {"applicationKey":"...","applicationId":..., "description":"...","name":"...","status":"active"}
+```
+
+```bash
+# Delete API Key.
+# DELETE /me/api/application/{id}
+METHOD=DELETE
+ID=...
+QUERY="https://eu.api.ovh.com/1.0/me/api/application/$ID"
+BODY=""
+TIMESTAMP=$(date +%s)
+SHA=$(echo -n $APPLICATION_SECRET+$CONSUMER_KEY+$METHOD+$QUERY+$BODY+$TIMESTAMP | shasum | cut -d ' ' -f 1)
+SIGNATURE="\$1\$$SHA"
+curl -X $METHOD -H "Content-type: application/json" -H "X-Ovh-Application: $APPLICATION_KEY" -H "X-Ovh-Consumer: $CONSUMER_KEY" -H "X-Ovh-Signature: $SIGNATURE" -H "X-Ovh-Timestamp: $TIMESTAMP" $QUERY
+```
