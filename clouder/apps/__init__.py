@@ -9,7 +9,7 @@ from .box import ClouderBoxApp
 from .run import ClouderRunSbinApp, ClouderRunShellApp
 from .s3 import ClouderS3App
 from .ssh_key import ClouderSSHKeyApp
-from .virtual_machine import ClouderVirtualMachineApp
+from .vm import ClouderVirtualMachineApp
 
 # pylint: disable=invalid-all-object
 __all__ = [
