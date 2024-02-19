@@ -7,6 +7,7 @@ from .me import ClouderMeApp
 from .operator import ClouderOperatorApp
 from .box import ClouderBoxApp
 from .run import ClouderRunSbinApp, ClouderRunShellApp
+from .s3 import ClouderS3App
 from .ssh_key import ClouderSSHKeyApp
 from .virtual_machine import ClouderVirtualMachineApp
 
@@ -18,6 +19,7 @@ __all__ = [
   ClouderMeApp,
   ClouderOperatorApp,
   ClouderBoxApp,
+  ClouderS3App,
   ClouderSSHKeyApp,
   ClouderRunSbinApp,
   ClouderRunShellApp,

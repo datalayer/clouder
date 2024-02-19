@@ -106,6 +106,16 @@ def create_ovh_ssh_key(project_id, key_name, public_key):
 def delete_ovh_ssh_key(project_name, key_id):
     return ovh_client.delete(f'/cloud/project/{project_name}/sshkey/{key_id}')
 
+### S3.
+
+def create_ovh_s3(project_id, s3_name, region_name):
+    return ovh_client.post(f'/cloud/project/{project_id}/region/{region_name}/storage',
+        name         = s3_name,
+    )
+
+def get_ovh_s3(project_id, region_name):
+    return ovh_client.get(f'/cloud/project/{project_id}/region/{region_name}/storage')
+
 ### Kubernetes.
 
 def create_ovh_kubernetes(project_id, kubernetes_name):

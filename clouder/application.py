@@ -5,7 +5,7 @@ from .apps._base import ClouderBaseApp
 from .apps import (ClouderBaseApp, ClouderContextApp,
                    ClouderSSHKeyApp, ClouderRunSbinApp,
                    ClouderKubernetesApp, ClouderOperatorApp,
-                   ClouderMeApp, ClouderRunShellApp,
+                   ClouderMeApp, ClouderRunShellApp, ClouderS3App,
                    ClouderVirtualMachineApp, ClouderBoxApp)
 
 
@@ -25,6 +25,7 @@ class ClouderApp(ClouderBaseApp):
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),
         "me": (ClouderMeApp, ClouderMeApp.description.splitlines()[0]),
         "operator": (ClouderOperatorApp, ClouderOperatorApp.description.splitlines()[0]),
+        "s3": (ClouderS3App, ClouderS3App.description.splitlines()[0]),
         "sh": (ClouderRunShellApp, ClouderRunShellApp.description.splitlines()[0]),
         "ssh-key": (ClouderSSHKeyApp, ClouderSSHKeyApp.description.splitlines()[0]),
         "vm": (ClouderVirtualMachineApp, ClouderVirtualMachineApp.description.splitlines()[0]),
