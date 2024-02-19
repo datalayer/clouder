@@ -108,23 +108,40 @@ def delete_ovh_ssh_key(project_name, key_id):
 
 ### Kubernetes.
 
-"""
-        nodepool    = [
-            {
-                "desiredNodes": 1,
-                "minNodes": 1,
-                "maxNodes": 1,
-                "name": "datalayer-router",
-                "flavorName": "b2-7",
-                "region": "BHS5",
-            }
-        ]
-"""
 def create_ovh_kubernetes(project_id, kubernetes_name):
     return ovh_client.post(f'/cloud/project/{project_id}/kube',
         name         = kubernetes_name,
         version      = "1.28",
         region       = "BHS5",
+    )
+
+"""
+template = {
+    "metadata": {
+        "annotations": {},
+        "finalizers": [],
+        "labels": {
+            "datalayer.io/role": "jupyter",
+            "datalayer.io/xpu": "cpu",
+        }
+    },
+    "spec": {
+        "taints": {},
+        "unschedulable": False,
+    }
+}
+"""
+def create_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_name, desiredNodes, minNodes, maxNodes,
+                                   template, flavorName="b2-7", autoscale=False, monthlyBilled=False):
+    return ovh_client.post(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool',
+        name          = nodepool_name,
+        desiredNodes  = desiredNodes,
+        minNodes      = minNodes,
+        maxNodes      = maxNodes,
+        flavorName    = flavorName,
+        autoscale     = autoscale,
+        monthlyBilled = monthlyBilled,
+        template      = template,
     )
 
 def get_ovh_kubernetess(project_id):

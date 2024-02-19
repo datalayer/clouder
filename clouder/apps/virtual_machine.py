@@ -17,8 +17,8 @@ class VirtualMachineListApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        if len(self.extra_args) > 1:  # pragma: no cover
-            warnings.warn("Too many arguments were provided.")
+        if len(self.extra_args) != 0:
+            warnings.warn("Please provide the expected arguments.")
             self.exit(1)
         for file in SSH_FOLDER.iterdir():
             if file.name.endswith(".pub"):

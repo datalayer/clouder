@@ -23,8 +23,8 @@ class ClouderBoxInfoApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        if len(self.extra_args) > 2:
-            warnings.warn("Too many arguments were provided.")
+        if len(self.extra_args) != 2:
+            warnings.warn("Please provide the expected arguments.")
             self.exit(1)
 #        box_id = self.extra_args[0]
         app = ClouderKubernetesListApp()
@@ -40,8 +40,8 @@ class ClouderBoxListApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        if len(self.extra_args) > 1:
-            warnings.warn("Too many arguments were provided.")
+        if len(self.extra_args) != 0:
+            warnings.warn("Please provide the expected arguments.")
             self.exit(1)
         boxes = get_ovh_projects()
         table = Table(title="OVHcloud Projects")

@@ -92,7 +92,7 @@ class ClouderContextSetApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        if len(self.extra_args) != 2:  # pragma: no cover
+        if len(self.extra_args) != 2:
             warnings.warn("You should provide a cloud and a box_id.")
             self.exit(1)
         cloud = self.extra_args[0]
@@ -116,7 +116,7 @@ class ClouderContextRemoveApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        if len(self.extra_args) != 2:  # pragma: no cover
+        if len(self.extra_args) != 2:
             warnings.warn("You should provide a cloud and a box_id.")
             self.exit(1)
         cloud = self.extra_args[0]
