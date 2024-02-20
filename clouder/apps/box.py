@@ -38,6 +38,8 @@ class ClouderBoxListApp(ClouderBaseApp):
       An application to list the boxes.
     """
 
+    _boxes = []
+
     def start(self):
         """Start the app."""
         if len(self.extra_args) != 0:
@@ -52,6 +54,7 @@ class ClouderBoxListApp(ClouderBaseApp):
         table.add_column("IAM URN", justify="left", style="purple")
         for box_id in boxes:
             box = get_ovh_project(box_id)
+            self._boxes.append(box)
             iam = box["iam"]
             table.add_row(
                 "ovh",

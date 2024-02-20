@@ -11,3 +11,30 @@ Create, manage and share Kubernetes clusters.
 - Schedule the size of the Kubernetes clusters.
 - Share the cluster and give controlled access to other users.
 - Take backup and restore for disaster recovery.
+
+## Install
+
+```bash
+pip install clouder
+```
+
+## Develop
+
+```bash
+git clone https://github.com/datalayer/clouder && \
+  cd clouder && \
+  pip install -e .
+```
+
+```bash
+pip install -e .[test]
+jupyter labextension develop . --overwrite
+jupyter labextension list
+jupyter server extension list
+# open http://localhost:8888/lab?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
+yarn jupyterlab
+```
+
+## Releases
+
+Clouder is released in [PyPI](https://pypi.org/project/clouder).

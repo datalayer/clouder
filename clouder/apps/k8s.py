@@ -46,19 +46,21 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
 
     def start(self):
         """Start the app."""
-        if len(self.extra_args) != 2:
+        if len(self.extra_args) != 4:
             warnings.warn("Please provide the expected arguments.")
             self.exit(1)
         (_, box_id) = get_default_context()
         kubernetes_id = self.extra_args[0]
         nodepool_name = self.extra_args[1]
+        datalayer_role = self.extra_args[2]
+        xpu = self.extra_args[3]
         template = {
             "metadata": {
                 "annotations": {},
                 "finalizers": [],
                 "labels": {
-                    "datalayer.io/role": "jupyter",
-                    "datalayer.io/xpu": "cpu",
+                    "datalayer.io/role": datalayer_role,
+                    "datalayer.io/xpu": xpu,
                 }
             },
             "spec": {

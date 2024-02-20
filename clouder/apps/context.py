@@ -1,5 +1,6 @@
 """Clouder context application."""
 
+import sys
 import warnings
 import yaml
 
@@ -11,22 +12,25 @@ from ._base import ClouderBaseApp
 from ..cloud.ovh.api import get_ovh_project
 from ..util.utils import CLOUDER_CONTEXT_FILE
 
+
 DEFAULT_BOX_SEPARATOR = ":::"
 
-def load_context():
-    if not CLOUDER_CONTEXT_FILE.is_file():
-        context = yaml.safe_load(f"""
+"""
 clouder:
     version: 1.0.0
     default_box: ovh${DEFAULT_BOX_SEPARATOR}ovh-1
     boxes:
         aws:
-          aws-1:
-            name: aws-account-1
+          aws-id-1:
+            name: aws-account-name-1
         ovh:
-          ovh-1:
-            name: ovh-project-1
-""")
+          ovh-id-1:
+            name: ovh-project-name-1
+"""
+def load_context():
+    if not CLOUDER_CONTEXT_FILE.is_file():
+        warnings.warn("You should init a context - run `clouder context init`.")
+        sys.exit(1)
     else:
         with open(CLOUDER_CONTEXT_FILE, 'r') as file:
             context = yaml.safe_load(file)
@@ -131,6 +135,38 @@ class ClouderContextRemoveApp(ClouderBaseApp):
         print_context(context)
 
 
+class ClouderContextInitApp(ClouderBaseApp):
+    """An application to init the context."""
+
+    description = """
+      An application to init the context.
+    """
+
+    def start(self):
+        """Start the app."""
+        from .box import ClouderBoxListApp
+        if len(self.extra_args) != 0:
+            warnings.warn("You should provide a cloud and a box_id.")
+            self.exit(1)
+        app = ClouderBoxListApp()
+        app.start()
+        context = yaml.safe_load(f"""
+clouder:
+    version: 1.0.0
+    default_box:
+    boxes:
+        ovh:
+            pid:
+                name: pname
+""")
+        boxes = app._boxes
+        for box in boxes:
+            context["clouder"]["boxes"]["ovh"][box["project_id"]] = {
+                "name" : box["description"]
+            }
+        save_context(context)
+
+
 class ClouderContextApp(ClouderBaseApp):
     """An application for the context."""
 
@@ -139,6 +175,7 @@ class ClouderContextApp(ClouderBaseApp):
     """
 
     subcommands = {
+        "init": (ClouderContextInitApp, ClouderContextInitApp.description.splitlines()[0]),
         "ls": (ClouderContextListApp, ClouderContextListApp.description.splitlines()[0]),
         "rm": (ClouderContextRemoveApp, ClouderContextRemoveApp.description.splitlines()[0]),
         "set": (ClouderContextSetApp, ClouderContextSetApp.description.splitlines()[0]),

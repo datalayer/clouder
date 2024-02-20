@@ -6,13 +6,7 @@
 
 > Create, manage and share Kubernetes clusters.
 
-Clouder is a JupyterLab extension to interact with cloud services.
-
-Devops can manage SSH Keys, virtual machines and Kubernetes clusters.
-
-OVHcloud is supported for now. More cloud support is planned in subsequent Datalayer releases.
-
-Clouder aims to:
+Clouder is a CLI and JupyterLab extension to interact with cloud services. Devops can manage Kubernetes clusters, SSH Keys, virtual machines, S3 buckets on multiple clouds in a seamless way. Clouder provides advanced collaboration and cost optimisation features:
 
 - Create and monitor Kubernetes clusters.
 - Manage Helm deployments.
@@ -20,87 +14,10 @@ Clouder aims to:
 - Share the cluster and give controlled access to other users.
 - Take backup and restore for disaster recovery.
 
-## Install
+AWS and OVHcloud are supported for now. Support of other cloud is planned in subsequent Datalayer releases.
 
-```bash
-pip install clouder
-```
+Read more on the [Clouder documentation](https://clouder.sh) website.
 
-```bash
-git clone https://github.com/datalayer/clouder && \
-  cd clouder && \
-  pip install -e .
-```
+# TODO
 
-## Start
-
-```bash
-clouder -h
-clouder about
-```
-
-```bash
-clouder setup
-clouder status
-```
-
-```bash
-# Start the Clouder operator.
-clouder operator start
-```
-
-## Use
-
-```bash
-# Get your profile details.
-clouder profile
-```
-
-```bash
-# Manage Projects.
-clouder projects list
-```
-
-```bash
-# Manage Keys.
-clouder keys create
-clouder keys list
-clouder keys delete
-```
-
-```bash
-# Manage Virtual Machines.
-clouder vm list
-```
-
-```bash
-# Manage Kubernetes.
-clouder k8s list
-```
-
-```bash
-# Start the Clouder server.
-clouder server
-```
-
-## Stop
-
-```bash
-# Stop the Clouder operator.
-clouder operator stop
-```
-
-## Develop
-
-```bash
-pip install -e .[test]
-jupyter labextension develop . --overwrite
-jupyter labextension list
-jupyter server extension list
-# open http://localhost:8888/lab?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
-yarn jupyterlab
-```
-
-## Releases
-
-Clouder is released in [PyPI](https://pypi.org/project/clouder).
+- export kconfig
