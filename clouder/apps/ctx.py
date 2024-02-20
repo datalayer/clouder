@@ -10,7 +10,7 @@ from datalayer.application import NoStart
 
 from ._base import ClouderBaseApp
 from ..cloud.ovh.api import get_ovh_project
-from ..util.utils import CLOUDER_CONTEXT_FILE
+from ..util.utils import CLOUDER_CONTEXT_FILE, CLOUDER_CONFIG_FOLDER
 
 
 DEFAULT_BOX_SEPARATOR = ":::"
@@ -44,6 +44,7 @@ def get_default_context():
 
 
 def save_context(context):
+    CLOUDER_CONFIG_FOLDER.mkdir(parents=True, exist_ok=True)
     with open(CLOUDER_CONTEXT_FILE, "w") as out:
         yaml.dump(context, out, default_flow_style=False, sort_keys=False)
 
@@ -165,6 +166,8 @@ clouder:
                 "name" : box["description"]
             }
         save_context(context)
+        app = ClouderContextRemoveApp(extra_args=["ovh", "pid"])
+        app.start()
 
 
 class ClouderContextApp(ClouderBaseApp):

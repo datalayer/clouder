@@ -141,16 +141,17 @@ template = {
     }
 }
 """
-def create_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_name, desiredNodes, minNodes, maxNodes,
-                                   template, flavorName="b2-7", autoscale=False, monthlyBilled=False):
+def create_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_name,
+                                   flavor_name, desired_nodes, min_nodes, max_nodes,
+                                   template, autoscale=False, monthly_billed=False):
     return ovh_client.post(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool',
         name          = nodepool_name,
-        desiredNodes  = desiredNodes,
-        minNodes      = minNodes,
-        maxNodes      = maxNodes,
-        flavorName    = flavorName,
+        desiredNodes  = desired_nodes,
+        minNodes      = min_nodes,
+        maxNodes      = max_nodes,
+        flavorName    = flavor_name,
         autoscale     = autoscale,
-        monthlyBilled = monthlyBilled,
+        monthlyBilled = monthly_billed,
         template      = template,
     )
 
@@ -159,6 +160,9 @@ def get_ovh_kubernetess(project_id):
 
 def get_ovh_kubernetes(project_id, kubernetes_id):
     return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}')
+
+def get_ovh_kubernetes_kubeconfig(project_id, kubernetes_id):
+    return ovh_client.post(f'/cloud/project/{project_id}/kube/{kubernetes_id}/kubeconfig')
 
 def get_ovh_kubernetes_nodepools(project_id, kubernetes_id):
     return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool')

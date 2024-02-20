@@ -1,7 +1,7 @@
 """The Clouder applications."""
 
 from ._base import ClouderBaseApp
-from .context import ClouderContextApp
+from .ctx import ClouderContextApp
 from .k8s import ClouderKubernetesApp
 from .me import ClouderMeApp
 from .operator import ClouderOperatorApp

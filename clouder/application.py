@@ -19,7 +19,6 @@ class ClouderApp(ClouderBaseApp):
     """
 
     subcommands = {
-        "context": (ClouderContextApp, ClouderContextApp.description.splitlines()[0]),
         "ctx": (ClouderContextApp, ClouderContextApp.description.splitlines()[0]),
         "box": (ClouderBoxApp, ClouderBoxApp.description.splitlines()[0]),
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),

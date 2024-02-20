@@ -9,10 +9,10 @@ clouder --help-all
 
 ```bash
 # Context.
-clouder context -h
-clouder context ls
-clouder context set aws <ovh_project_id>
-clouder context set ovh <aws_account_id>
+clouder ctx -h
+clouder ctx ls
+clouder ctx set aws `ovh_project_id`
+clouder ctx set ovh `aws_account_id`
 ```
 
 ```bash
@@ -23,6 +23,9 @@ clouder box info
 
 ```bash
 # Kubernetes.
+clouder k8s create k1
+clouder k8s kubeconfig k1
+clouder k8s create-nodepool k1 nodepool_jupyter b2-7 1 1 10 jupyter cpu
 clouder k8s ls
 ```
 
