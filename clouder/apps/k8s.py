@@ -84,9 +84,11 @@ class ClouderKubernetesKubeconfigApp(ClouderBaseApp):
                 config = get_ovh_kubernetes_kubeconfig(box_id, kubernetes_id)
                 kubeconfig = config["content"]
                 OVH_K8S_FOLDER.mkdir(parents=True, exist_ok=True)
-                with open(OVH_K8S_FOLDER / f"{kubernetes_name}.yaml", "w") as out:
+                kubeconfig_file = OVH_K8S_FOLDER / f"{kubernetes_name}.yaml"
+                with open(kubeconfig_file, "w") as out:
                     k = yaml.safe_load(kubeconfig)
                     yaml.dump(k, out, default_flow_style=False, sort_keys=False)
+                    kubeconfig_file.chmod(0o600)
 
 
 class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
