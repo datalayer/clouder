@@ -89,6 +89,7 @@ class ClouderKubernetesKubeconfigApp(ClouderBaseApp):
                     k = yaml.safe_load(kubeconfig)
                     yaml.dump(k, out, default_flow_style=False, sort_keys=False)
                     kubeconfig_file.chmod(0o600)
+                    print(f"export KUBECONFIG={str(kubeconfig_file.absolute())}")
 
 
 class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
