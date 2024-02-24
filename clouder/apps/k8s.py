@@ -6,7 +6,6 @@ import yaml
 from rich import print
 from rich.table import Table
 from rich.markdown import Markdown
-from traitlets import Unicode, Int
 from datalayer.application import NoStart
 
 from ._base import ClouderBaseApp
@@ -14,6 +13,7 @@ from .ctx import get_default_context
 from ..util.utils import OVH_K8S_FOLDER
 from ..cloud.ovh.api import (create_ovh_kubernetes,                             
                              create_ovh_kubernetes_nodepool,
+                             update_ovh_kubernetes_nodepool,
                              get_ovh_project,
                              get_ovh_kubernetess,
                              get_ovh_kubernetes,
@@ -99,48 +99,11 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
       An application to create a kubernetes nodepool.
     """
 
-    flavor = Unicode(
-        "b2-15",
-        config=True,
-        help="The node flavor.",
-    )
-
-    min = Int(
-        3,
-        config=True,
-        help="Minimun number of nodes.",
-    )
-
-    max = Int(
-        3,
-        config=True,
-        help="Maximum number of nodes.",
-    )
-
-    desired = Int(
-        3,
-        config=True,
-        help="Desired number of nodes.",
-    )
-
-    datalayer_role = Unicode(
-        "jupyter",
-        config=True,
-        help="The role for the pool.",
-    )
-
-    xpu = Unicode(
-        "cpu",
-        config=True,
-        help="cpu or gpu.",
-    )
-
     def start(self):
         """Start the app."""
         if len(self.extra_args) != 2:
             warnings.warn("Please provide the expected arguments.")
             self.exit(1)
-        (cloud, context_id) = get_default_context()
         kubernetes_name = self.extra_args[0]
         nodepool_name = self.extra_args[1]
         (cloud, context_id) = get_default_context()
@@ -168,6 +131,34 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                                               self.flavor, self.desired, self.min, self.max,
                                               template)
                 print(res)
+
+
+class ClouderKubernetesNodepoolUpdateApp(ClouderBaseApp):
+    """An application to update a kubernetes nodepool."""
+
+    description = """
+      An application to update a kubernetes nodepool.
+    """
+
+    def start(self):
+        """Start the app."""
+        if len(self.extra_args) != 2:
+            warnings.warn("Please provide the expected arguments.")
+            self.exit(1)
+        kubernetes_name = self.extra_args[0]
+        nodepool_name = self.extra_args[1]
+        (cloud, context_id) = get_default_context()
+        kubernetess = get_ovh_kubernetess(context_id)
+        for k in kubernetess:
+            kubernetes = get_ovh_kubernetes(context_id, k)
+            if kubernetes["name"] == kubernetes_name:
+                kubernetes_id = kubernetes["id"]
+                nodepools = get_ovh_kubernetes_nodepools(context_id, kubernetes["id"])
+                for nodepool in nodepools:
+                    if nodepool["name"] == nodepool_name:
+                        self.log.debug(nodepool)
+                        update_ovh_kubernetes_nodepool(context_id, kubernetes_id, nodepool["id"],
+                                                    self.desired, self.min, self.max)
 
 
 class ClouderKubernetesListApp(ClouderBaseApp):
@@ -276,6 +267,7 @@ class ClouderKubernetesApp(ClouderBaseApp):
     subcommands = {
         "create": (ClouderKubernetesCreateApp, ClouderKubernetesCreateApp.description.splitlines()[0]),
         "create-nodepool": (ClouderKubernetesNodepoolCreateApp, ClouderKubernetesNodepoolCreateApp.description.splitlines()[0]),
+        "update-nodepool": (ClouderKubernetesNodepoolUpdateApp, ClouderKubernetesNodepoolUpdateApp.description.splitlines()[0]),
         "ls": (ClouderKubernetesListApp, ClouderKubernetesListApp.description.splitlines()[0]),
         "kubeconfig": (ClouderKubernetesKubeconfigApp, ClouderKubernetesKubeconfigApp.description.splitlines()[0]),
         "use": (ClouderKubernetesUseApp, ClouderKubernetesUseApp.description.splitlines()[0]),

@@ -214,6 +214,14 @@ def create_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_name,
         template      = template,
     )
 
+def update_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_id,
+                                  desired_nodes, min_nodes, max_nodes):
+    return ovh_client.put(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool/{nodepool_id}',
+        desiredNodes  = desired_nodes,
+        minNodes      = min_nodes,
+        maxNodes      = max_nodes,
+    )
+
 def get_ovh_kubernetess(project_id):
     return ovh_client.get(f'/cloud/project/{project_id}/kube')
 

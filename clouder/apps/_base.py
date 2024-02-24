@@ -1,19 +1,22 @@
 """Clouder base app."""
 
 from datalayer.application import DatalayerApp, base_aliases, base_flags
-from traitlets import Unicode, Bool
+from traitlets import Unicode, Bool, Int
 
 from .._version import __version__
 
 
 clouder_aliases = dict(base_aliases)
 clouder_aliases["cloud"] = "ClouderBaseApp.cloud"
-clouder_aliases["flavor"] = "ClouderKubernetesNodepoolCreateApp.flavor"
-clouder_aliases["min"] = "ClouderKubernetesNodepoolCreateApp.min"
-clouder_aliases["desired"] = "ClouderKubernetesNodepoolCreateApp.desired"
-clouder_aliases["max"] = "ClouderKubernetesNodepoolCreateApp.max"
-clouder_aliases["datalayer-role"] = "ClouderKubernetesNodepoolCreateApp.datalayer_role"
-clouder_aliases["xpu"] = "ClouderKubernetesNodepoolCreateApp.xpu"
+clouder_aliases["flavor"] = "ClouderBaseApp.flavor"
+clouder_aliases["min"] = "ClouderBaseApp.min"
+clouder_aliases["desired"] = "ClouderBaseApp.desired"
+clouder_aliases["max"] = "ClouderBaseApp.max"
+clouder_aliases["datalayer-role"] = "ClouderBaseApp.datalayer_role"
+clouder_aliases["xpu"] = "ClouderBaseApp.xpu"
+clouder_aliases["min"] = "ClouderBaseApp.min"
+clouder_aliases["desired"] = "ClouderBaseApp.desired"
+clouder_aliases["max"] = "ClouderBaseApp.max"
 
 
 clouder_flags = dict(base_flags)
@@ -41,6 +44,42 @@ class ClouderBaseApp(DatalayerApp):
         False,
         config=True,
         help="Do not print.",
+    )
+
+    flavor = Unicode(
+        "b2-15",
+        config=True,
+        help="The node flavor.",
+    )
+
+    min = Int(
+        3,
+        config=True,
+        help="Minimun number of nodes.",
+    )
+
+    max = Int(
+        3,
+        config=True,
+        help="Maximum number of nodes.",
+    )
+
+    desired = Int(
+        3,
+        config=True,
+        help="Desired number of nodes.",
+    )
+
+    datalayer_role = Unicode(
+        "jupyter",
+        config=True,
+        help="The role for the pool.",
+    )
+
+    xpu = Unicode(
+        "cpu",
+        config=True,
+        help="cpu or gpu.",
     )
 
 
