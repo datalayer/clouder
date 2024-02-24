@@ -8,13 +8,17 @@ from tabulate import tabulate
 
 from ...util.utils import OVH_CONFIG_FILE
 
+
 ###
+
 
 ovh_client = ovh.Client(
   config_file=OVH_CONFIG_FILE
 )
 
+
 ###
+
 
 SERVICE_TYPES = [
     "allDom",
@@ -58,6 +62,7 @@ SERVICE_TYPES = [
     "xdsl/spare",
 ]
 
+
 ### Profile.
 
 def get_ovh_me():
@@ -80,6 +85,48 @@ def get_ovh_credentials():
             credential['lastUse'],
         ])
     print(tabulate(table, headers=['ID', 'App Name', 'Description', 'Token Creation', 'Token Expiration', 'Token Last Use']))
+
+### Projects.
+
+def get_ovh_projects():
+    """Get the OVHcloud projects."""
+    return ovh_client.get(f'/cloud/project')
+
+def get_ovh_project(project_id):
+    """Get the OVHcloud project."""
+    return ovh_client.get(f'/cloud/project/{project_id}')
+
+### Applications.
+
+def get_ovh_applications():
+    return ovh_client.get('/me/api/application')
+
+### Services.
+
+def get_ovh_services():
+    services_will_expired = []
+    for service_type in SERVICE_TYPES:
+        try:
+            service_list = ovh_client.get("/%s" % service_type)
+            for service in service_list:
+                service_infos = ovh_client.get("/%s/%s/serviceInfos" % (service_type, service))
+                services_will_expired.append([service_type, service, service_infos["status"], service_infos["expiration"]])
+        except:
+            pass
+    print(tabulate(services_will_expired, headers=["Type", "ID", "status", "expiration date"]))
+
+def get_ovh_services_expiring():
+    delay = 60
+    delay_date = datetime.datetime.now() + datetime.timedelta(days=delay)
+    services_will_expired = []
+    for service_type in SERVICE_TYPES:
+        service_list = ovh_client.get("/%s" % service_type)
+        for service in service_list:
+            service_infos = ovh_client.get("/%s/%s/serviceInfos" % (service_type, service))
+            service_expiration_date = datetime.datetime.strptime(service_infos["expiration"], "%Y-%m-%d")
+            if service_expiration_date < delay_date:
+                services_will_expired.append([service_type, service, service_infos["status"], service_infos["expiration"]])
+    print(tabulate(services_will_expired, headers=["Type", "ID", "status", "expiration date"]))
 
 ### Resources.
 
@@ -105,6 +152,18 @@ def create_ovh_ssh_key(project_id, key_name, public_key):
 
 def delete_ovh_ssh_key(project_name, key_id):
     return ovh_client.delete(f'/cloud/project/{project_name}/sshkey/{key_id}')
+
+### Virtual machines.
+
+def create_ovh_vm(project_id, vm_name, region):
+    return ovh_client.post(f'/cloud/project/{project_id}/instance',
+        name         = vm_name,
+        region       = region,
+        flavorId     = "B3-8",
+    )
+
+def get_ovh_vm(project_id):
+    return ovh_client.get(f'/cloud/project/{project_id}/instance')
 
 ### S3.
 
@@ -172,48 +231,6 @@ def get_ovh_kubernetes_nodepool(project_id, kubernetes_id, nodepool_id):
 
 def get_ovh_kubernetes_nodepool_nodes(project_id, kubernetes_id, nodepool_id):
     return ovh_client.get(f'/cloud/project/{project_id}/kube/{kubernetes_id}/nodepool/{nodepool_id}/nodes')
-
-### Projects.
-
-def get_ovh_projects():
-    """Get the OVHcloud projects."""
-    return ovh_client.get(f'/cloud/project')
-
-def get_ovh_project(project_id):
-    """Get the OVHcloud project."""
-    return ovh_client.get(f'/cloud/project/{project_id}')
-
-### Applications.
-
-def get_ovh_applications():
-    return ovh_client.get('/me/api/application')
-
-### Services.
-
-def get_ovh_services():
-    services_will_expired = []
-    for service_type in SERVICE_TYPES:
-        try:
-            service_list = ovh_client.get("/%s" % service_type)
-            for service in service_list:
-                service_infos = ovh_client.get("/%s/%s/serviceInfos" % (service_type, service))
-                services_will_expired.append([service_type, service, service_infos["status"], service_infos["expiration"]])
-        except:
-            pass
-    print(tabulate(services_will_expired, headers=["Type", "ID", "status", "expiration date"]))
-
-def get_ovh_services_expiring():
-    delay = 60
-    delay_date = datetime.datetime.now() + datetime.timedelta(days=delay)
-    services_will_expired = []
-    for service_type in SERVICE_TYPES:
-        service_list = ovh_client.get("/%s" % service_type)
-        for service in service_list:
-            service_infos = ovh_client.get("/%s/%s/serviceInfos" % (service_type, service))
-            service_expiration_date = datetime.datetime.strptime(service_infos["expiration"], "%Y-%m-%d")
-            if service_expiration_date < delay_date:
-                services_will_expired.append([service_type, service, service_infos["status"], service_infos["expiration"]])
-    print(tabulate(services_will_expired, headers=["Type", "ID", "status", "expiration date"]))
 
 ### Databases.
 

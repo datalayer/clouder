@@ -2,10 +2,10 @@
 
 from ._base import ClouderBaseApp
 from .ctx import ClouderContextApp
+from .info import ClouderInfoApp
 from .k8s import ClouderKubernetesApp
 from .me import ClouderMeApp
 from .operator import ClouderOperatorApp
-from .box import ClouderBoxApp
 from .run import ClouderRunSbinApp, ClouderRunShellApp
 from .s3 import ClouderS3App
 from .ssh_key import ClouderSSHKeyApp
@@ -15,10 +15,10 @@ from .vm import ClouderVirtualMachineApp
 __all__ = [
   ClouderBaseApp,
   ClouderContextApp,
+  ClouderInfoApp,
   ClouderKubernetesApp,
   ClouderMeApp,
   ClouderOperatorApp,
-  ClouderBoxApp,
   ClouderS3App,
   ClouderSSHKeyApp,
   ClouderRunSbinApp,

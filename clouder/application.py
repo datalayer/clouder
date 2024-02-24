@@ -6,7 +6,7 @@ from .apps import (ClouderBaseApp, ClouderContextApp,
                    ClouderSSHKeyApp, ClouderRunSbinApp,
                    ClouderKubernetesApp, ClouderOperatorApp,
                    ClouderMeApp, ClouderRunShellApp, ClouderS3App,
-                   ClouderVirtualMachineApp, ClouderBoxApp)
+                   ClouderVirtualMachineApp, ClouderInfoApp)
 
 
 class ClouderApp(ClouderBaseApp):
@@ -20,7 +20,7 @@ class ClouderApp(ClouderBaseApp):
 
     subcommands = {
         "ctx": (ClouderContextApp, ClouderContextApp.description.splitlines()[0]),
-        "box": (ClouderBoxApp, ClouderBoxApp.description.splitlines()[0]),
+        "info": (ClouderInfoApp, ClouderInfoApp.description.splitlines()[0]),
         "k8s": (ClouderKubernetesApp, ClouderKubernetesApp.description.splitlines()[0]),
         "me": (ClouderMeApp, ClouderMeApp.description.splitlines()[0]),
         "operator": (ClouderOperatorApp, ClouderOperatorApp.description.splitlines()[0]),

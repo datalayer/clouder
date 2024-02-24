@@ -3,7 +3,7 @@
 import os
 
 from datalayer.application import DatalayerApp, base_aliases, base_flags
-from traitlets import Unicode
+from traitlets import Unicode, Bool
 
 from .._version import __version__
 
@@ -12,6 +12,10 @@ clouder_aliases = dict(base_aliases)
 clouder_aliases["cloud"] = "ClouderBaseApp.cloud"
 
 clouder_flags = dict(base_flags)
+clouder_flags["no-print"] = (
+    {"ClouderBaseApp": {"no_print": True}},
+    "Do not print.",
+)
 
 
 class ClouderBaseApp(DatalayerApp):
@@ -26,6 +30,12 @@ class ClouderBaseApp(DatalayerApp):
         "ovh",
         config=True,
         help="The cloud to use.",
+    )
+
+    no_print = Bool(
+        False,
+        config=True,
+        help="Do not print.",
     )
 
 

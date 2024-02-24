@@ -7,6 +7,8 @@ HOME_FOLDER = Path.home()
 
 SSH_FOLDER = HOME_FOLDER / ".ssh"
 
+SSH_PUBLIC_KEY = SSH_FOLDER / "id_rsa.pub"
+
 CLOUDER_CONFIG_FOLDER = HOME_FOLDER / ".clouder"
 
 CLOUDER_CONTEXT_FILE = CLOUDER_CONFIG_FOLDER / "clouder.yaml"
@@ -18,6 +20,8 @@ OVH_CONFIG_FILE = OVH_CONFIG_FOLDER / "ovh.conf"
 OVH_K8S_FOLDER = OVH_CONFIG_FOLDER / "k8s"
 
 HERE_FOLDER = Path(__file__).parent
+
+DEFAULT_REGION = "BHS"
 
 
 def run_shell(args):
