@@ -6,8 +6,9 @@ import yaml
 from rich import print
 from rich.table import Table
 from rich.markdown import Markdown
-from rich.panel import Panel
+from traitlets import Unicode, Int
 from datalayer.application import NoStart
+
 
 from ._base import ClouderBaseApp
 from .ctx import get_default_context
@@ -99,20 +100,50 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
       An application to create a kubernetes nodepool.
     """
 
+    flavor = Unicode(
+        "b2-15",
+        config=True,
+        help="The node flavor.",
+    )
+
+    min = Int(
+        3,
+        config=True,
+        help="Minimun number of nodes.",
+    )
+
+    max = Int(
+        3,
+        config=True,
+        help="Maximum number of nodes.",
+    )
+
+    desired = Int(
+        3,
+        config=True,
+        help="Desired number of nodes.",
+    )
+
+    datalayer_role = Unicode(
+        "jupyter",
+        config=True,
+        help="The role for the pool.",
+    )
+
+    xpu = Unicode(
+        "cpu",
+        config=True,
+        help="cpu or gpu.",
+    )
+
     def start(self):
         """Start the app."""
-        if len(self.extra_args) != 8:
+        if len(self.extra_args) != 2:
             warnings.warn("Please provide the expected arguments.")
             self.exit(1)
         (cloud, context_id) = get_default_context()
         kubernetes_name = self.extra_args[0]
         nodepool_name = self.extra_args[1]
-        flavor_name = self.extra_args[2]
-        desired_nodes = int(self.extra_args[3])
-        min_nodes = int(self.extra_args[4])
-        max_nodes = int(self.extra_args[5])
-        datalayer_role = self.extra_args[6]
-        xpu = self.extra_args[7]
         (cloud, context_id) = get_default_context()
         kubernetess = get_ovh_kubernetess(context_id)
         for k in kubernetess:
@@ -125,8 +156,8 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                         "annotations": {},
                         "finalizers": [],
                         "labels": {
-                            "datalayer.io/role": datalayer_role,
-                            "datalayer.io/xpu": xpu,
+                            "datalayer.io/role": self.datalayer_role,
+                            "datalayer.io/xpu": self.xpu,
                         }
                     },
                     "spec": {
@@ -135,7 +166,7 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                     }
                 }
                 res = create_ovh_kubernetes_nodepool(context_id, kubernetes_id, nodepool_name,
-                                              flavor_name, desired_nodes, min_nodes, max_nodes,
+                                              self.flavor, self.desired, self.min, self.max,
                                               template)
                 print(res)
 

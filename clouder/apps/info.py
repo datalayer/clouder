@@ -11,7 +11,7 @@ from .vm import ClouderVirtualMachineListApp
 from .s3 import ClouderS3ListApp
 
 
-class ClouderInfoCurrentApp(ClouderBaseApp):
+class ClouderInfoCtxApp(ClouderBaseApp):
     """An application for info about the current context."""
 
     description = """
@@ -114,7 +114,7 @@ class ClouderInfoApp(ClouderBaseApp):
     """
 
     subcommands = {
-        "current": (ClouderInfoCurrentApp, ClouderInfoCurrentApp.description.splitlines()[0]),
+        "ctx": (ClouderInfoCtxApp, ClouderInfoCtxApp.description.splitlines()[0]),
     }
 
     def start(self):

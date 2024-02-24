@@ -10,6 +10,12 @@ from .._version import __version__
 
 clouder_aliases = dict(base_aliases)
 clouder_aliases["cloud"] = "ClouderBaseApp.cloud"
+clouder_aliases["flavor"] = "ClouderBaseApp.flavor"
+clouder_aliases["min"] = "ClouderBaseApp.min"
+clouder_aliases["desired"] = "ClouderBaseApp.desired"
+clouder_aliases["max"] = "ClouderBaseApp.max"
+clouder_aliases["datalayer-role"] = "ClouderBaseApp.datalayer_role"
+clouder_aliases["xpu"] = "ClouderBaseApp.xpu"
 
 clouder_flags = dict(base_flags)
 clouder_flags["no-print"] = (
