@@ -9,7 +9,6 @@ from rich.markdown import Markdown
 from traitlets import Unicode, Int
 from datalayer.application import NoStart
 
-
 from ._base import ClouderBaseApp
 from .ctx import get_default_context
 from ..util.utils import OVH_K8S_FOLDER
@@ -202,7 +201,7 @@ class ClouderKubernetesListApp(ClouderBaseApp):
             self.kubernetess.append(kubernetes)
             self.log.debug("Kubernetes", kubernetes)
             if not self.no_print:
-                table = Table(title=f"Kubernetes {self.project_name}:{kubernetes['name']}")
+                table = Table(title=f"Kubernetes {self.cloud}:{self.project_name}")
                 table.add_column("ID", justify="left", style="cyan", no_wrap=True)
                 table.add_column("Name", justify="left", style="cyan")
                 table.add_column("Region", justify="left", style="green")
@@ -222,7 +221,7 @@ class ClouderKubernetesListApp(ClouderBaseApp):
                 # ("{'id': '', 'projectId': '', 'name': 'datalayer-plane', 'flavor': 'b2-15', 'status': 'READY', 'sizeStatus': 'CAPACITY_OK', 'autoscale': False, 'monthlyBilled': False, 'antiAffinity': False, 'desiredNodes': 3, 'minNodes': 0, 'maxNodes': 100, 'currentNodes': 3, 'availableNodes': 3, 'upToDateNodes': 0, 'createdAt': '2024-01-04T05:11:15Z', 'updatedAt': '2024-01-04T05:16:43Z', 'autoscaling': {'scaleDownUtilizationThreshold': 0.5, 'scaleDownUnneededTimeSeconds': 600, 'scaleDownUnreadyTimeSeconds': 1200}, 'template': {'metadata': {'labels': {}, 'annotations': {}, 'finalizers': []}, 'spec': {'unschedulable': False, 'taints': []}}}",)
                 self.log.debug("Nodepool", nodepool)
                 if not self.no_print:
-                    title = f"Nodepool {self.cloud}:{self.project_name}:{kubernetes['name']}:{nodepool['name']}"
+                    title = f"Nodepool {self.cloud}:{self.project_name}:{nodepool['name']}"
                     print(Markdown("## " + title))
                     table = Table(title=title)
                     table.add_column("ID", justify="left", style="cyan", no_wrap=True)
@@ -249,7 +248,7 @@ class ClouderKubernetesListApp(ClouderBaseApp):
                 nodes = get_ovh_kubernetes_nodepool_nodes(self.project_id, kubernetes_id, nodepool["id"])
                 nodepool["nodes"] = nodes
                 if not self.no_print:
-                    table = Table(title=f"Nodes {self.cloud}:{self.project_name}:{kubernetes['name']}:{nodepool['name']}")
+                    table = Table(title=f"Nodes {self.cloud}:{self.project_name}:{nodepool['name']}")
                     table.add_column("ID", justify="left", style="cyan", no_wrap=True)
                     table.add_column("Instance ID", justify="left", style="cyan")
                     table.add_column("Name", justify="left", style="green")
@@ -285,8 +284,8 @@ class ClouderKubernetesApp(ClouderBaseApp):
     def start(self):
         try:
             super().start()
-            self.log.error(f"One of `{'`, `'.join(ClouderKubernetesApp.subcommands.keys())}` must be specified.")
-            self.exit(1)
+            app = ClouderKubernetesListApp()
+            app.start()
         except NoStart:
             pass
         self.exit(0)

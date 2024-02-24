@@ -1,7 +1,5 @@
 """Clouder base app."""
 
-import os
-
 from datalayer.application import DatalayerApp, base_aliases, base_flags
 from traitlets import Unicode, Bool
 
@@ -10,12 +8,13 @@ from .._version import __version__
 
 clouder_aliases = dict(base_aliases)
 clouder_aliases["cloud"] = "ClouderBaseApp.cloud"
-clouder_aliases["flavor"] = "ClouderBaseApp.flavor"
-clouder_aliases["min"] = "ClouderBaseApp.min"
-clouder_aliases["desired"] = "ClouderBaseApp.desired"
-clouder_aliases["max"] = "ClouderBaseApp.max"
-clouder_aliases["datalayer-role"] = "ClouderBaseApp.datalayer_role"
-clouder_aliases["xpu"] = "ClouderBaseApp.xpu"
+clouder_aliases["flavor"] = "ClouderKubernetesNodepoolCreateApp.flavor"
+clouder_aliases["min"] = "ClouderKubernetesNodepoolCreateApp.min"
+clouder_aliases["desired"] = "ClouderKubernetesNodepoolCreateApp.desired"
+clouder_aliases["max"] = "ClouderKubernetesNodepoolCreateApp.max"
+clouder_aliases["datalayer-role"] = "ClouderKubernetesNodepoolCreateApp.datalayer_role"
+clouder_aliases["xpu"] = "ClouderKubernetesNodepoolCreateApp.xpu"
+
 
 clouder_flags = dict(base_flags)
 clouder_flags["no-print"] = (
@@ -47,4 +46,4 @@ class ClouderBaseApp(DatalayerApp):
 
     def start(self):
         super(ClouderBaseApp, self).start()
-        os.environ["DATALAYER_K8S_VERSION"] = "1.25.4"
+#        os.environ["DATALAYER_K8S_VERSION"] = "1.25.4"

@@ -95,8 +95,8 @@ class ClouderS3App(ClouderBaseApp):
     def start(self):
         try:
             super().start()
-            self.log.error(f"One of `{'`, `'.join(ClouderS3App.subcommands.keys())}` must be specified.")
-            self.exit(1)
+            app = ClouderS3ListApp()
+            app.start()
         except NoStart:
             pass
         self.exit(0)

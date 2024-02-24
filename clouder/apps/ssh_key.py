@@ -2,7 +2,6 @@
 
 import warnings
 from rich import print
-from rich.panel import Panel
 from rich.table import Table
 from datalayer.application import NoStart
 
@@ -48,15 +47,20 @@ class ClouderSSHKeyListApp(ClouderBaseApp):
     cloud = ""
     project_name = ""
     ssh_keys = []
+    ssh_keys_local = []
 
     def start(self):
         """Start the app."""
         if len(self.extra_args) != 0:
             warnings.warn("Please provide the expected arguments.")
             self.exit(1)
-        print(Panel.fit('Local SSH Keys'))
-        print(str(get_local_ssh_keys()))
-        print()
+        if not self.no_print:
+            table = Table(title=f"SSH Keys Local")
+            table.add_column("Name", justify="left", style="cyan", no_wrap=True)
+            self.ssh_keys_local = get_local_ssh_keys()
+            for ssh_key_local in self.ssh_keys_local:
+                table.add_row(ssh_key_local)
+            print(table)
 #        print('Clouder SSH Keys', get_clouder_ssh_keys())
 #        print()
         (cloud, context_id) = get_default_context()
@@ -66,10 +70,10 @@ class ClouderSSHKeyListApp(ClouderBaseApp):
         self.project_name = project["description"]
         self.ssh_keys = get_ovh_ssh_keys(context_id)
         if not self.no_print:
-            table = Table(title=f"SSH Key {self.cloud}:{self.project_name}")
+            table = Table(title=f"SSH Keys {self.cloud}:{self.project_name}")
             table.add_column("ID", justify="left", style="cyan", no_wrap=True)
             table.add_column("Name", justify="left", style="cyan")
-            table.add_column("Fingerpint", justify="left", style="green")
+            table.add_column("Fingerprint", justify="left", style="green")
             table.add_column("Public Key", justify="left", style="green")
             for ssh_key in self.ssh_keys:
                 table.add_row(
@@ -96,8 +100,8 @@ class ClouderSSHKeyApp(ClouderBaseApp):
     def start(self):
         try:
             super().start()
-            self.log.error(f"One of `{'`, `'.join(ClouderSSHKeyApp.subcommands.keys())}` must be specified.")
-            self.exit(1)
+            app = ClouderSSHKeyListApp()
+            app.start()
         except NoStart:
             pass
         self.exit(0)

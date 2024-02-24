@@ -229,9 +229,8 @@ class ClouderContextApp(ClouderBaseApp):
     def start(self):
         try:
             super().start()
-            self.log.info("Clouder - Version %s - Cloud %s ", super().version, super().cloud)
-            self.log.error(f"One of `{'`, `'.join(ClouderContextApp.subcommands.keys())}` must be specified.")
-            self.exit(1)
+            app = ClouderContextShowApp()
+            app.start()
         except NoStart:
             pass
         self.exit(0)

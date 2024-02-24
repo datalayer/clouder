@@ -52,7 +52,7 @@ class ClouderInfoCtxApp(ClouderBaseApp):
         app = ClouderVirtualMachineListApp()
         app.no_print = True
         app.start()
-        table = Table(title=f"Virtual Machines {app.cloud}:{app.project_name}")
+        table = Table(title=f"Virtual Machine {app.cloud}:{app.project_name}")
         table.add_column("ID", justify="left", style="cyan", no_wrap=True)
         table.add_column("Name", justify="left", style="green")
         table.add_column("Flavor ID", justify="left", style="green")
@@ -120,9 +120,8 @@ class ClouderInfoApp(ClouderBaseApp):
     def start(self):
         try:
             super().start()
-            self.log.info("Clouder - Version %s - Cloud %s ", super().version, super().cloud)
-            self.log.error(f"One of `{'`, `'.join(ClouderInfoApp.subcommands.keys())}` must be specified.")
-            self.exit(1)
+            app = ClouderInfoCtxApp()
+            app.start()
         except NoStart:
             pass
         self.exit(0)
