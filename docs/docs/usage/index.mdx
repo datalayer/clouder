@@ -25,8 +25,8 @@ clouder box info
 # Kubernetes.
 clouder k8s create k1
 clouder k8s kubeconfig k1
-clouder k8s create-nodepool k1 nodepool_jupyter b2-7 1 1 10 jupyter cpu
-clouder k8s ls
+clouder k8s create-nodepool k1 jupyter-small --flavor b2-7 --min 1 --desired 1 --max 10 --role jupyter --variant small --xpu cpu
+clouder k8s
 ```
 
 ```bash
@@ -36,7 +36,7 @@ clouder ssh-key ls
 
 ```bash
 # Virtual Machines.
-clouder vm list
+clouder vm ls
 ```
 
 ## Operator

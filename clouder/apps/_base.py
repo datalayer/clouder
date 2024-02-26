@@ -12,7 +12,8 @@ clouder_aliases["flavor"] = "ClouderBaseApp.flavor"
 clouder_aliases["min"] = "ClouderBaseApp.min"
 clouder_aliases["desired"] = "ClouderBaseApp.desired"
 clouder_aliases["max"] = "ClouderBaseApp.max"
-clouder_aliases["datalayer-role"] = "ClouderBaseApp.datalayer_role"
+clouder_aliases["role"] = "ClouderBaseApp.role"
+clouder_aliases["variant"] = "ClouderBaseApp.variant"
 clouder_aliases["xpu"] = "ClouderBaseApp.xpu"
 clouder_aliases["min"] = "ClouderBaseApp.min"
 clouder_aliases["desired"] = "ClouderBaseApp.desired"
@@ -58,28 +59,34 @@ class ClouderBaseApp(DatalayerApp):
         help="Minimun number of nodes.",
     )
 
-    max = Int(
-        3,
-        config=True,
-        help="Maximum number of nodes.",
-    )
-
     desired = Int(
         3,
         config=True,
         help="Desired number of nodes.",
     )
 
-    datalayer_role = Unicode(
-        "jupyter",
+    max = Int(
+        10,
+        config=True,
+        help="Maximum number of nodes.",
+    )
+
+    role = Unicode(
+        "datalayer",
         config=True,
         help="The role for the pool.",
+    )
+
+    variant = Unicode(
+        "default",
+        config=True,
+        help="The variant for the pool.",
     )
 
     xpu = Unicode(
         "cpu",
         config=True,
-        help="cpu or gpu.",
+        help="cpu, gpu or qpu.",
     )
 
 

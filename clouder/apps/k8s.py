@@ -110,7 +110,6 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
         kubernetess = get_ovh_kubernetess(context_id)
         for k in kubernetess:
             kubernetes = get_ovh_kubernetes(context_id, k)
-            # ("{'id': '', 'region': 'BHS5', 'name': 'dev1-io--datalayer--run', 'url': '', 'nodesUrl': '', 'version': '1.28.3-0', 'nextUpgradeVersions': [], 'kubeProxyMode': 'iptables', 'customization': {'apiServer': {'admissionPlugins': {'enabled': ['AlwaysPullImages', 'NodeRestriction'], 'disabled': []}}}, 'status': 'READY', 'updatePolicy': 'ALWAYS_UPDATE', 'isUpToDate': False, 'controlPlaneIsUpToDate': False, 'privateNetworkId': None, 'nodesSubnetId': None, 'createdAt': '2024-01-04T04:59:32Z', 'updatedAt': '2024-01-19T13:18:04Z', 'auditLogsSubscribed': False}",
             if kubernetes["name"] == kubernetes_name:
                 kubernetes_id = kubernetes["id"]
                 template = {
@@ -118,7 +117,8 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                         "annotations": {},
                         "finalizers": [],
                         "labels": {
-                            "datalayer.io/role": self.datalayer_role,
+                            "datalayer.io/role": self.role,
+                            "datalayer.io/variant": self.variant,
                             "datalayer.io/xpu": self.xpu,
                         }
                     },
