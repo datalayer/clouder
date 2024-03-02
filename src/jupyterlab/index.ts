@@ -15,15 +15,13 @@ namespace CommandIDs {
   export const create = 'create-clouder-widget';
 }
 
-export const PLUGIN_ID = '@datalayer/clouder:plugin';
-
 let tracker: WidgetTracker<MainAreaWidget<ClouderWidget>>;
 
 /**
  * Initialization data for the @datalayer/clouder extension.
  */
 const plugin: JupyterFrontEndPlugin<void> = {
-  id: PLUGIN_ID,
+  id: '@datalayer/clouder:plugin',
   autoStart: true,
   requires: [ICommandPalette],
   optional: [ISettingRegistry, ILauncher, ILayoutRestorer],
@@ -63,21 +61,26 @@ const plugin: JupyterFrontEndPlugin<void> = {
     });
     const category = 'Datalayer';
     palette.addItem({ command, category });
-    if (launcher) {
-      launcher.add({
-        command,
-        category,
-        rank: 1.2,
-      });
-    }
+    const settingsUpdated = (settings: ISettingRegistry.ISettings) => {
+      const showInLauncher = settings.get('showInLauncher').composite as boolean;
+      if (launcher && showInLauncher) {
+        launcher.add({
+          command,
+          category,
+          rank: 1.2,
+        });
+      }
+    };
     if (settingRegistry) {
       settingRegistry
         .load(plugin.id)
         .then(settings => {
-          console.log('@datalayer/clouder settings loaded:', settings.composite);
+          console.log(`${plugin.id} settings loaded:`, settings.composite);
+          settingsUpdated(settings);
+          settings.changed.connect(settingsUpdated);
         })
         .catch(reason => {
-          console.error('Failed to load settings for @datalayer/clouder.', reason);
+          console.error(`Failed to load settings for ${plugin.id}`, reason);
         });
     }
     requestAPI<any>('config')

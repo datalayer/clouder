@@ -3,6 +3,13 @@
   "title": "Clouder",
   "description": "Clouder - Create, manage and share Kubernetes clusters.",
   "type": "object",
-  "properties": {},
+  "properties": {
+    "showInLauncher": {
+      "title": "Show Clouder in the launcher",
+      "description": "Show Clouder in the launcher",
+      "default": false,
+      "type": "boolean"
+    }
+  },
   "additionalProperties": false
 }
