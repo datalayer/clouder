@@ -49,6 +49,17 @@ def get_default_context():
     return (cloud, context_id)
 
 
+def set_default_kubeconfig_path(path):
+    context = load_context()
+    context["clouder"]["default_kubeconfig_path"] = path 
+    save_context(context)
+
+
+def get_default_kubeconfig_path():
+    context = load_context()
+    return context["clouder"]["default_kubeconfig_path"]
+
+
 def save_context(context):
     CLOUDER_CONFIG_FOLDER.mkdir(parents=True, exist_ok=True)
     with open(CLOUDER_CONTEXT_FILE, "w") as out:

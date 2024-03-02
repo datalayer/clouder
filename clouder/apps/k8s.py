@@ -9,7 +9,7 @@ from rich.markdown import Markdown
 from datalayer.application import NoStart
 
 from ._base import ClouderBaseApp
-from .ctx import get_default_context
+from .ctx import get_default_context, set_default_kubeconfig_path
 from ..util.utils import OVH_K8S_FOLDER
 from ..cloud.ovh.api import (create_ovh_kubernetes,                             
                              create_ovh_kubernetes_nodepool,
@@ -60,6 +60,7 @@ class ClouderKubernetesUseApp(ClouderBaseApp):
             kubernetes = get_ovh_kubernetes(context_id, kubernetes_id)
             if kubernetes["name"] == kubernetes_name:
                 kubeconfig_path = str((OVH_K8S_FOLDER / f"{kubernetes_name}.yaml").absolute())
+                set_default_kubeconfig_path(kubeconfig_path)
                 print(f"export KUBECONFIG={kubeconfig_path}")
 
 
