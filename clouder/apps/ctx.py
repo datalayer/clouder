@@ -57,7 +57,7 @@ def set_default_kubeconfig_path(path):
 
 def get_default_kubeconfig_path():
     context = load_context()
-    return context["clouder"]["default_kubeconfig_path"]
+    return context["clouder"].get("default_kubeconfig_path", None)
 
 
 def save_context(context):
