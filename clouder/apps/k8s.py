@@ -118,9 +118,9 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                         "annotations": {},
                         "finalizers": [],
                         "labels": {
-                            "datalayer.io/role": self.role,
-                            "datalayer.io/variant": self.variant,
-                            "datalayer.io/xpu": self.xpu,
+                            "node.datalayer.io/role": self.role,
+                            "node.datalayer.io/variant": self.variant,
+                            "node.datalayer.io/xpu": self.xpu,
                         }
                     },
                     "spec": {
@@ -128,6 +128,8 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                         "unschedulable": False,
                     }
                 }
+                if "gpu" in self.xpu:
+                    template["metadata"]["labels"]["nvidia.com/device-plugin.config"] = "gpu-nvidia-20"
                 res = create_ovh_kubernetes_nodepool(context_id, kubernetes_id, nodepool_name,
                                               self.flavor, self.desired, self.min, self.max,
                                               template)

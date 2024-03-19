@@ -190,8 +190,8 @@ template = {
         "annotations": {},
         "finalizers": [],
         "labels": {
-            "datalayer.io/role": "jupyter",
-            "datalayer.io/xpu": "cpu",
+            "node.datalayer.io/role": "jupyter",
+            "node.datalayer.io/xpu": "cpu",
         }
     },
     "spec": {
