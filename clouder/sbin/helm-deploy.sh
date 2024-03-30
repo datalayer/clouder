@@ -81,4 +81,4 @@ add_helm_repos() {
 # deploy_on_k8s
 add_helm_repos
 echo
-# CLOUDER_SHOW_HEADER=false dla helm-status
+# CLOUDER_SHOW_HEADER=false clouder helm-status

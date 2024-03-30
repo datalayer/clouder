@@ -28,6 +28,7 @@ dependencies = [
     "boto3",
     "datalayer",
     "kopf",
+    "kubernetes",
     "pykube_ng",
     "sshkey-tools",
     "ovh",

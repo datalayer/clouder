@@ -47,6 +47,7 @@ case "${OS}" in
 esac
 
 echo -e $BOLD$YELLOW"Installing Crew"$NOCOLOR$NOBOLD
+echo
 install_crew
 
 CLOUDER_SKIP_HEADER=true clouder kubectl-help

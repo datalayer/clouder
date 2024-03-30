@@ -9,6 +9,7 @@ INITIAL_PATH=$PATH
 export PATH=$CLOUDER_SBIN:$PATH
 
 source $CLOUDER_SBIN/cli.sh
+source $CLOUDER_SBIN/os.sh
 
 $CLOUDER_SBIN/header.sh "$@"
 

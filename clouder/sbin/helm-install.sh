@@ -28,9 +28,8 @@ case "${OS}" in
     *)         echo "Unsupported operating system ${OS}"
 esac
 
-# helm init --client-only
-# echo
-# CLOUDER_SHOW_HEADER=false dla helm-status
+echo
+CLOUDER_SHOW_HEADER=false clouder helm-status
 
 helm repo add datalayer https://helm.datalayer.io/stable | true
 helm repo add datalayer-incubator https://helm.datalayer.io/incubator | true
