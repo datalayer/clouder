@@ -108,6 +108,13 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
         kubernetes_name = self.extra_args[0]
         nodepool_name = self.extra_args[1]
         (cloud, context_id) = get_default_context()
+        if self.roles != "":
+            labels = {f"role.datalayer.io/{role}": "true" for role in self.roles.split(",")}
+        else:
+            labels = {}
+        labels["node.datalayer.io/role"] = self.role
+        labels["node.datalayer.io/variant"] = self.variant
+        labels["node.datalayer.io/xpu"] = self.xpu
         kubernetess = get_ovh_kubernetess(context_id)
         for k in kubernetess:
             kubernetes = get_ovh_kubernetes(context_id, k)
@@ -117,11 +124,7 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
                     "metadata": {
                         "annotations": {},
                         "finalizers": [],
-                        "labels": {
-                            "node.datalayer.io/role": self.role,
-                            "node.datalayer.io/variant": self.variant,
-                            "node.datalayer.io/xpu": self.xpu,
-                        }
+                        "labels": labels
                     },
                     "spec": {
                         "taints": [],

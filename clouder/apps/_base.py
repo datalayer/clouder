@@ -77,6 +77,12 @@ class ClouderBaseApp(DatalayerApp):
         help="The role for the pool.",
     )
 
+    roles = Unicode(
+        "",
+        config=True,
+        help="The role names for the pool.",
+    )
+
     variant = Unicode(
         "default",
         config=True,
