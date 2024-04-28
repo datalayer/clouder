@@ -1,0 +1,1119 @@
+# AWS
+
+
+# 🛫 Datalayer on ☸️ AWS EKS
+
+## Requirements
+
+Check that you understand and have the following requirements to setup your local environment.
+
+- An AWS account with valid credentials.
+- Kubectl and Eksctl
+
+```bash
+clouder kubectl-install
+clouder eksctl-install
+```
+
+## AWS CLI
+
+```bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+```
+
+Getting Started https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+
+## AWS Credentials
+
+Setup your `AWS` environment with the needed AWS credentials via environment variables.
+
+```bash
+# ~/.bashrc
+# Define your valid AWS Credentials.
+export AWS_ACCESS_KEY_ID=<your-aws-key-id>
+export AWS_SECRET_ACCESS_KEY=<your-aws-key-secret>
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+If you prefer, you can persist those credentials in your home folder.
+
+```bash
+# ~/.aws/credentials
+[datalayer]
+aws_access_key_id=<your-aws-key-id>
+aws_secret_access_key=<your-aws-key-secret>
+```
+
+```bash
+# ~/.aws/config
+[datalayer]
+region=us-east-1
+```
+
+```bash
+# gimme-aws-creds --profile $AWS_DEFAULT_PROFILE
+aws sts get-caller-identity
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+echo $AWS_ACCOUNT_ID
+```
+
+AWS CLI Configuration.
+
+```bash
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+export AWS_DEFAULT_PROFILE=datalayer
+export AWS_REGION=us-east-1
+export EKS_CLUSTER_NAME=datalayer-io
+export EKS_NODE_GROUP_NAME=ng-1
+```
+
+## AWS CLI SSO with Google Workspace
+
+- Configure SAML and SCIM with Google Workspace and IAM Identity Center https://docs.aws.amazon.com/singlesignon/latest/userguide/gs-gwp.html
+
+- Configure your profile with the aws configure sso wizard https://docs.aws.amazon.com/cli/latest/userguide/sso-configure-profile-token.html#sso-configure-profile-token-auto-sso
+
+```bash
+aws configure sso
+# SSO session name (Recommended): dev
+# SSO start URL [None]: https://my-sso-portal.awsapps.com/start
+# SSO region [None]: us-east-1
+# SSO registration scopes [None]: sso:account:access
+```
+
+```bash
+export AWS_DEFAULT_PROFILE=AdministratorAccess-...
+aws sso login
+```
+
+## Create EKS via the Console
+
+- https://docs.aws.amazon.com/eks/latest/userguide/create-cluster.html
+
+- https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html
+- https://docs.aws.amazon.com/eks/latest/userguide/getting-started-console.html#eks-prereqs
+
+Configure your cluster for the Amazon VPC CNI plugin for Kubernetes plugin before deploying Amazon EC2 nodes to your cluster. By default, the plugin was installed with your cluster. When you add Amazon EC2 nodes to your cluster, the plugin is automatically deployed to each Amazon EC2 node that you add. The plugin requires you to attach one of the following IAM policies to an IAM role: `AmazonEKS_CNI_Policy` managed IAM policy. The IAM role that you attach the policy to can be the node IAM role, or a dedicated role used only for the plugin. We recommend attaching the policy to this role. For more information about creating the role, see `Configuring the Amazon VPC CNI plugin for Kubernetes to use IAM roles for service accounts (IRSA)` or `Amazon EKS node IAM role.`
+
+EKS Cluster Role eksClusterRole
+
+- https://docs.aws.amazon.com/eks/latest/userguide/service_IAM_role.html
+
+EKS Node Role AmazonEKSNodeRole
+
+- https://docs.aws.amazon.com/eks/latest/userguide/create-node-role.html
+- https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/install-ssm-agent-on-amazon-eks-worker-nodes-by-using-kubernetes-daemonset.html
+- AmazonEC2ContainerRegistryReadOnly
+- AmazonEKS_CNI_Policy
+- AmazonEKSWorkerNodePolicy
+- AmazonInspector2FullAccess
+- AmazonInspectorFullAccess
+- AmazonSSMManagedInstanceCore
+- AmazonEBSCSIDriverPolicy
+
+EBS CSI
+
+- https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html
+- https://docs.aws.amazon.com/eks/latest/userguide/managing-ebs-csi.html
+
+CNI IAM Role
+
+- Configuring the Amazon VPC CNI plugin for Kubernetes to use IAM roles for service accounts (IRSA)
+- https://docs.aws.amazon.com/eks/latest/userguide/cni-iam-role.html
+- https://stackoverflow.com/questions/70171641/aws-eks-nodes-creation-failure
+- https://stackoverflow.com/questions/75263031/new-eks-node-instance-not-able-to-join-cluster-getting-cni-plugin-not-initiali
+
+```bash
+kubectl exec -it aws-node-9cwkd -n kube-system -- /bin/bash cat /host/var/log/aws-routed-eni/ipamd.log
+```
+
+- https://repost.aws/knowledge-center/ebs-automatic-encryption
+
+## Create EKS with EKSCTL
+
+Create a cluster using eksctl.
+
+Note: This may take approx. 15 mins to create the cluster.
+
+- https://eksctl.io
+- https://eksctl.io/usage/schema
+- https://eksctl.io/usage/nodegroup-managed
+- https://eksctl.io/usage/creating-and-managing-clusters/#using-config-files
+- https://eksctl.io/usage/eks-private-cluster
+
+- https://docs.aws.amazon.com/eks/latest/userguide/eks-managing.html
+
+```bash
+#  --nodegroup-name ng-init \
+#  --nodes-min 0 \
+#  --nodes 0 \
+#  --nodes-max 100
+#  --node-type
+#  --managed
+#  --external-dns-access
+#  --auto-kubeconfig --node-type=m5.2xlarge --region=us-west-2 --node-ami=auto --asg-access --external-dns-access --full-ecr-access -P
+#  --vpc-private-subnets=subnet-0ff156e0c4a6d300c,subnet-0426fb4a607393184
+#  --vpc-public-subnets=subnet-0153e560b3129a696,subnet-009fa0199ec203c37
+
+# eksctl create cluster \
+#  --name $EKS_CLUSTER_NAME \
+#  --region $AWS_REGION \
+#  --managed
+
+eksctl create cluster \
+  --name ${EKS_CLUSTER_NAME} \
+  --version 1.21 \
+  --region ${AWS_REGION} \
+  --zones ${AWS_REGION}a,${AWS_REGION}b,${AWS_REGION}c \
+  --without-nodegroup
+```
+
+```bash
+AWS_REGION=eu-central-1
+EKS_CLUSTER_NAME=dla-pentest-1
+#
+cat > /tmp/$EKS_CLUSTER_NAME.yaml  <<EOF
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: ${EKS_CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "1.29"
+iam:
+  withOIDC: true
+# vpc:
+#   subnets:
+#     public:
+#       ${AWS_REGION}a: { id: subnet-076d023dd7d70414d }
+#       ${AWS_REGION}b: { id: subnet-029657fbe7c02cef8 }
+#       ${AWS_REGION}c: { id: subnet-098343eb013566348 }
+# privateCluster:
+#   enabled: false
+managedNodeGroups:
+  - name: router
+    labels:
+      role.datalayer.io/router: "true"
+      node.datalayer.io/variant: "medium"
+      node.datalayer.io/xpu: "cpu"
+    instanceType: m5.xlarge
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 10
+#    privateNetworking: false
+  - name: api
+    labels:
+      role.datalayer.io/api: "true"
+      node.datalayer.io/variant: "medium"
+      node.datalayer.io/xpu: "cpu"
+    instanceType: m5.xlarge
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 10
+#    privateNetworking: false
+  - name: system
+    labels:
+      role.datalayer.io/system: "true"
+      node.datalayer.io/variant: "medium"
+      node.datalayer.io/xpu: "cpu"
+    instanceType: m5.xlarge
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 10
+#    privateNetworking: false
+  - name: solr
+    labels:
+      role.datalayer.io/solr: "true"
+      node.datalayer.io/variant: "medium"
+      node.datalayer.io/xpu: "cpu"
+    instanceType: m5.xlarge
+    desiredCapacity: 3
+    minSize: 0
+    maxSize: 10
+#    privateNetworking: false
+  - name: jupyter-medium-cpu
+    labels:
+      role.datalayer.io/jupyter: "true"
+      node.datalayer.io/variant: "medium"
+      node.datalayer.io/xpu: "cpu"
+    instanceType: m5.xlarge
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 10
+#    privateNetworking: false
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: amazon-cloudwatch-observability
+    version: latest
+  - name: aws-guardduty-agent
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest
+#    wellKnownPolicies:
+#      ebsCSIController: true
+#    iam:
+#      withAddonPolicies:  
+#        imageBuilder: true
+EOF
+eksctl create cluster -f /tmp/$EKS_CLUSTER_NAME.yaml
+eksctl upgrade cluster -f /tmp/$EKS_CLUSTER_NAME.yaml
+eksctl create nodegroup --config-file=/tmp/$EKS_CLUSTER_NAME.yaml --include='router'
+```
+
+List the EKS clusters.
+
+```bash
+aws eks list-clusters
+aws eks describe-cluster --name $EKS_CLUSTER_NAME
+```
+
+```bash
+eksctl get clusters
+eksctl utils describe-addon-configuration --name aws-guardduty-agent --version v1.5.0-eksbuild.1
+eksctl get addons --cluster $EKS_CLUSTER_NAME
+```
+
+```bash
+aws eks update-kubeconfig \
+  --region $AWS_REGION \
+  --name $EKS_CLUSTER_NAME \
+  --kubeconfig $KUBECONFIG
+```
+
+```bash
+eksctl delete cluster --name $EKS_CLUSTER_NAME
+```
+
+## Kubeconfig
+
+Create a Kubeconfig for Amazon EKS https://docs.aws.amazon.com/eks/latest/userguide/create-kubeconfig.html
+
+Update your local Kubeconfig.
+
+```bash
+aws eks update-kubeconfig \
+  --region $AWS_REGION \
+  --name $EKS_CLUSTER_NAME \
+  --kubeconfig $KUBECONFIG
+```
+
+```bash
+kubectl config get-contexts
+```
+
+```bash
+kubectl config \
+  use-context arn:aws:eks:$AWS_REGION:...:cluster/$EKS_CLUSTER_NAME
+```
+
+Get context details.
+
+```bash
+kubectl config get-contexts && \
+  kubectl config current-context
+```
+
+## List Clusters
+
+```bash
+aws eks list-clusters --region ${AWS_REGION}
+eksctl get clusters --region ${AWS_REGION}
+```
+
+```bash
+aws eks \
+  describe-cluster \
+  --region ${AWS_REGION} \
+  --name ${EKS_CLUSTER_NAME}
+```
+
+## Create Node Groups
+
+```bash
+eksctl create nodegroup \
+  --nodes-min 0 \
+  --nodes 0 \
+  --nodes-max 100 \
+  --name ${EKS_NODE_GROUP_NAME} \
+  --cluster ${EKS_CLUSTER_NAME} \
+  --region ${AWS_REGION}
+```
+
+```bash
+eksctl get nodegroups \
+  --cluster ${EKS_CLUSTER_NAME}
+```
+
+## Scale the Cluster
+
+- https://docs.aws.amazon.com/eks/latest/userguide/update-stack.html
+- https://docs.aws.amazon.com/eks/latest/userguide/update-managed-node-group.html
+
+```bash
+# Get node group details.
+EKS_CLUSTER_DETAILS=$(eksctl get nodegroup --cluster $EKS_CLUSTER_NAME | grep $EKS_CLUSTER_NAME)
+echo $EKS_CLUSTER_DETAILS
+EKS_NODE_GROUP_NAME=$(cut -d ' ' -f2 <<<${EKS_CLUSTER_DETAILS})
+echo $EKS_NODE_GROUP_NAME
+```
+
+Describe node group.
+
+```bash
+eksctl get nodegroup \
+  --cluster ${EKS_CLUSTER_NAME} \
+  --name ${EKS_NODE_GROUP_NAME}
+```
+
+Scale up node group.
+
+```bash
+eksctl scale nodegroup \
+  --nodes 3 \
+  --cluster ${EKS_CLUSTER_NAME} \
+  --name ${EKS_NODE_GROUP_NAME}
+```
+
+Scale down node group.
+
+```bash
+eksctl scale nodegroup \
+  --nodes 0 \
+  --cluster ${EKS_CLUSTER_NAME} \
+  --name ${EKS_NODE_GROUP_NAME}
+```
+
+Autoscaler
+
+- https://eksworkshop.com/scaling/deploy_ca
+- https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler
+
+## Web Application Firewall (WAF)
+
+- https://aws.amazon.com/blogs/containers/protecting-your-amazon-eks-web-apps-with-aws-waf
+
+- https://www.pulumi.com/ai/answers/18zW44AYJZ1MVTVXzNRP7o/integrating-aws-waf-with-eks
+- https://www.opus.security/blog/waf-with-eks-using-only-k8s-controllers
+- https://devopstales.github.io/home/aws-eks-ingress
+
+```bash
+AWS_REGION=eu-central-1
+EKS_CLUSTER_NAME=pentest-1
+ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+echo $ACCOUNT_ID
+
+# Store the cluster’s VPC ID in an environment variable as we will need it for the next step.
+VPC_ID=$(aws eks describe-cluster \
+  --name $EKS_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --query 'cluster.resourcesVpcConfig.vpcId' \
+  --output text)
+echo $VPC_ID
+
+# Install the AWS Load Balancer Controller - The AWS Load Balancer Controller is a Kubernetes controller that runs in your EKS cluster and handles the configuration of the Network Load Balancers and Application Load Balancers on your behalf. It allows you to configure Load Balancers declaratively in the same manner as you handle the configuration of your application.
+
+# Install the AWS Load Balancer Controller by running these commands.
+
+# Associate OIDC provider as prerequisite.
+eksctl utils associate-iam-oidc-provider \
+  --cluster $EKS_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --approve
+
+## Download the IAM policy document.
+curl -o iam-policy.json https://raw.githubusercontent.com/aws-samples/containers-blog-maelstrom/main/eks-waf-blog/iam-policy.json
+
+# Create the IAM policy.
+LBC_IAM_POLICY=$(aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://iam-policy.json)
+echo $LBC_IAM_POLICY
+
+# Get IAM Policy ARN.
+LBC_IAM_POLICY_ARN=$(aws iam list-policies \
+  --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn" \
+  --output text)
+echo $LBC_IAM_POLICY_ARN
+
+# Create a service account.
+eksctl create iamserviceaccount \
+  --cluster=$EKS_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --namespace=kube-system \
+  --name=aws-load-balancer-controller \
+  --override-existing-serviceaccounts \
+  --attach-policy-arn=${LBC_IAM_POLICY_ARN} \
+  --approve
+
+## Add the helm repo and install the AWS Load Balancer Controller.
+# https://aws.github.io/eks-charts
+# https://github.com/aws/eks-charts/tree/master/stable/aws-load-balancer-controller
+# https://github.com/aws/eks-charts/blob/master/stable/aws-load-balancer-controller/values.yaml
+# nodeSelector: {}
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm install aws-load-balancer-controller \
+  eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --set clusterName=$EKS_CLUSTER_NAME \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set vpcId=$VPC_ID \
+  --set region=$AWS_REGION
+
+# Verify that the controller is installed.
+kubectl get deployment -n kube-system aws-load-balancer-controller
+
+# Deploy the sample app - We will use a sample application called Yelb for this demo. It provides an Angular 2-based UI that will represent a real-world application for this post. Here’s a high-level architectural view of Yelb:high-level architectural view of Yelb.
+# Clone the repository and deploy Yelb in your EKS cluster.
+git clone https://github.com/aws/aws-app-mesh-examples.git
+cd aws-app-mesh-examples/walkthroughs/eks-getting-started
+kubectl apply -f infrastructure/yelb_initial_deployment.yaml
+
+# Check the deployed resources within the yelb namespace.
+kubectl get all -n yelb
+
+# Note: The Postgres database that Yelb uses is not configured to use a persistent volume.
+
+# Expose Yelb using an ingress.
+
+# Let’s create a Kubernetes ingress to make Yelb available publicly. The AWS Load Balancer Controller will associate the the ingress with an Application Load Balancer.
+cat << EOF > yelb-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: yelb.app
+  namespace: yelb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb # Updated method to attach ingress class
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: yelb-ui
+                port:
+                  number: 80
+EOF
+kubectl apply -f yelb-ingress.yaml  
+
+# Test the application by sending a request using curl or by using a web browser to navigate to the URL.
+# It may take some time for the loadbalancer to become available, use command below to confirm.
+# You can obtain the URL using Kubernetes API and also navigate to the site by entering the URL.
+
+kubectl wait -n yelb ingress yelb.app --for=jsonpath='{.status.loadBalancer.ingress}' && 
+  YELB_URL=$(kubectl get ingress yelb.app -n yelb -o jsonpath="{.status.loadBalancer.ingress[].hostname}")
+echo $YELB_URL
+open $YELB_URL
+
+# Add a web application firewall to the ingress.
+
+# Now that our sample application is functional, let’s add a web application firewall to it. The first thing we need to do is create a WAS web ACL. In AWS WAF, a web access control list or a web ACL monitors HTTP(S) requests for one or more AWS resources. These resources can be an Amazon API Gateway, AWS AppSync, Amazon CloudFront, or an Application Load Balancer.
+# Within an AWS WAF Web ACL, you associate rule groups that define the attack patterns to look for in web requests and the action to take when a request matches the patterns. Rule groups are reusable collections of rules. You can use Managed rule groups offered and maintained by AWS and AWS Marketplace sellers. When you use managed rules, AWS WAF automatically updates your WAF Rules regularly to ensure that your web apps are protected against newer threats. You can also write your own rules and use your own rule groups.
+
+# Create an AWS WAF web ACL.
+WACL_ARN=$(aws wafv2 create-web-acl \
+  --name WAF-FOR-YELB \
+  --region $AWS_REGION \
+  --default-action Allow={} \
+  --scope REGIONAL \
+  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=YelbWAFAclMetrics \
+  --description 'WAF Web ACL for Yelb' \
+  --query 'Summary.ARN' \
+  --output text)
+echo $WACL_ARN
+
+# Store the AWS WAF web ACL’s Id in an environment variable as it is required for updating the AWS WAF web ACL in the upcoming steps.
+ID=$(aws wafv2 list-web-acls \
+  --region $AWS_REGION \
+  --scope REGIONAL \
+  --query "WebACLs[?Name=='WAF-for-Yelb'].Id" \
+  --output text)
+
+# Update the ingress and associate this AWS WAF web ACL with the ALB that the ingress uses.
+cat << EOF > yelb-ingress-waf.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: yelb.app
+  namespace: yelb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/wafv2-acl-arn: ${WACL_ARN}
+spec:
+  ingressClassName: alb 
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: yelb-ui
+                port:
+                  number: 80
+EOF
+kubectl apply -f yelb-ingress-waf.yaml 
+
+# By adding alb.ingress.kubernetes.io/wafv2-acl-arn annotation to the ingress, AWS WAF is inspecting incoming traffic. However, it’s not blocking any traffic yet. Before we send a request to our sample app using curl, let's wait for the loadbalancer to become ready for traffic.
+kubectl wait -n yelb ingress yelb.app --for=jsonpath='{.status.loadBalancer.ingress}'
+
+# Now lets send traffic to our sample app.
+curl $YELB_URL
+
+# You should see a response from Yelb’s UI server.
+
+# Enable traffic filtering in AWS WAF.
+
+# We have associated the ALB that our Kubernetes ingress uses with an AWS WAF web ACL Every request that’s handled by our sample application Yelb pods goes through AWS WAF for inspection. The AWS WAF web ACL is currently allowing every request to pass because we haven’t configured any AWS WAF rules. In order to filter out potentially malicious traffic, we have to specify rules. These rules will tell AWS WAF how to inspect web requests and what to do when it finds a request that matches the inspection criteria.
+# AWS WAF Bot Control is a managed rule group that provides visibility and control over common and pervasive bot traffic to web applications. The Bot Control managed rule group has been tuned to detect various types of bots seen on the web. It can also detect requests that are generated from HTTP libraries, such as libcurl.
+# Since our sample workload isn’t popular enough to attract malicious traffic, let’s use curl to generate bot-like traffic. Once enabled, we expect users who are accessing our application from a web browser like Firefox or Chrome to be allowed in, whereas traffic generated from curl would be blocked out.
+# While Bot Control has been optimized to minimize false positives, we recommend that you deploy Bot Control in count mode first and review CloudWatch metrics and AWS WAF logs to ensure that you are not accidentally blocking legitimate traffic. You can use the Labels feature within AWS WAF to customize how Bot Control behaves. Based on labels generated by Bot Control, you can have AWS WAF take an alternative action, such as sending out customized responses back to the client. Customers use custom responses to override the default response, which is 403 (Forbidden), for block actions when they’d like to send a nondefault status, serve a static error page code back to the client, or redirect the client to a different URL by specifying a 3xx redirection status code.
+
+# Create a rules file.
+cat << EOF > waf-rules.json 
+[
+    {
+      "Name": "AWS-AWSManagedRulesBotControlRuleSet",
+      "Priority": 0,
+      "Statement": {
+        "ManagedRuleGroupStatement": {
+          "VendorName": "AWS",
+          "Name": "AWSManagedRulesBotControlRuleSet"
+        }
+      },
+      "OverrideAction": {
+        "None": {}
+      },
+      "VisibilityConfig": {
+        "SampledRequestsEnabled": true,
+        "CloudWatchMetricsEnabled": true,
+        "MetricName": "AWS-AWSManagedRulesBotControlRuleSet"
+      }
+    }
+]
+EOF
+
+# Update the AWS WAF web ACL with the rule.
+aws wafv2 update-web-acl \
+  --name WAF-FOR-YELB \
+  --scope REGIONAL \
+  --id $ID \
+  --default-action Allow={} \
+  --lock-token $(aws wafv2 list-web-acls \
+  --region $AWS_REGION \
+  --scope REGIONAL \
+  --query "WebACLs[?Name=='WAF-FOR-YELB'].LockToken" \
+  --output text) \
+  --visibility-config SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=YelbWAFAclMetrics \
+  --region $AWS_REGION \
+  --rules file://waf-rules.json
+
+# Press q to exit the NextLockToken section. After waiting about 10 seconds, test the rule by sending a request.
+curl $YELB_URL
+
+# As you see, access to the application is no longer accessible via the terminal.
+# Now lets open the same URL in your browser below and you should see the Yelb UI.
+echo http://$YELB_URL
+
+# As you see, access to the application is no longer accessible via the terminal.
+# Now lets open the same URL in your browser below and you should see the Yelb UI.
+open $YELB_URL
+
+# Use the following commands to delete resources created.
+kubectl delete ingress yelb.app -n yelb
+aws wafv2 delete-web-acl --id $ID --name  WAF-FOR-YELB --scope REGIONAL \
+  --lock-token $(aws wafv2 list-web-acls \
+    --region $AWS_REGION \
+    --scope REGIONAL \
+    --query "WebACLs[?Name=='WAF-FOR-YELB'].LockToken" \
+    --output text) \
+  --region $AWS_REGION
+helm delete aws-load-balancer-controller -n kube-system
+eksctl delete iamserviceaccount \
+  --cluster $EKS_CLUSTER_NAME \
+  --region $AWS_REGION \
+  --name aws-load-balancer-controller
+aws iam detach-role-policy \
+  --policy-arn $LBC_IAM_POLICY_ARN \
+  --role-name $(aws iam list-entities-for-policy --policy-arn $LBC_IAM_POLICY_ARN --query 'PolicyRoles[0].RoleName' --output text)
+aws iam delete-policy --policy-arn $LBC_IAM_POLICY_ARN
+kubectl patch targetgroupbinding k8s-yelb-yelbui-87f2ba1d97 -n yelb --type='json' -p='[{"op": "remove", "path": "/metadata/finalizers"}]'
+kubectl patch svc yelb-ui -n yelb --type='json' -p='[{"op": "remove", "path": "/metadata/finalizers"}]'
+kubectl delete ns yelb
+eksctl delete cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION
+```
+
+## Console Access
+
+- https://aws.amazon.com/premiumsupport/knowledge-center/eks-kubernetes-object-access-error
+- https://varlogdiego.com/eks-your-current-user-or-role-does-not-have-access-to-kubernetes
+
+```bash
+kubectl edit configmap aws-auth -n kube-system
+```
+
+```yaml
+  mapUsers: |
+    - userarn: arn:aws:iam::......:user/user-1
+      username: datalayer-1
+      groups:
+      - system:masters
+```
+
+## Sanity Check
+
+```bash
+# Sanity check 1.
+kubectl get nodes
+kubectl get pods -A
+```
+
+```bash
+# Sanity check 2.
+cat << EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: envar-demo
+  labels:
+    purpose: demonstrate-envars
+spec:
+  containers:
+  - name: envar-demo-container
+    image: gcr.io/google-samples/node-hello:1.0
+    env:
+    - name: DEMO_GREETING
+      value: "Hello from the environment"
+EOF
+kubectl get pods -n default
+# kubectl exec envar-demo -n default -i -t -- echo $DEMO_GREETING
+kubectl exec envar-demo -n default -i -t -- bash
+# echo $DEMO_GREETING
+# exit
+kubectl delete pod envar-demo -n default
+```
+
+```bash
+# Sanity check 3.
+cat << EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80
+EOF
+kubectl get pods -n default
+kubectl delete deployment nginx-deployment -n default
+```
+
+```bash
+# Sanity check 4.
+kubectl create deployment hostnames --image=k8s.gcr.io/serve_hostname
+kubectl scale deployment hostnames --replicas=3
+kubectl get pods -l app=hostnames
+kubectl get pods -l app=hostnames -o go-template='{{range .items}}{{.status.podIP}}{{"\n"}}{{end}}'
+kubectl expose deployment hostnames --port=80 --target-port=9376
+kubectl get svc hostnames
+kubectl get service hostnames -o json
+kubectl get pods -l app=hostnames
+kubectl cluster-info
+kubectl proxy --port=8081
+curl http://localhost:8081/api
+open http://127.0.0.1:8081/api/v1/namespaces/default/services/http:hostnames:/proxy
+kubectl delete deployment hostnames
+```
+
+```bash
+# Sanity check 5.
+cat << EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  labels:
+    app: nginx
+spec:
+  ports:
+  - port: 80
+    name: web
+  clusterIP: None
+  selector:
+    app: nginx
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  selector:
+    matchLabels:
+      app: nginx # has to match .spec.template.metadata.labels
+  serviceName: "nginx"
+  replicas: 3 # by default is 1
+  template:
+    metadata:
+      labels:
+        app: nginx # has to match .spec.selector.matchLabels
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: nginx
+        image: k8s.gcr.io/nginx-slim:0.8
+        ports:
+        - containerPort: 80
+          name: web
+#        volumeMounts:
+#        - name: www
+#          mountPath: /usr/share/nginx/html
+#  volumeClaimTemplates:
+#  - metadata:
+#      name: www
+#    spec:
+#      accessModes: [ "ReadWriteOnce" ]
+#      storageClassName: "my-storage-class"
+#      resources:
+#        requests:
+#          storage: 1Gi
+EOF
+kubectl get pods -n default
+kubectl get svc -n default
+kubectl port-forward service/nginx 8080:80 -n default
+open http://localhost:8080
+```
+
+## K8S Dashboard
+
+- K8S Dashboard on EKS https://docs.aws.amazon.com/eks/latest/userguide/dashboard-tutorial.html
+
+```bash
+## Metrics Server.
+# kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.3.6/components.yaml
+# kubectl get deployment metrics-server -n kube-system
+## [DEPRECATED] Metrics Server.
+# DOWNLOAD_URL=$(curl -Ls "https://api.github.com/repos/kubernetes-sigs/metrics-server/releases/latest" | jq -r .tarball_url)
+# DOWNLOAD_VERSION=$(grep -o '[^/v]*$' <<< $DOWNLOAD_URL)
+# curl -Ls $DOWNLOAD_URL -o metrics-server-$DOWNLOAD_VERSION.tar.gz
+# mkdir metrics-server-$DOWNLOAD_VERSION
+# tar -xzf metrics-server-$DOWNLOAD_VERSION.tar.gz --directory metrics-server-$DOWNLOAD_VERSION --strip-components 1
+# kubectl apply -f metrics-server-$DOWNLOAD_VERSION/deploy/1.8+/
+# kubectl get deployment metrics-server -n kube-system
+# rm -fr metrics-server*
+```
+
+```bash
+## K8S Dashboard.
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0-beta8/aio/deploy/recommended.yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eks-admin
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: eks-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: eks-admin
+  namespace: kube-system
+EOF
+```
+
+```bash
+# Connect to K8S Dashboard.
+dla eks-dashboard
+# Connect to K8S Dashboard.
+kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep eks-admin | awk '{print $1}')
+echo open http://localhost:8081/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy
+kubectl proxy --port 8081
+```
+
+## IAM Roles for Service Accounts
+
+- https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html
+- https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html#pod-configuration
+- https://docs.aws.amazon.com/eks/latest/userguide/enable-iam-roles-for-service-accounts.html
+
+- https://aws.amazon.com/blogs/containers/cross-account-iam-roles-for-kubernetes-service-accounts
+
+- https://docs.aws.amazon.com/eks/latest/userguide/pod-execution-role.html
+
+- https://aws.amazon.com/premiumsupport/knowledge-center/eks-restrict-s3-bucket
+
+- https://github.com/aws/containers-roadmap/issues/23
+
+```bash
+# Create an IAM OIDC provider for your cluster https://docs.aws.amazon.com/eks/latest/userguide/enable-iam-roles-for-service-accounts.html
+aws eks describe-cluster \
+  --region $AWS_REGION \
+  --name $EKS_CLUSTER_NAME \
+  --query "cluster.identity.oidc.issuer" \
+  --output text
+eksctl utils associate-iam-oidc-provider \
+  --region $AWS_REGION \
+  --name $EKS_CLUSTER_NAME \
+  --approve
+aws iam list-open-id-connect-providers | grep xxx
+eksctl utils associate-iam-oidc-provider --cluster $EKS_CLUSTER_NAME --approve
+aws iam list-open-id-connect-providers | grep xxx
+```
+
+```bash
+# Creating an IAM role and policy for your service account https://docs.aws.amazon.com/eks/latest/userguide/create-service-account-iam-policy-and-role.html
+# TODO Remove `DatalayerEksS3DatalayerDev` policy if created before.
+aws iam delete-policy --policy-arn $IAM_POLICY_ARN
+OUT=$(aws iam create-policy \
+  --policy-name DatalayerEksS3DatalayerBackups \
+  --description "Datalayer S3 Backups" \
+  --policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "putget",
+      "Effect": "Allow",
+      "Action": [
+          "s3:PutObject",
+          "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::datalayer-backups-solr/*"
+    },
+    {
+      "Sid": "list",
+      "Effect": "Allow",
+      "Action": [
+          "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::datalayer-backups-solr"
+    }
+  ]
+}
+')
+echo $OUT
+IAM_POLICY_ARN=$(echo $OUT | jq -r '.Policy.Arn')
+echo $IAM_POLICY_ARN
+# IAM_POLICY_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:policy/DatalayerEksS3DatalayerBackups
+# echo $IAM_POLICY_ARN
+eksctl create iamserviceaccount \
+  --name datalayer-s3-backups \
+  --namespace default \
+  --cluster $EKS_CLUSTER_NAME \
+  --attach-policy-arn $IAM_POLICY_ARN \
+  --override-existing-serviceaccounts \
+  --approve
+kubectl describe sa datalayer-s3-backups -n default
+# aws iam list-roles --path-prefix /${EKS_CLUSTER_NAME} --output text
+# IAM_SA=$(aws iam list-roles --output text | grep $EKS_CLUSTER_NAME | grep iamserviceaccount)
+# echo $IAM_SA
+# IAM_SA_ROLE_ARN=$(echo $IAM_SA | tr -s ' ' | cut -d' ' -f2)
+# echo $IAM_SA_ROLE_ARN
+```
+
+```bash
+# Connect to meta-data.
+cat << EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-demo
+  labels:
+    purpose: demonstrate-s3
+spec:
+  serviceAccountName: datalayer-s3-backups
+  containers:
+  - name: s3-demo
+    image: gcr.io/google-samples/node-hello:1.0
+    env:
+    - name: DEMO_GREETING
+      value: "Hello from the environment"
+EOF
+kubectl describe pod s3-demo
+kubectl exec s3-demo -i -t -- bash
+curl http://169.254.169.254/latest/meta-data/iam/info
+curl http://169.254.169.254/latest/meta-data/iam/security-credentials
+curl http://169.254.169.254/latest/meta-data/iam/security-credentials/$(curl http://169.254.169.254/latest/meta-data/iam/security-credentials)
+exit
+kubectl delete pod s3-demo
+```
+
+```bash
+# Connect to S3.
+cat << EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: aws-cli
+  labels:
+    name: aws-cli
+spec:
+  serviceAccountName: datalayer-s3-backups
+  containers:
+  - image: amazon/aws-cli
+    command:
+      - "sh"
+      - "-c"
+      - "sleep 10000"
+#      - "/home/aws/aws/env/bin/aws"
+#      - "s3"
+#      - "ls"
+    name: aws-cli
+EOF
+kubectl describe pod aws-cli
+kubectl exec aws-cli -i -t -- bash
+curl http://169.254.169.254/latest/meta-data/iam/info
+curl http://169.254.169.254/latest/meta-data/iam/security-credentials
+curl http://169.254.169.254/latest/meta-data/iam/security-credentials/$(curl http://169.254.169.254/latest/meta-data/iam/security-credentials)
+aws s3 ls
+aws s3 ls s3://datalayer-backups-solr
+touch tmp.txt
+aws s3 cp tmp.txt s3://datalayer-backups-solr/tmp.txt
+aws s3 ls s3://datalayer-backups-solr/tmp.txt
+aws s3 ls s3://datalayer-backups-solr/
+aws s3 rm s3://datalayer-backups-solr/tmp.txt
+aws s3 ls s3://datalayer-backups-solr/
+exit
+kubectl delete pod aws-cli
+```
+
+## Custom AMI
+
+- https://github.com/awslabs/amazon-eks-ami
+
+## Private Cluster
+
+- https://docs.aws.amazon.com/eks/latest/userguide/private-clusters.html
+- https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html
+- https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html#private-access
+
+- https://eksctl.io/usage/eks-private-cluster
+
+- https://medium.com/faun/amazon-eks-fully-private-worker-nodes-eea737944b2b
+- https://github.com/sebolabs/k8s-eks-tf-playground
+
+In addition to standard Amazon EKS permissions, your IAM user or role must have `route53:AssociateVPCWithHostedZone` permissions to enable the cluster's endpoint private access.
+
+Accessing a private only API server If you have disabled public access for your cluster's Kubernetes API server endpoint, you can only access the API server from within your VPC or a connected network. Here are a few possible ways to access the Kubernetes API server endpoint:
+
+- Connected network – Connect your network to the VPC with an AWS transit gateway or other connectivity option and then use a computer in the connected network. You must ensure that your Amazon EKS control plane security group contains rules to allow ingress traffic on `port 443` from your connected network.
+- Amazon EC2 bastion host – You can launch an Amazon EC2 instance into a public subnet in your cluster's VPC and then log in via SSH into that instance to run kubectl commands. For more information, see Linux bastion hosts on AWS. You must ensure that your Amazon EKS control plane security group contains rules to allow ingress traffic on port 443 from your bastion host. For more information, see Amazon EKS security group considerations. When you configure kubectl for your bastion host, be sure to use AWS credentials that are already mapped to your cluster's RBAC configuration, or add the IAM user or role that your bastion will use to the RBAC configuration before you remove endpoint public access. For more information, see Managing users or IAM roles for your cluster and Unauthorized or access denied (kubectl).
+- AWS Cloud9 IDE – AWS Cloud9 is a cloud-based integrated development environment (IDE) that lets you write, run, and debug your code with just a browser. You can create an AWS Cloud9 IDE in your cluster's VPC and use the IDE to communicate with your cluster. For more information, see Creating an environment in AWS Cloud9. You must ensure that your Amazon EKS control plane security group contains rules to allow ingress traffic on port 443 from your IDE security group. For more information, see Amazon EKS security group considerations. When you configure kubectl for your AWS Cloud9 IDE, be sure to use AWS credentials that are already mapped to your cluster's RBAC configuration, or add the IAM user or role that your IDE will use to the RBAC configuration before you remove endpoint public access. For more information, see Managing users or IAM roles for your cluster and Unauthorized or access denied (kubectl).
+
+## ALB Ingress
+
+- https://docs.aws.amazon.com/eks/latest/userguide/alb-ingress.html
+
+```bash
+OUT=$(aws iam create-policy \
+  --policy-name ALBIngressControllerIAMPolicy \
+  --policy-document https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/iam-policy.json)
+echo $OUT
+IAM_POLICY_ARN=$(echo $OUT | jq -r '.Policy.Arn')
+echo $IAM_POLICY_ARN
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/rbac-role.yaml
+eksctl create iamserviceaccount \
+    --name alb-ingress-controller \
+    --namespace kube-system \
+    --cluster $EKS_CLUSTER_NAME \
+    --attach-policy-arn $IAM_POLICY_ARN \
+    --override-existing-serviceaccounts \
+    --approve
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/alb-ingress-controller.yaml
+kubectl edit deployment.apps/alb-ingress-controller -n kube-system
+# add to the args
+#        - --cluster-name=...
+#        - --aws-vpc-id=vpc-...
+#        - --aws-region=us-west-2
+kubectl get pods -n kube-system | grep alb
+```
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/2048/2048-namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/2048/2048-deployment.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/2048/2048-service.yaml
+```
+
+```bash
+# kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingress-controller/v1.1.4/docs/examples/2048/2048-ingress.yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: "2048-ingress"
+  namespace: "2048-game"
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+  labels:
+    app: 2048-ingress
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            backend:
+              serviceName: "service-2048"
+              servicePort: 80
+EOF
+```
+
+## Prepare a VPC
+
+- Eksctl VPC Networking https://eksctl.io/usage/vpc-networking
+
+- You must ensure to provide at least 2 subnets in different AZs.
+- There are other requirements that you will need to follow, but it's entirely up to you to address those.
+- For example, tagging is not strictly necessary, tests have shown that its possible to create a functional cluster without any tags set on the subnets, however there is no guarantee that this will always hold and tagging is recommended.
+
+- All subnets in the same VPC, within the same block of IPs.
+- Sufficient IP addresses are available.
+- Sufficient number of subnets (minimum 2).
+- Internet and/or NAT gateways are configured correctly.
+- Routing tables have correct entries and the network is functional.
+- Tagging of subnets:
+  - `kubernetes.io/cluster/<name>` tag set to either shared or owned
+  - `kubernetes.io/role/internal-elb` tag set to 1 for private subnets
+
+## Terminate Cluster
+
+```bash
+# !!! WATCH OUT !!!
+# !!! EVERYTHING WILL BE DESTROYED *AND* LOST... !!!
+eksctl delete cluster \
+  --force \
+  --region $AWS_REGION \
+  --name $EKS_CLUSTER_NAME
+```
