@@ -39,6 +39,45 @@ clouder ssh-key ls
 clouder vm ls
 ```
 
+## Context
+
+```bash
+clouder ctx init
+clouder ctx
+clouder ctx set ovh edda3...
+```
+
+## Kubernetes
+
+```bash
+clouder k8s create $DATALAYER_CLUSTER_NAME
+clouder k8s kubeconfig $DATALAYER_CLUSTER_NAME
+clouder k8s
+clouder k8s use $DATALAYER_CLUSTER_NAME
+clouder k8s
+clouder info
+```
+
+```bash
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME router --flavor b2-15 --min 0 --desired 1 --max 10 --role router --roles router --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME api --flavor b2-15 --min 0 --desired 1 --max 10 --role api --roles api --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME system --flavor b2-7 --min 0 --desired 1 --max 10 --role system --roles system --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME solr --flavor b2-7 --min 0 --desired 3 --max 10 --role solr --roles solr --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME ceph --flavor b2-7 --min 0 --desired 3 --max 10 --role ceph --roles ceph --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cpu-medium --flavor b2-15 --min 0 --desired 3 --max 10 --role jupyter --roles jupyter --variant medium --xpu cpu
+# clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME jupyter-cpu-medium --min 0 --desired 0 --max 10
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-small --flavor t1-45 --min 0 --desired 1 --max 10 --role jupyter --roles jupyter --variant small --xpu gpu-cuda
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-medium --flavor t2-45 --min 0 --desired 1 --max 10 --role jupyter --roles jupyter --variant medium --xpu gpu-cuda
+# clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-medium --min 0 --desired 0 --max 10
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-large --flavor h100-380 --min 0 --desired 1 --max 10 --role jupyter --roles jupyter --variant large --xpu gpu-cuda
+# clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-large --min 0 --desired 0 --max 10
+```
+
+```bash
+clouder s3 create s3-$DATALAYER_CLUSTER_NAME
+clouder s3
+```
+
 ## Operator
 
 ```bash
