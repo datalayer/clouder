@@ -50,7 +50,7 @@ clouder = "clouder.application:main"
 clouder-server = "clouder.serverapplication:main"
 
 [tool.hatch.version]
-path = "clouder/__init__.py"
+path = "clouder/_version.py"
 
 [tool.hatch.build]
 artifacts = [
@@ -60,12 +60,7 @@ artifacts = [
 ]
 
 [tool.hatch.build.targets.sdist]
-artifacts = ["clouder/labextension"]
 exclude = [".github", "binder", ".yarn"]
 
-
-[tool.hatch.build.hooks.version]
-path = "clouder/_version.py"
-
-[tool.hatch.build.hooks.jupyter-builder]
-dependencies = ["hatch-jupyter-builder>=0.5"]
+[tool.hatch.build.targets.wheel.shared-data]
+"jupyter-config" = "etc/jupyter"
