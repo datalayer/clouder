@@ -1,6 +1,5 @@
 # AWS
 
-
 # 🛫 Datalayer on ☸️ AWS EKS
 
 ## Requirements
@@ -65,7 +64,7 @@ AWS CLI Configuration.
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
 export AWS_DEFAULT_PROFILE=datalayer
 export AWS_REGION=us-east-1
-export EKS_CLUSTER_NAME=datalayer-io
+export AWS_EKS_CLUSTER_NAME=datalayer-io
 export EKS_NODE_GROUP_NAME=ng-1
 ```
 
@@ -158,12 +157,12 @@ Note: This may take approx. 15 mins to create the cluster.
 #  --vpc-public-subnets=subnet-0153e560b3129a696,subnet-009fa0199ec203c37
 
 # eksctl create cluster \
-#  --name $EKS_CLUSTER_NAME \
+#  --name $AWS_EKS_CLUSTER_NAME \
 #  --region $AWS_REGION \
 #  --managed
 
 eksctl create cluster \
-  --name ${EKS_CLUSTER_NAME} \
+  --name ${AWS_EKS_CLUSTER_NAME} \
   --version 1.21 \
   --region ${AWS_REGION} \
   --zones ${AWS_REGION}a,${AWS_REGION}b,${AWS_REGION}c \
@@ -172,13 +171,13 @@ eksctl create cluster \
 
 ```bash
 AWS_REGION=eu-central-1
-EKS_CLUSTER_NAME=dla-pentest-1
+AWS_EKS_CLUSTER_NAME=dla-pentest-1
 #
-cat > /tmp/$EKS_CLUSTER_NAME.yaml  <<EOF
+cat > /tmp/$AWS_EKS_CLUSTER_NAME.yaml  <<EOF
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 metadata:
-  name: ${EKS_CLUSTER_NAME}
+  name: ${AWS_EKS_CLUSTER_NAME}
   region: ${AWS_REGION}
   version: "1.29"
 iam:
@@ -261,33 +260,33 @@ addons:
 #      withAddonPolicies:  
 #        imageBuilder: true
 EOF
-eksctl create cluster -f /tmp/$EKS_CLUSTER_NAME.yaml
-eksctl upgrade cluster -f /tmp/$EKS_CLUSTER_NAME.yaml
-eksctl create nodegroup --config-file=/tmp/$EKS_CLUSTER_NAME.yaml --include='router'
+eksctl create cluster -f /tmp/$AWS_EKS_CLUSTER_NAME.yaml
+eksctl upgrade cluster -f /tmp/$AWS_EKS_CLUSTER_NAME.yaml
+eksctl create nodegroup --config-file=/tmp/$AWS_EKS_CLUSTER_NAME.yaml --include='router'
 ```
 
 List the EKS clusters.
 
 ```bash
 aws eks list-clusters
-aws eks describe-cluster --name $EKS_CLUSTER_NAME
+aws eks describe-cluster --name $AWS_EKS_CLUSTER_NAME
 ```
 
 ```bash
 eksctl get clusters
 eksctl utils describe-addon-configuration --name aws-guardduty-agent --version v1.5.0-eksbuild.1
-eksctl get addons --cluster $EKS_CLUSTER_NAME
+eksctl get addons --cluster $AWS_EKS_CLUSTER_NAME
 ```
 
 ```bash
 aws eks update-kubeconfig \
   --region $AWS_REGION \
-  --name $EKS_CLUSTER_NAME \
+  --name $AWS_EKS_CLUSTER_NAME \
   --kubeconfig $KUBECONFIG
 ```
 
 ```bash
-eksctl delete cluster --name $EKS_CLUSTER_NAME
+eksctl delete cluster --name $AWS_EKS_CLUSTER_NAME
 ```
 
 ## Kubeconfig
@@ -299,7 +298,7 @@ Update your local Kubeconfig.
 ```bash
 aws eks update-kubeconfig \
   --region $AWS_REGION \
-  --name $EKS_CLUSTER_NAME \
+  --name $AWS_EKS_CLUSTER_NAME \
   --kubeconfig $KUBECONFIG
 ```
 
@@ -309,7 +308,7 @@ kubectl config get-contexts
 
 ```bash
 kubectl config \
-  use-context arn:aws:eks:$AWS_REGION:...:cluster/$EKS_CLUSTER_NAME
+  use-context arn:aws:eks:$AWS_REGION:...:cluster/$AWS_EKS_CLUSTER_NAME
 ```
 
 Get context details.
@@ -330,7 +329,7 @@ eksctl get clusters --region ${AWS_REGION}
 aws eks \
   describe-cluster \
   --region ${AWS_REGION} \
-  --name ${EKS_CLUSTER_NAME}
+  --name ${AWS_EKS_CLUSTER_NAME}
 ```
 
 ## Create Node Groups
@@ -341,13 +340,13 @@ eksctl create nodegroup \
   --nodes 0 \
   --nodes-max 100 \
   --name ${EKS_NODE_GROUP_NAME} \
-  --cluster ${EKS_CLUSTER_NAME} \
+  --cluster ${AWS_EKS_CLUSTER_NAME} \
   --region ${AWS_REGION}
 ```
 
 ```bash
 eksctl get nodegroups \
-  --cluster ${EKS_CLUSTER_NAME}
+  --cluster ${AWS_EKS_CLUSTER_NAME}
 ```
 
 ## Scale the Cluster
@@ -357,7 +356,7 @@ eksctl get nodegroups \
 
 ```bash
 # Get node group details.
-EKS_CLUSTER_DETAILS=$(eksctl get nodegroup --cluster $EKS_CLUSTER_NAME | grep $EKS_CLUSTER_NAME)
+EKS_CLUSTER_DETAILS=$(eksctl get nodegroup --cluster $AWS_EKS_CLUSTER_NAME | grep $AWS_EKS_CLUSTER_NAME)
 echo $EKS_CLUSTER_DETAILS
 EKS_NODE_GROUP_NAME=$(cut -d ' ' -f2 <<<${EKS_CLUSTER_DETAILS})
 echo $EKS_NODE_GROUP_NAME
@@ -367,7 +366,7 @@ Describe node group.
 
 ```bash
 eksctl get nodegroup \
-  --cluster ${EKS_CLUSTER_NAME} \
+  --cluster ${AWS_EKS_CLUSTER_NAME} \
   --name ${EKS_NODE_GROUP_NAME}
 ```
 
@@ -376,7 +375,7 @@ Scale up node group.
 ```bash
 eksctl scale nodegroup \
   --nodes 3 \
-  --cluster ${EKS_CLUSTER_NAME} \
+  --cluster ${AWS_EKS_CLUSTER_NAME} \
   --name ${EKS_NODE_GROUP_NAME}
 ```
 
@@ -385,7 +384,7 @@ Scale down node group.
 ```bash
 eksctl scale nodegroup \
   --nodes 0 \
-  --cluster ${EKS_CLUSTER_NAME} \
+  --cluster ${AWS_EKS_CLUSTER_NAME} \
   --name ${EKS_NODE_GROUP_NAME}
 ```
 
@@ -410,13 +409,13 @@ Autoscaler
 
 ```bash
 AWS_REGION=eu-central-1
-EKS_CLUSTER_NAME=pentest-1
+AWS_EKS_CLUSTER_NAME=pentest-1
 ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
 echo $ACCOUNT_ID
 
 # Store the cluster’s VPC ID in an environment variable as we will need it for the next step.
 VPC_ID=$(aws eks describe-cluster \
-  --name $EKS_CLUSTER_NAME \
+  --name $AWS_EKS_CLUSTER_NAME \
   --region $AWS_REGION \
   --query 'cluster.resourcesVpcConfig.vpcId' \
   --output text)
@@ -428,7 +427,7 @@ echo $VPC_ID
 
 # Associate OIDC provider as prerequisite.
 eksctl utils associate-iam-oidc-provider \
-  --cluster $EKS_CLUSTER_NAME \
+  --cluster $AWS_EKS_CLUSTER_NAME \
   --region $AWS_REGION \
   --approve
 
@@ -449,7 +448,7 @@ echo $LBC_IAM_POLICY_ARN
 
 # Create a service account.
 eksctl create iamserviceaccount \
-  --cluster=$EKS_CLUSTER_NAME \
+  --cluster=$AWS_EKS_CLUSTER_NAME \
   --region $AWS_REGION \
   --namespace=kube-system \
   --name=aws-load-balancer-controller \
@@ -467,7 +466,7 @@ helm repo update
 helm install aws-load-balancer-controller \
   eks/aws-load-balancer-controller \
   --namespace kube-system \
-  --set clusterName=$EKS_CLUSTER_NAME \
+  --set clusterName=$AWS_EKS_CLUSTER_NAME \
   --set serviceAccount.create=false \
   --set serviceAccount.name=aws-load-balancer-controller \
   --set vpcId=$VPC_ID \
@@ -649,7 +648,7 @@ aws wafv2 delete-web-acl --id $ID --name  WAF-FOR-YELB --scope REGIONAL \
   --region $AWS_REGION
 helm delete aws-load-balancer-controller -n kube-system
 eksctl delete iamserviceaccount \
-  --cluster $EKS_CLUSTER_NAME \
+  --cluster $AWS_EKS_CLUSTER_NAME \
   --region $AWS_REGION \
   --name aws-load-balancer-controller
 aws iam detach-role-policy \
@@ -659,7 +658,7 @@ aws iam delete-policy --policy-arn $LBC_IAM_POLICY_ARN
 kubectl patch targetgroupbinding k8s-yelb-yelbui-87f2ba1d97 -n yelb --type='json' -p='[{"op": "remove", "path": "/metadata/finalizers"}]'
 kubectl patch svc yelb-ui -n yelb --type='json' -p='[{"op": "remove", "path": "/metadata/finalizers"}]'
 kubectl delete ns yelb
-eksctl delete cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION
+eksctl delete cluster --name $AWS_EKS_CLUSTER_NAME --region $AWS_REGION
 ```
 
 ## Console Access
@@ -887,15 +886,15 @@ kubectl proxy --port 8081
 # Create an IAM OIDC provider for your cluster https://docs.aws.amazon.com/eks/latest/userguide/enable-iam-roles-for-service-accounts.html
 aws eks describe-cluster \
   --region $AWS_REGION \
-  --name $EKS_CLUSTER_NAME \
+  --name $AWS_EKS_CLUSTER_NAME \
   --query "cluster.identity.oidc.issuer" \
   --output text
 eksctl utils associate-iam-oidc-provider \
   --region $AWS_REGION \
-  --name $EKS_CLUSTER_NAME \
+  --name $AWS_EKS_CLUSTER_NAME \
   --approve
 aws iam list-open-id-connect-providers | grep xxx
-eksctl utils associate-iam-oidc-provider --cluster $EKS_CLUSTER_NAME --approve
+eksctl utils associate-iam-oidc-provider --cluster $AWS_EKS_CLUSTER_NAME --approve
 aws iam list-open-id-connect-providers | grep xxx
 ```
 
@@ -937,13 +936,13 @@ echo $IAM_POLICY_ARN
 eksctl create iamserviceaccount \
   --name datalayer-s3-backups \
   --namespace default \
-  --cluster $EKS_CLUSTER_NAME \
+  --cluster $AWS_EKS_CLUSTER_NAME \
   --attach-policy-arn $IAM_POLICY_ARN \
   --override-existing-serviceaccounts \
   --approve
 kubectl describe sa datalayer-s3-backups -n default
-# aws iam list-roles --path-prefix /${EKS_CLUSTER_NAME} --output text
-# IAM_SA=$(aws iam list-roles --output text | grep $EKS_CLUSTER_NAME | grep iamserviceaccount)
+# aws iam list-roles --path-prefix /${AWS_EKS_CLUSTER_NAME} --output text
+# IAM_SA=$(aws iam list-roles --output text | grep $AWS_EKS_CLUSTER_NAME | grep iamserviceaccount)
 # echo $IAM_SA
 # IAM_SA_ROLE_ARN=$(echo $IAM_SA | tr -s ' ' | cut -d' ' -f2)
 # echo $IAM_SA_ROLE_ARN
@@ -1053,7 +1052,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/aws-alb-ingre
 eksctl create iamserviceaccount \
     --name alb-ingress-controller \
     --namespace kube-system \
-    --cluster $EKS_CLUSTER_NAME \
+    --cluster $AWS_EKS_CLUSTER_NAME \
     --attach-policy-arn $IAM_POLICY_ARN \
     --override-existing-serviceaccounts \
     --approve
@@ -1121,5 +1120,5 @@ EOF
 eksctl delete cluster \
   --force \
   --region $AWS_REGION \
-  --name $EKS_CLUSTER_NAME
+  --name $AWS_EKS_CLUSTER_NAME
 ```
