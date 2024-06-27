@@ -25,7 +25,6 @@ clouder box info
 # Kubernetes.
 clouder k8s create k1
 clouder k8s kubeconfig k1
-clouder k8s create-nodepool k1 jupyter-small --flavor b2-7 --min 1 --desired 1 --max 10 --role jupyter --variant small --xpu cpu
 clouder k8s
 ```
 
@@ -59,18 +58,36 @@ clouder info
 ```
 
 ```bash
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME router --flavor b2-15 --min 0 --desired 1 --max 10 --role router --roles router --xpu cpu
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME api --flavor b2-15 --min 0 --desired 1 --max 10 --role api --roles api --xpu cpu
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME system --flavor b2-7 --min 0 --desired 1 --max 10 --role system --roles system --xpu cpu
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME solr --flavor b2-7 --min 0 --desired 3 --max 10 --role solr --roles solr --xpu cpu
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME ceph --flavor b2-7 --min 0 --desired 3 --max 10 --role ceph --roles ceph --xpu cpu
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cpu-medium --flavor b2-15 --min 0 --desired 3 --max 10 --role jupyter --roles jupyter --variant medium --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME router --flavor b2-15 --min 0 --desired 1 --max 10 --roles router --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME api --flavor b2-15 --min 0 --desired 1 --max 10 --roles api --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME system --flavor b2-7 --min 0 --desired 1 --max 10 --roles system --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME solr --flavor b2-7 --min 0 --desired 3 --max 10 --roles solr --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME ceph --flavor b2-7 --min 0 --desired 3 --max 10 --roles ceph --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cpu-medium --flavor b2-15 --min 0 --desired 3 --max 10 --roles jupyter --variant medium --xpu cpu
 # clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME jupyter-cpu-medium --min 0 --desired 0 --max 10
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-small --flavor t1-45 --min 0 --desired 1 --max 10 --role jupyter --roles jupyter --variant small --xpu gpu-cuda
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-medium --flavor t2-45 --min 0 --desired 1 --max 10 --role jupyter --roles jupyter --variant medium --xpu gpu-cuda
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-small --flavor t1-45 --min 0 --desired 1 --max 10 --roles jupyter --variant small --xpu gpu-cuda
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-medium --flavor t2-45 --min 0 --desired 1 --max 10 --roles jupyter --variant medium --xpu gpu-cuda
 # clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-medium --min 0 --desired 0 --max 10
-clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-large --flavor h100-380 --min 0 --desired 1 --max 10 --role jupyter --roles jupyter --variant large --xpu gpu-cuda
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-large --flavor h100-380 --min 0 --desired 1 --max 10 --roles jupyter --variant large --xpu gpu-cuda
 # clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME jupyter-cuda-large --min 0 --desired 0 --max 10
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME \
+  jupyter-small \
+  --flavor b2-7 \
+  --min 1 \
+  --desired 1 \
+  --max 10 \
+  --roles jupyter \
+  --variant small \
+  --xpu cpu
+clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME \
+  jupyter-cuda-test \
+  --flavor t2-le-180 \
+  --min 0 \
+  --desired 2 \
+  --max 10 \
+  --roles jupyter \
+  --variant test \
+  --xpu gpu-cuda
 ```
 
 ```bash

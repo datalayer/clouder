@@ -72,12 +72,6 @@ class ClouderBaseApp(DatalayerApp):
         help="Maximum number of nodes.",
     )
 
-    role = Unicode(
-        "datalayer",
-        config=True,
-        help="The role for the pool.",
-    )
-
     roles = Unicode(
         "",
         config=True,

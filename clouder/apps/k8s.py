@@ -112,7 +112,6 @@ class ClouderKubernetesNodepoolCreateApp(ClouderBaseApp):
             labels = {f"role.datalayer.io/{role}": "true" for role in self.roles.split(",")}
         else:
             labels = {}
-        labels["node.datalayer.io/role"] = self.role
         labels["node.datalayer.io/variant"] = self.variant
         labels["node.datalayer.io/xpu"] = self.xpu
         kubernetess = get_ovh_kubernetess(context_id)
