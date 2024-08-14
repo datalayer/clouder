@@ -2,7 +2,7 @@
 
 from rich import print
 from rich.table import Table
-from datalayer.application import NoStart
+from datalayer_core.application import NoStart
 
 from ._base import ClouderBaseApp
 from .k8s import ClouderKubernetesListApp

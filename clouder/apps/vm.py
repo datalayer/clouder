@@ -4,7 +4,7 @@ import warnings
 
 from rich import print
 from rich.table import Table
-from datalayer.application import NoStart
+from datalayer_core.application import NoStart
 
 from .ctx import get_default_context
 from ._base import ClouderBaseApp

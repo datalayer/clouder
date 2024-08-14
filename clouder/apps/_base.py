@@ -1,6 +1,6 @@
 """Clouder base app."""
 
-from datalayer.application import DatalayerApp, base_aliases, base_flags
+from datalayer_core.application import DatalayerApp, base_aliases, base_flags
 from traitlets import Unicode, Bool, Int
 
 from .._version import __version__
@@ -12,7 +12,6 @@ clouder_aliases["flavor"] = "ClouderBaseApp.flavor"
 clouder_aliases["min"] = "ClouderBaseApp.min"
 clouder_aliases["desired"] = "ClouderBaseApp.desired"
 clouder_aliases["max"] = "ClouderBaseApp.max"
-clouder_aliases["role"] = "ClouderBaseApp.role"
 clouder_aliases["roles"] = "ClouderBaseApp.roles"
 clouder_aliases["variant"] = "ClouderBaseApp.variant"
 clouder_aliases["xpu"] = "ClouderBaseApp.xpu"
@@ -70,12 +69,6 @@ class ClouderBaseApp(DatalayerApp):
         10,
         config=True,
         help="Maximum number of nodes.",
-    )
-
-    role = Unicode(
-        "datalayer",
-        config=True,
-        help="The role for the pool.",
     )
 
     roles = Unicode(
