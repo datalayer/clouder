@@ -1,6 +1,6 @@
 """Clouder operator application."""
 
-from datalayer.application import NoStart
+from datalayer_core.application import NoStart
 
 from ..operator.operator import start_operator, stop_operator
 from ..util.utils import run_sbin_direct

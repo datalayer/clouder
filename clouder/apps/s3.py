@@ -6,7 +6,7 @@ from rich import print
 from rich.table import Table
 from rich.panel import Panel
 from rich.markdown import Markdown
-from datalayer.application import NoStart
+from datalayer_core.application import NoStart
 
 from ._base import ClouderBaseApp
 from .ctx import get_default_context

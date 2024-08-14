@@ -1,6 +1,6 @@
 """Clouder base app."""
 
-from datalayer.application import DatalayerApp, base_aliases, base_flags
+from datalayer_core.application import DatalayerApp, base_aliases, base_flags
 from traitlets import Unicode, Bool, Int
 
 from .._version import __version__
