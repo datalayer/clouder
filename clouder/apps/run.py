@@ -21,7 +21,7 @@ class ClouderRunShellApp(ClouderBaseApp):
             cmd_args = args[0:2] + [cmd]
             run_shell(cmd_args)
         else:
-            self.log.error("You must provide a shell script to run.")
+            self.log.info("You must provide a shell script to run.")
 
 
 class ClouderRunSbinApp(ClouderBaseApp):
