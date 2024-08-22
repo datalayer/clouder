@@ -76,8 +76,8 @@ clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME \
   --roles jupyter --variant small --xpu gpu-cuda
 clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME \
   jupyter-cuda-medium --flavor t2-45 \
-  --min 0 --desired 1 --max 10 -\
-  -roles jupyter --variant medium --xpu gpu-cuda
+  --min 0 --desired 1 --max 10 \
+  --roles jupyter --variant medium --xpu gpu-cuda
 # clouder k8s update-nodepool $DATALAYER_CLUSTER_NAME \
   jupyter-cuda-medium --min 0 --desired 0 --max 10
 clouder k8s create-nodepool $DATALAYER_CLUSTER_NAME \
