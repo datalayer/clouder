@@ -8,7 +8,17 @@ module.exports = {
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
   organizationName: 'datalayer', // Usually your GitHub org/user name.
-  projectName: 'datalayer', // Usually your repo name.
+  projectName: 'clouder', // Usually your repo name.
+  markdown: {
+    mermaid: true,
+  },
+  plugins: [
+    '@docusaurus/theme-live-codeblock',
+    'docusaurus-lunr-search',
+  ],
+  themes: [
+    '@docusaurus/theme-mermaid',
+  ],
   themeConfig: {
     colorMode: {
       defaultMode: 'light',
@@ -34,10 +44,10 @@ module.exports = {
           'aria-label': 'Linkedin',
         },
         {
-          href: 'https://twitter.com/DatalayerIO',
+          href: 'https://x.com/DatalayerIO',
           position: 'right',
-          className: 'header-twitter-link',
-          'aria-label': 'Twitter',
+          className: 'header-x-link',
+          'aria-label': 'X',
         },
         {
           href: 'https://github.com/datalayer',
@@ -73,8 +83,8 @@ module.exports = {
               href: 'https://github.com/datalayer',
             },
             {
-              label: 'Twitter',
-              href: 'https://twitter.com/datalayerio',
+              label: 'X',
+              href: 'https://x.com/datalayerio',
             },
             {
               label: 'Linkedin',
@@ -115,6 +125,10 @@ module.exports = {
         },
         theme: {
           customCss: require.resolve('./src/css/custom.css'),
+        },
+        gtag: {
+          trackingID: 'G-ZQGMFNPPHT', 
+          anonymizeIP: false,
         },
       },
     ],
