@@ -47,7 +47,7 @@ build: ## build
 	($(CONDA_ACTIVATE) ${ENV_NAME}; \
 	  yarn build )
 
-publish: build ## publish
+deploy: build ## deploy
 	($(CONDA_ACTIVATE) ${ENV_NAME}; \
 	  aws s3 rm \
 		s3://clouder-sh/ \
