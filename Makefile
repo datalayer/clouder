@@ -42,7 +42,7 @@ publish: clean build ## publish
 
 typedoc: ## generate typedoc
 	rm -fr typedoc && \
-	yarn typedoc --tsconfig ./tsconfig.json && \
+	npm typedoc --tsconfig ./tsconfig.json && \
 	open typedoc/index.html
 
 publish-typedoc: typedoc ## deploy typedoc

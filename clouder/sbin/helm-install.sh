@@ -6,7 +6,7 @@
 echo -e $BOLD$YELLOW"Installing Helm..."$NOCOLOR$NOBOLD
 echo
 
-CLOUDER_HELM_VERSION=3.13.2
+CLOUDER_HELM_VERSION=3.17.3
 
 install_helm_on_linux() {
     curl -Lo /tmp/helm-v${CLOUDER_HELM_VERSION}-linux-amd64.tar.gz https://get.helm.sh/helm-v${CLOUDER_HELM_VERSION}-linux-amd64.tar.gz \
