@@ -6,18 +6,18 @@
 echo -e $BOLD$YELLOW"Installing Helm..."$NOCOLOR$NOBOLD
 echo
 
-CLOUDER_HELM_VERSION=3.17.3
+HELM_VERSION=3.17.3
 
 install_helm_on_linux() {
-    curl -Lo /tmp/helm-v${CLOUDER_HELM_VERSION}-linux-amd64.tar.gz https://get.helm.sh/helm-v${CLOUDER_HELM_VERSION}-linux-amd64.tar.gz \
-        && tar xvfz /tmp/helm-v${CLOUDER_HELM_VERSION}-linux-amd64.tar.gz -C /tmp \
+    curl -Lo /tmp/helm-v${HELM_VERSION}-linux-amd64.tar.gz https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz \
+        && tar xvfz /tmp/helm-v${HELM_VERSION}-linux-amd64.tar.gz -C /tmp \
         && mv /tmp/linux-amd64/helm /usr/local/bin \
         && chmod +x /usr/local/bin/helm
 }
 
 install_helm_on_macos() {
-    curl -Lo /tmp/helm-v${CLOUDER_HELM_VERSION}-darwin-amd64.tar.gz https://get.helm.sh/helm-v${CLOUDER_HELM_VERSION}-darwin-amd64.tar.gz \
-        && tar xvfz /tmp/helm-v${CLOUDER_HELM_VERSION}-darwin-amd64.tar.gz -C /tmp \
+    curl -Lo /tmp/helm-v${HELM_VERSION}-darwin-amd64.tar.gz https://get.helm.sh/helm-v${HELM_VERSION}-darwin-amd64.tar.gz \
+        && tar xvfz /tmp/helm-v${HELM_VERSION}-darwin-amd64.tar.gz -C /tmp \
         && mv /tmp/darwin-amd64/helm /usr/local/bin \
         && chmod +x /usr/local/bin/helm
 }
