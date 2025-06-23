@@ -1,0 +1,90 @@
+---
+sidebar_position: 2
+---
+
+# Users
+
+The IAM service contains a CLI to manage the users. As Kubernetes cluster administrator, you will need to connect in shell to a running IAM pod and use the `datalayer-iam` command.
+
+```bash
+datalayer-iam --help
+The Datalayer IAM application.
+
+Subcommands
+===========
+Subcommands are launched as `datalayer_iam cmd [args]`. For information on using
+subcommand 'cmd', do: `datalayer_iam cmd -h`.
+
+config
+user
+    Manage Datalayer through CLI.
+```
+
+## Create a User
+
+Create a user with roles e.g. `platform_member` and `platform_admin`.
+
+```bash
+datalayer-iam user create \
+  --handle USER_HANDLE \
+  --roles platform_member \
+  --roles platform_admin \
+  --email admin@datalayer.io
+```
+
+You will prompted for a password.
+
+## Manage User Roles
+
+Add a role to a user.
+
+```bash
+datalayer-iam user add-role \
+  --uid USER_UID \
+  --roles platform_usage_reviewer
+```
+
+```bash
+datalayer-iam user add-role \
+  --handle USER_HANDLE \
+  --roles platform_usage_reviewer
+```
+
+Remove a role from a user.
+
+```bash
+datalayer-iam user remove-role \
+  --uid USER_UID \
+  --roles platform_usage_reviewer
+```
+
+```bash
+datalayer-iam user remove-role \
+  --handle USER_HANDLE \
+  --roles platform_usage_reviewer
+```
+
+## Delete Users
+
+Delete a user if your REALLY need it.
+
+:::danger
+
+This operation is NOT reversible.
+
+:::
+
+```bash
+datalayer-iam user delete \
+  --handle USER_HANDLE
+```
+
+<!--
+
+curl --user solr:$SOLR_PWD http://localhost:8983/solr/iam/select?q=*:*
+
+curl --user solr:$SOLR_PWD \
+  http://localhost:8983/solr/iam/update?commitWithin=500 \
+  -d '{ delete: { query: "user_handle_s:some_handle" } }'
+
+-->

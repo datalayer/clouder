@@ -1,0 +1,121 @@
+---
+title: Datalayer Operator
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Ξ 🥷 Datalayer Operator
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">Service</Label>
+</Stack>
+
+`Datalayer Operator` ensures that the requested services and resources are available. Datalayer Operator is a Kubernetes operator that constantly monitors the system and takes action so that the desired state is met on the Kubernetes cluster. It is responsible for managing the state of the Datalayer services.
+
+- Manage the defined 🛣️ Routes to secure and direct the incoming request to the correct service or pod.
+- Manage the defined 🐋 Docker Images building and publication in the Docker registry.
+- Manage the defined 💼 Jupyter Contents, 🌳 Jupyter Environments and 🎱 Jupyterpools.
+
+Please note that the [Jupyter Service](/platform/kubernetes/services/jupyter) is responsible to deliver the ⚪ Kernels to the user, so it is not the duty of the Datalayer Operator to serve Kernels.
+
+A subset of the Operator methods is exposed via REST endpoints for internal consumption (not visible from the externals).
+
+## Deploy Datalayer Operator
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-operator
+export NAMESPACE=datalayer-jupyter
+helm upgrade \
+  --install $RELEASE \
+  oci://${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts/operator \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --set operator.image="${DATALAYER_DOCKER_REGISTRY}/operator:0.1.1" \
+  --set operator.certificateIssuer="letsencrypt" \
+  --set operator.crds="true" \
+  --set operator.env.AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+  --set operator.env.AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+  --set operator.env.AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}" \
+  --set operator.env.DATALAYER_DOCKER_REGISTRY="${DATALAYER_DOCKER_REGISTRY}" \
+  --set operator.env.DATALAYER_RUN_HOST="${DATALAYER_RUN_HOST}" \
+  --set operator.env.DATALAYER_OPERATOR_API_KEY="${DATALAYER_OPERATOR_API_KEY}" \
+  --set operator.env.DATALAYER_IAM_HOST="${DATALAYER_IAM_HOST}" \
+  --set operator.env.DATALAYER_IAM_API_KEY="${DATALAYER_IAM_API_KEY}" \
+  --set operator.env.DATALAYER_AUTHZ_ENGINE="${DATALAYER_AUTHZ_ENGINE}" \
+  --set operator.env.DATALAYER_CERT_ISSUER="${DATALAYER_CERT_ISSUER}" \
+  --set operator.env.DATALAYER_INGRESS_CLASS_NAME="${DATALAYER_INGRESS_CLASS_NAME}" \
+  --timeout 5m
+```
+  </TabItem>
+</Tabs>
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Datalayer CRDs.
+
+```bash
+kubectl get crd jupyter-contents.datalayer.io
+kubectl explain jupyter-contents.spec
+```
+
+```bash
+kubectl get crd jupyter-environments.datalayer.io
+kubectl explain jupyter-environments.spec
+```
+
+```bash
+kubectl get crd jupyterpools.datalayer.io
+kubectl explain jupyterpools.spec
+```
+
+Check the availability of the Datalayer Operator Pods.
+
+```bash
+kubectl get pods -n datalayer-jupyter -l app=operator
+```
+
+Check the logs of the Datalayer Operator Pods.
+
+```bash
+kubectl logs -n datalayer-jupyter -l app=operator -f
+```
+
+## Tear Down Datalayer Operator
+
+If needed, tear down.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-operator
+export NAMESPACE=datalayer-jupyter
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>

@@ -1,0 +1,68 @@
+---
+title: Deploy with Plane
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Ξ 🛫 Deploy with Plane
+
+You will invoke plane `up` or `down` command to deploy or tear down a specific service.
+
+For example to deploy and undeploy the Datalayer IAM sevice, use the following commands.
+
+```bash
+# Deploy datalayer-iam for example.
+plane up datalayer-iam
+```
+
+```bash
+# Tear down datalayer-iam for example.
+plane down datalayer-iam
+```
+
+Follow the steps to deploy the [complete range of services](/platform/kubernetes/services).
+
+
+Plane is using Helm charts behind the scene. Once the services are deployed, you can list them.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+$ plane list
+
+┏┓┓ ┏┓┳┓┏┓
+┃┃┃ ┣┫┃┃┣ 
+┣┛┗┛┛┗┛┗┗┛
+
+Copyright (c) Datalayer, Inc. https://datalayer.io
+
+Datalayer Planes
+
+NAME                    NAMESPACE               REVISION        UPDATED                                         STATUS          CHART                   APP VERSION
+datalayer-cert-manager  datalayer-cert-manager  1               2024-03-19 10:54:42.969502238 +0100 CET         deployed        cert-manager-v1.13.4    v1.13.4    
+datalayer-cuda-operator datalayer-cuda-operator 2               2024-03-19 10:39:07.933483744 +0100 CET         deployed        gpu-operator-v23.9.2    v23.9.2    
+datalayer-iam           datalayer-api           1               2024-04-05 07:01:46.621956745 +0200 CEST        deployed        iam-0.0.7               0.0.7      
+datalayer-operator      datalayer-api           1               2024-04-05 07:05:36.593057854 +0200 CEST        deployed        operator-0.0.8          0.0.8      
+datalayer-router        datalayer-router        1               2024-03-19 10:45:48.857161975 +0100 CET         deployed        ingress-nginx-4.0.13    1.1.0      
+datalayer-solr-operator datalayer-solr-operator 1               2024-03-19 11:00:56.532717916 +0100 CET         deployed        solr-operator-0.8.0     v0.8.0     
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+$ helm ls -A
+
+NAME                    NAMESPACE               REVISION        UPDATED                                         STATUS          CHART                   APP VERSION
+datalayer-cert-manager  datalayer-cert-manager  2               2024-05-15 17:18:28.565888599 +0200 CEST        deployed        cert-manager-v1.13.4    v1.13.4    
+datalayer-datashim      datalayer-datashim      1               2024-06-07 12:50:32.32667034 +0200 CEST         deployed        datashim-charts-1.3.0   1.3.0      
+datalayer-iam           datalayer-api           2               2024-06-12 20:22:03.006073487 +0200 CEST        deployed        iam-0.0.8               0.0.8      
+datalayer-jupyter       datalayer-api           1               2024-06-11 18:20:21.74442198 +0200 CEST         deployed        jupyter-0.0.1           0.0.1      
+datalayer-library       datalayer-api           1               2024-06-11 18:05:04.416334435 +0200 CEST        deployed        library-0.0.6           0.0.6      
+datalayer-operator      datalayer-api           1               2024-06-11 18:07:31.820949197 +0200 CEST        deployed        operator-0.0.8          0.0.8      
+datalayer-solr-operator datalayer-solr-operator 1               2024-05-15 17:18:58.941726689 +0200 CEST        deployed        solr-operator-0.8.0     v0.8.0     
+datalayer-spacer        datalayer-api           1               2024-06-11 18:06:29.634547001 +0200 CEST        deployed        spacer-0.0.6            0.0.6      
+datalayer-traefik       datalayer-traefik       1               2024-05-16 05:45:39.411921146 +0200 CEST        deployed        traefik-28.0.0          v3.0.0     
+jupyter-server          datalayer-api           1               2024-06-07 09:53:40.45432425 +0200 CEST         deployed        jupyter-server-0.0.6    0.0.6      
+```
+  </TabItem>
+</Tabs>

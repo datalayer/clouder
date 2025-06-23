@@ -1,0 +1,65 @@
+---
+sidebar_position: 3
+---
+
+import ModalImage from "react-modal-image";
+
+# Jupyterpool
+
+## Jupyterpool Specification
+
+The Jupyterpool maintain a pool of Jupyter Kernels ready to be assigned the user. The size is configurable per Pool.
+
+When assigned to a User, the Jupyter Kernels are injected with the [User Secrets](/platform/features/secrets-injection).
+
+Your cluster needs to be provisionned to support the `size` of the defined Pools.
+
+The complete specification [is available here](https://github.com/datalayer/helm-charts/blob/main/charts/datalayer-operator/templates/jupyterpool.yaml) and the following sections show simple examples.
+
+## Manage the Jupyterpools
+
+```bash
+kubectl get jupyterpool -A
+kubectl get jupyterpool -o yaml -A
+```
+
+## Relation with the Jupyter Environments
+
+If a JupyterPool defines some `resources`, they override the default ones set in the [Jupyter Environments](./jupyter-environments).
+
+## Jupyterpool Example
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: Jupyterpool
+metadata:
+  name: python-simple-pool
+  namespace: datalayer-jupyter
+  labels:
+    project.datalayer.io/name: dev
+spec:
+  environment: python-simple-env
+  size: 3
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: role.datalayer.io/jupyter
+            operator: In
+            values:
+            - "true"
+          - key: node.datalayer.io/variant
+            operator: In
+            values:
+            - medium
+          - key: node.datalayer.io/xpu
+            operator: In
+            values:
+            - cpu
+  burningRate: 0.01
+  cull:
+    seconds: 999999
+EOF
+```

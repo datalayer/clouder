@@ -1,0 +1,55 @@
+---
+title: Datalayer AI Agents
+---
+
+import { Label, Stack } from '@primer/react-brand';
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+`Datalayer AI Agents` exposes AI Agents.
+
+## Deploy Datalayer AI Agents
+
+```bash
+plane up datalayer-ai-agents
+```
+
+Check the availability of the Datalayer AI Agents Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=ai-agents
+```
+
+Check the logs of the Datalayer AI Agents Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=ai-agents
+```
+
+Check the availability of the Datalayer AI Agents Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer AI Agents Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/ai-agents/version
+open https://${DATALAYER_RUN_HOST}/api/ai-agents/v1/ping
+```
+
+## Tear Down Datalayer AI Agents
+
+If needed, tear down.
+
+```bash
+plane down datalayer-ai-agents
+```
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/ai-agents/v1/ui).

@@ -1,0 +1,329 @@
+---
+title: Solr
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Solr
+
+## Apache Solr Operator
+
+To deploy Solr, you first need to deploy the [Solr Operator](https://solr.apache.org/operator).
+
+```bash
+helm repo add apache-solr https://solr.apache.org/charts
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-solr-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+nodeSelector:
+  role.datalayer.io/system: "true"
+zookeeper-operator:
+  nodeSelector:
+    role.datalayer.io/system: "true"
+EOF
+export RELEASE=datalayer-solr-operator
+export NAMESPACE=datalayer-solr-operator
+kubectl create \
+  -n $NAMESPACE \
+  -f https://solr.apache.org/operator/downloads/crds/v0.8.0/all-with-dependencies.yaml
+helm upgrade \
+  --install $RELEASE \
+  apache-solr/solr-operator \
+  --version 0.8.0 \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --values /tmp/values.yaml \
+  --timeout 5m
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Solr CRDs.
+
+```bash
+kubectl explain solrcloud.spec.zookeeperRef.provided.config
+kubectl explain solrcloud.spec.zookeeperRef.provided.persistence
+kubectl explain solrcloud.spec.zookeeperRef.provided.persistence.spec
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Solr Operator Pods.
+
+```bash
+kubectl get pods -n datalayer-solr-operator -l control-plane=solr-operator
+```
+
+## Datalayer Solr Cluster
+
+Prepare a AWS S3 bucket for the Solr backups (the `DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME` environment variable should contain that name) and create a secret with write access to that S3 bucket.
+
+```bash
+kubectl create secret generic aws-creds \
+  --from-literal=access-key-id=$AWS_ACCESS_KEY_ID \
+  --from-literal=secret-access-key=$AWS_SECRET_ACCESS_KEY \
+  --namespace=datalayer-solr
+kubectl describe secret aws-creds -n datalayer-solr
+```
+
+Create a secret for the Solr authentication.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: solr-basic-auth
+  namespace: datalayer-solr
+type: kubernetes.io/basic-auth
+stringData:
+  username: ${DATALAYER_SOLR_USERNAME}
+  password: ${DATALAYER_SOLR_PASSWORD}
+EOF
+kubectl describe secret solr-basic-auth -n datalayer-solr
+# Secret for the datalayer-api namespace.
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: solr-basic-auth
+  namespace: datalayer-api
+type: kubernetes.io/basic-auth
+stringData:
+  username: ${DATALAYER_SOLR_USERNAME}
+  password: ${DATALAYER_SOLR_PASSWORD}
+EOF
+kubectl describe secret solr-basic-auth -n datalayer-api
+```
+
+You are now ready to create a Solr cluster. ensure the `DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME` and `DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION` variables with the name and region of the S3 bucket for the backups.
+
+You can also configure the size of the cluster, a 3 nodes replica cluster is what is defined in the following spec.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer.yaml
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: solr.apache.org/v1beta1
+kind: SolrCloud
+metadata:
+  name: solr-datalayer
+  namespace: datalayer-solr
+spec:
+  dataStorage:
+    persistent:
+      reclaimPolicy: Retain
+      pvcTemplate:
+        spec:
+          resources:
+            requests:
+              storage: "200Gi"
+  replicas: 3
+  solrImage:
+    tag: 9.0.0
+  solrJavaMem: "-Xms1g -Xmx5g"
+  solrModules:
+    - s3-repository
+  additionalLibs:
+    - "/opt/solr/contrib/s3-repository/lib"
+  backupRepositories:
+    - name: s3
+      s3:
+        bucket: ${DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME}
+        region: ${DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION}
+        credentials:
+          accessKeyIdSecret:
+            name: aws-creds
+            key: access-key-id
+          secretAccessKeySecret:
+            name: aws-creds
+            key: secret-access-key
+  customSolrKubeOptions:
+    podOptions:
+      nodeSelector:
+        role.datalayer.io/solr: "true"
+      envVars:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: aws-creds
+            key: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: aws-creds
+            key: secret-access-key
+      - name: AWS_DEFAULT_REGION
+        value: us-east-1
+      resources:
+        limits:
+          memory: "3G"
+        requests:
+          cpu: "65m"
+          memory: "1G"
+  zookeeperRef:
+    provided:
+      zookeeperPodPolicy:
+        nodeSelector:
+          role.datalayer.io/solr: "true"
+        resources:
+          limits:
+            memory: "1G"
+          requests:
+            cpu: "65m"
+            memory: "156Mi"
+      persistence:
+        reclaimPolicy: Delete
+        spec:
+          resources:
+            requests:
+              storage: "5Gi"
+      replicas: 3
+  solrOpts: "-Dsolr.autoSoftCommit.maxTime=10000"
+  solrGCTune: "-XX:SurvivorRatio=4 -XX:TargetSurvivorRatio=90 -XX:MaxTenuringThreshold=8"
+  solrSecurity:
+    authenticationType: "Basic"
+    basicAuthSecret: "solr-basic-auth"
+    probesRequireAuth: false
+EOF
+```
+  </TabItem>
+</Tabs>
+
+Check the creation of the Solr Cluster Pods. It may take multiple minutes to get a completely up-and-running Solr cluster, mainly due to the time to provision the required storage.
+
+```bash
+kubectl get solrclouds -n datalayer-solr -w
+# NAME             VERSION   TARGETVERSION   DESIREDNODES   NODES   READYNODES   UPTODATENODES   AGE
+# solr-datalayer   9.0.0                     3              3       3            3               79s
+kubectl get pods -n datalayer-solr -w
+kubectl describe pods -n datalayer-solr | grep Node
+```
+
+## Create Datalayer Solr Collections
+
+Create the Solr collections.
+
+<Tabs groupId="solr">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane solr-init
+# Check the solr init pod.
+kubectl get pod datalayer-solr-init -n datalayer-system -w
+# Check the logs and once initialization successfully completed, delete the pod.
+kubectl logs datalayer-solr-init -n datalayer-system -f
+# Delete the solr init container.
+kubectl delete pod datalayer-solr-init -n datalayer-system
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+
+## Access Datalayer Solr
+
+To connect from you host to the Solr user interface, add the following entries in your `/etc/hosts` file.
+
+```bash
+# /etc/hosts
+127.0.0.1      solr-datalayer-solrcloud-0.solr-datalayer-solrcloud-headless.datalayer-solr solr-datalayer-solrcloud-1.solr-datalayer-solrcloud-headless.datalayer-solr solr-datalayer-solrcloud-2.solr-datalayer-solrcloud-headless.datalayer-solr
+
+127.0.0.1      solr-datalayer-solrcloud-zookeeper-0.solr-datalayer-solrcloud-zookeeper-headless.datalayer-solr.svc.cluster.local solr-datalayer-solrcloud-zookeeper-1.solr-datalayer-solrcloud-zookeeper-headless.datalayer-solr.svc.cluster.local solr-datalayer-solrcloud-zookeeper-2.solr-datalayer-solrcloud-zookeeper-headless.datalayer-solr.svc.cluster.local
+```
+
+Launch two kubectl port-forward to the Kubernetes cluster.
+
+```bash
+# open http://localhost:8983/solr
+# open http://solr-datalayer-solrcloud-0.solr-datalayer-solrcloud-headless.datalayer-solr:8983/solr
+kubectl port-forward -n datalayer-solr service/solr-datalayer-solrcloud-zookeeper-client 2181:2181 &
+kubectl port-forward -n datalayer-solr service/solr-datalayer-solrcloud-headless 8983:8983 &
+wait
+```
+
+You will need Java and [Apache Solr](https://solr.apache.org) available on your system as well as the configuration files.
+
+```bash
+export ZK_HOST=localhost:2181
+export SOLR_HOME=/opt/solr
+export SOLR_AUTH_TYPE="basic"
+export SOLR_AUTHENTICATION_OPTS="-Dbasicauth=solr:${DATALAYER_SOLR_PASSWORD}"
+export PATH=$SOLR_HOME/bin:$PATH
+export YELLOW='\x1b[33m'
+export RESET='\x1b[0m'
+
+for COLLECTION in iam credits invites secrets spaces usage
+do
+    echo
+    echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
+    echo
+    $SOLR_HOME/bin/solr create -c $COLLECTION -shards 3 -replicationFactor 3 -d $PLANE_HOME/etc/dockerfiles/datalayer-solr/config -p 8983
+done
+```
+  </TabItem>
+</Tabs>
+
+## Scale Datalayer Solr
+
+Scale Solr replicas if needed.
+
+```bash
+kubectl scale \
+  --replicas=5 \
+  solrcloud/solr-datalayer \
+  -n datalayer-solr
+```
+
+## Tear Down Datalayer Solr
+
+Tear down the created Solr Cloud if needed.
+
+```bash
+kubectl delete solrcloud solr-datalayer -n datalayer-solr
+kubectl get solrcloud -A
+```
+
+Tear down the Solr Operator if needed.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-solr-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-solr-operator
+export NAMESPACE=datalayer-solr-operator
+helm delete $RELEASE --namespace $NAMESPACE
+kubectl delete \
+  -n $NAMESPACE \
+  -f https://solr.apache.org/operator/downloads/crds/v0.8.0/all-with-dependencies.yaml
+```
+  </TabItem>
+</Tabs>

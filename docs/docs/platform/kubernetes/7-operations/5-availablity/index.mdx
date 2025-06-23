@@ -1,0 +1,13 @@
+# Availability
+
+To create new Kernels, the Datalayer services must be up-and-running.
+
+Any assigned Kernel will remain reachable even if the Datalayer services are completely down.
+
+The availabilty of the Datalayer services can be viewed on this [Status page](https://status.datalayer.run).
+
+## Fault Tolerance
+
+Once the Jupyter Kernel is assigned to its client, it is stateless and the Datalayer services can be completely down while keeping serving existing users.
+
+The access to the Kernel is assured by the Kubernetes Ingress.

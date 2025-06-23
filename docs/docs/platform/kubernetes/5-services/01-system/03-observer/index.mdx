@@ -1,0 +1,392 @@
+---
+title: Observer
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ModalImage from "react-modal-image";
+
+# Observer
+
+The Datalayer Observer Helm Chart installs the needed `Observability` tooling for the Datalayer Platform to be operated in production.
+
+<div style={{marginBottom: 20}}>
+<ModalImage
+  small="https://assets.datalayer.tech/observer/observer-detailed-view.png"
+  large="https://assets.datalayer.tech/observer/observer-detailed-view.png"
+  alt=""
+/>
+</div>
+
+## Tooling
+
+### OpenTelemetry Collector
+
+The OpenTelemetry Collector is used:
+
+- As Kubernetes Deployment to proxy metrics and traces from Datalayer services to Prometheus and Tempo.
+- As Kubernetes Daemonset to parse pod log files and send them to Loki.
+
+### Prometheus
+
+[Prometheus](https://prometheus.io) is used to gather metrics.
+
+### Tempo
+
+[Tempo](https://grafana.com/oss/tempo) is used to gather traces.
+
+### Loki
+
+[Loki](https://grafana.com/oss/loki) is used to gather logs of all the services in a central place.
+
+### Alert Manager
+
+[Prometheus Alert Manager](https://prometheus.io/alerting/latest/alertmanager) is used to create and manage the alerts.
+
+### Grafana
+
+[Grafana](https://grafana.com/grafana) is used to visualize and analyze the gathered information.
+
+## How to Install?
+
+```bash
+plane up datalayer-observer
+```
+
+The first time, you will likely get an error preventing the Opentelemetry collectors to
+be created. Executing the `up` command a second time should pass.
+
+If you face some issues due to the OpenTelemetry operator, it is likely
+related to the CRDs being undefined in the cluster. You can install them
+manually from `plane/etc/helm/charts/datalayer-observer/charts/crds/crds`.
+
+:::note
+
+Helm should install them the first time. But this is a complex thing to handle; see https://helm.sh/chart_best_practices/custom_resource_definitions/#install-a-crd-declaration-before-using-the-resource
+
+:::
+
+## What is Deployed?
+
+This chart is built on top of multiple subcharts:
+
+- `kube-prometheus-stack` - Full Prometheus stack activating:
+    - AlertManager
+    - Grafana
+    - Prometheus Operator
+    - Prometheus
+    - Prometheus Node Exporter
+- `loki`
+    - Loki as single binary
+- `tempo`
+    - Tempo as single binary
+- `opentelemetry-operator` - using collector-contrib image
+
+In addition to the subcharts elements, it creates:
+
+- An OpenTelemetry collector as singleton instance to proxy traces and metrics from services to Prometheus and Tempo
+- An OpenTelemetry collector as daemonset to parse the container log files and proxy them to loki
+- A custom ingress for grafana to use similar config as for Datalayer services
+- A service monitor to tell prometheus to fetch the metrics:
+  - from the OpenTelemetry collector singleton
+  - from the Remote Kernels (currently we use the Jupyter Server prometheus endpoint)
+- Cluster roles for the OpenTelemetry collectors in order to use the Kubernetes API to fetch pod/node metadata to enrich the telemetry metadata.
+
+:::warning
+
+Currently no traces are observed for the Remote Kernels.
+
+:::
+
+```mermaid
+flowchart LR
+    subgraph node1
+    subgraph pod1
+    rk[Jupyter Kernel]
+    oc[Jupyter Companion]
+    end
+    lc[Log collector]-- parse logs -->rk
+    lc-- parse logs -->oc
+    ne[Node exporter]
+    end
+    lc-. send logs .->Loki
+    pr-->ne
+    subgraph node2
+    subgraph pod2
+    iam
+    end
+    lc2[Log collector]-- parse logs -->iam
+    ne2[Node exporter]
+    end
+    lc2-. send logs .->Loki
+    pr-->ne2
+    otelc[OpenTelemetry Collector]
+    iam-- metrics & traces -->otelc
+    pr[Prometheus]-- metrics -->otelc
+    pr-- metrics -->rk
+    oc-- metrics & traces -->otelc
+    otelc-- traces -->Tempo
+    Grafana-->Tempo
+    Grafana-->Loki
+    Grafana-->pr
+    style pr stroke:salmon
+    style lc stroke:green
+    style lc2 stroke:green
+    style Loki stroke:green
+    style Tempo stroke:salmon
+    linkStyle 1,2,3,5,6 stroke:green
+```
+
+## Telemetry Metadata
+
+Opentelemetry requires the services to be distinguished using a triplet (`service.name`, `service.namespace`, `service.instance.id`) - only the first one is mandatory. But Prometheus requires services to be distinguished using a doublet (`job` or `pod`, `instance`).
+
+Terefore as recommended in Opentelemetry documentation, the following mapping is applied: `job` == `service.namespace`; `instance` == `service.instance.id`.
+
+Those metadata are set from:
+
+- `service.name`:
+  - Enforce on telemetry send by datalayer services
+  - Extracted from container name for logs
+- `service.namespace`: Kubernetes namespace
+- `service.instance.id`: Kubernetes pod id
+
+The other metadata normalized (in Loki, Tempo and Prometheus) are:
+
+- `app`: Kubernetes pod label `datalayer.io/app`
+- `namespace`: Kubernetes namespace
+- `pod`: Kubernetes pod name
+- `cluster`: Value from `$DATALAYER_RUN_HOST`
+- `instance`: Kubernetes instance
+
+For Remote Kernels, the following metadata are also added:
+
+- `datalayer.pool.name`: Kubernetes label `jupyterpool.datalayer.io/name`
+- `datalayer.pool.status`: Kubernetes label `jupyterpool.datalayer.io/pod-status`
+- `datalayer.pool.user`: Kubernetes label `jupyterpool.datalayer.io/user-uid`
+- `datalayer.pool.type`: Kubernetes label `jupyterpool.datalayer.io/kernel-type`
+- `datalayer.pool.reservation`: Kubernetes label `jupyterpool.datalayer.io/reservation-id`
+
+## How to Uninstall?
+
+```bash
+plane down datalayer-observer
+```
+
+:::warning
+
+The Opentelemetry collectors will unfortunately not be removed - the associated CRs are failing to be deleted.
+
+You will need to edit them manually to remove the finalizer (as the OpenTelemetry operator is down).
+
+Then normally all associated Pods should be removed.
+
+:::
+
+## Tips and Tricks
+
+### Grafana
+
+Grafana will be available on this URL.
+
+```bash
+open ${DATALAYER_RUN_URL}/grafana
+```
+
+If you did not set an `admin` password, it was set using a random string in Kubernetes secret. You can print it by executing the following command.
+
+```bash
+kubectl get secret --namespace datalayer-observer \
+  -l app.kubernetes.io/name=grafana \
+  -o=jsonpath="{.items[0].data.admin-password}" | base64 --decode
+echo
+```
+
+Use the `admin` and the printed `password` credentials to connect via the Grafana Web page.
+
+### Telemetry Exploration
+
+`Grafana` is the de-facto tool for exploring all telemetry (logs, traces and metrics); in particular the _Explore_ panel.
+
+For `Tempo`, you can query the data using the _Search_ method and setting a _Service name_. Traces are usually not the best places to start - better use logs that will link the associated trace.
+
+For `Loki`, you can query using a label filter on `service_name` (e.g. _iam_). When clicking on a log entry, you will access its metadata and a link to the associated trace (if available).
+
+For `Prometheus`, you can query using a label filter on `service_name` (e.g. _iam_). It is usually easier than starting with a metric names as those are not standardize across services (neither in name nor in unit - that appears in the name).
+
+### Prometheus
+
+Prometheus gets its data source definition from CRs `PodMonitor` and `ServiceMonitor` (recommended). Third-parties that don't support OpenTelemetry metrics use such monitors and therefore are not proxied by the OpenTelemetry collector.
+
+Firstly:
+
+- `ServiceMonitor`
+   - Used by Grafana, AlertManager, Loki, Tempo, Prometheus, PrometheusOperator, Prometheus Node Exporter and OpenTelemetry Collector singleton.
+   - To be detected by Prometheus the ServiceMonitor must have the two labels:
+
+```
+monitoring.datalayer.io/instance: "observer"
+monitoring.datalayer.io/enabled: "true"
+```
+
+  - Kubernetes metrics are also gathered through service monitors defined in the kube-prometheus-stack.
+
+Secondly:
+
+- `PodMonitor`: used by Pulsar stack (default in the Helm Chart).
+   - PodMonitor can be defined in any namespace 
+   - To be detected by Prometheus the PodMonitor must have a label `app=pulsar`. Other app name could be defined in the `kube-prometheus-stack.prometheus.prometheusSpec.podMonitorSelector`.
+
+### Instrumentation
+
+#### Datalayer Services
+
+The services based on connexion are instrumented explicitly using the code defined in `datalayer_common.instrumentation` as a custom version of the Python instrumentation ASGI was needed in particular to push the http route metadata.
+
+:::warning
+
+The logging instrumentor is used as by default it calls `basicConfig`. The service must not call it.
+
+:::
+
+Configure the metrics and traces targets is done through environment variables.
+
+```bash
+# OPEN TELEMETRY
+
+export OTEL_SDK_DISABLED="true"
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://datalayer-collector-collector.datalayer-observer.svc.cluster.local:4317
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://datalayer-observer-tempo.datalayer-observer.svc.cluster.local:4317
+```
+
+:::info
+
+Currently the data is sent using gRPC.
+
+HTTP is also available but would require to change the instrumentation code as the library to use is different.
+
+:::
+
+#### Runtimes
+
+There is for now no custom instrumentation, nor custom log format. Only metrics from the standard Jupyter Server prometheus endpoint are gathered.
+
+##### Non-working instrumentation
+
+Auto-instrumentation by the OpenTelemetry operator
+via a CR `Instrumentation` was tried but it did not work.
+
+That CR must be defined in the namespace the pod are gonna be created and
+the instrumentation will occur only at the pod creation.
+
+A pod is selected for instrumentation if it gets some annotations. In this 
+specific case, to instrument Python on a multi-container pod:
+
+
+```python
+instrumentation.OpenTelemetry.io/inject-python: "true"
+instrumentation.OpenTelemetry.io/container-names: "{KERNEL_CONTAINER_NAME}"
+```
+
+:::note
+
+See [this README](https://github.com/open-telemetry/OpenTelemetry-operator?tab=readme-ov-file#OpenTelemetry-auto-instrumentation-injection) for more information and available options (to be set through environment variables).
+
+:::
+
+The Python auto-instrumentation is using http to send data to the OpenTelemetry Collector.
+
+## Grafana Dashboards
+
+On top of the standard technical stack (Pulsar, Ceph...) dashboards, we have prepared custom dashboards to help with the observation.
+
+The dashboards definitions are available in this [public GitHub repository](https://github.com/datalayer/grafana-dashboards).
+
+### Services
+
+<ModalImage
+  small="https://assets.datalayer.tech/observer/observer-services.png"
+  large="https://assets.datalayer.tech/observer/observer-services.png"
+  alt=""
+/>
+
+### Overall View
+
+<ModalImage
+  small="https://assets.datalayer.tech/observer/observer-overall-view.png"
+  large="https://assets.datalayer.tech/observer/observer-overall-view.png"
+  alt=""
+/>
+
+### Detailed View
+
+<ModalImage
+  small="https://assets.datalayer.tech/observer/observer-detailed-view.png"
+  large="https://assets.datalayer.tech/observer/observer-detailed-view.png"
+  alt=""
+/>
+
+<!--
+
+```bash
+kubectl get pods -n datalayer-observer
+kubectl get ingress -n datalayer-observer
+kubectl describe cert datalayer-observer-cert-secret -n datalayer-observer
+```
+
+```bash
+open https://${DATALAYER_RUN_HOST}/prometheus
+open ${DATALAYER_RUN_URL}/grafana
+```
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: pod-monitor-jupyter-available
+  namespace: datalayer-observer
+  labels:
+    monitoring.datalayer.io/name: datalayer-jupyter
+spec:
+  podMetricsEndpoints:
+  - interval: 10s
+    path: /metrics
+    targetPort: 2300
+  namespaceSelector:
+    matchNames:
+    - datalayer-jupyter
+  selector:
+    matchLabels:
+      jupyterpool.datalayer.io/pod-status: available
+EOF
+kubectl get podmonitor pod-monitor-jupyter-available -n datalayer-observer
+kubectl delete podmonitor pod-monitor-jupyter-available -n datalayer-observer
+```
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: pod-monitor-jupyter-assigned
+  namespace: datalayer-observer
+  labels:
+    monitoring.datalayer.io/name: datalayer-jupyter
+spec:
+  podMetricsEndpoints:
+  - interval: 10s
+    path: /metrics
+    targetPort: 2300
+  namespaceSelector:
+    matchNames:
+    - datalayer-jupyter
+  selector:
+    matchLabels:
+      jupyterpool.datalayer.io/pod-status: assigned
+EOF
+kubectl get podmonitor pod-monitor-jupyter-assigned -n datalayer-observer
+kubectl delete podmonitor pod-monitor-jupyter-assigned -n datalayer-observer
+```
+
+-->

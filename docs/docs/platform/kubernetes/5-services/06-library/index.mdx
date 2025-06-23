@@ -1,0 +1,63 @@
+---
+title: Datalayer Library
+---
+
+import { Label, Stack } from '@primer/react-brand';
+
+# Ξ 📚 Datalayer Library
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">API</Label>
+</Stack>
+
+`Datalayer Library` provides a searchable index of artifacts useful for data analysis.
+
+- Dataset.
+- Cell.
+- Notebook.
+- Environment.
+- Kernel.
+
+## Deploy Datalayer Library
+
+```bash
+plane up datalayer-library
+```
+
+Check the availability of the Datalayer Library Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=library
+```
+
+Check the logs of the Datalayer Library Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=library
+```
+
+Check the availability of the Datalayer Library Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer Library Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/library/version
+open https://${DATALAYER_RUN_HOST}/api/library/v1/ping
+```
+
+## Tear Down Datalayer Library
+
+If needed, tear down.
+
+```bash
+plane down datalayer-library
+```
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/library/v1/ui).

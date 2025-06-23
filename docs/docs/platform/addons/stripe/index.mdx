@@ -1,0 +1,74 @@
+---
+title: Stripe Addon
+---
+
+import ModalImage from "react-modal-image";
+
+# Stripe Addon
+
+Stripe allows to add pre-paid payments to the Platform so users can buy Credits and consume them.
+
+<div style={{marginBottom: 20}}>
+<ModalImage
+  small="https://assets.datalayer.tech/addons/stripe-addon-1.png"
+  large="https://assets.datalayer.tech/addons/stripe-addon-1.png"
+  alt=""
+/>
+</div>
+
+## Stripe Configuration
+
+1. Create a product with name e.g. `Datalayer Credits`.
+   1. Copy the product ID and set that value (starting with `prod_`) as the `DATALAYER_STRIPE_PRODUCT_ID` environment variable.
+2. Create one or more pricing for that product, each pricing is for a package of credits.
+   1. Pricing policy: Select `one-off` (it will charge a one-time fee).
+   2. Pricing model: Select `Package pricing`.
+      1. Amount: e.g. $5.00 per 50 units (one unit equals one credits on the platform, and we recommend 0.1$ per unit/credit).
+      2. Choose a VAT policy, `Auto`, `Yes` or `No` based on your country policy.
+   3. Set a price description that will be fetched and displayed in the payment form.
+3. Create a Webhook endpoint.
+   1. Set the target endpoint URL, e.g. `https://test.datalayer.run/api/iam/stripe/v1/webhook`.
+   2. Select the events to be sent, we only use `checkout.session.completed`.
+   3. Copy the Webhook signing secret and set that value (starting with `whsec_`) as the `DATALAYER_STRIPE_WEBHOOK_SECRET` environment variable.
+4. Get additional Keys present in the `Developers > API keys` section of the Stripe portal.
+   1. Copy the Stripe Publishable API Key (starting with `pk_`) and set that value as the `DATALAYER_STRIPE_JS_API_KEY` environment variable.
+   2. Copy the Stripe Secret API Key (starting with `sk_`) and set that value as the `DATALAYER_STRIPE_API_KEY` environment variable.
+   
+## Datalayer Services
+
+The Datlayer services need to respond to the calls to the Webhook.
+
+1. Add feature to create a Stripe customer for each platform users.
+2. Add handler to fetch the prices to display possible credit packages to the user.
+3. Add handler to create a Stripe checkout session (read more on the [Stripe documentation website](https://docs.stripe.com/checkout/embedded/quickstart)).
+4. Add a Webhook handler to update user credits balance (read more on the [Stripe documentation website](https://docs.stripe.com/webhooks)).
+   1. Check the payload signature.
+   2. Filter by event type - although we should only get one type here.
+   3. Get the checkout session purchases from the event metadata.
+   4. Update user credits balance with the retrieved purchases.
+
+:::warning
+
+- Stripe will retry sending event if the webhook fails (with exponential backoff delay).
+- Stripe may send multiple times the same events.
+
+:::
+
+## User Interface
+
+The User Interface needs to implement the following functionality.
+
+1. Fetch the prices for the Remote Kernel credits, requesting the Datalayer Services (that will interrogate back Stripe).
+2. Display a form for the user to pick a credits package.
+3. Fetch a `checkout session id`, requesting the Datalayer Services (that will interrogate Stripe).
+4. Display the embedded Strip checkout session using the secret of the checkout session.
+
+Read more on the [Stripe documentation website](https://docs.stripe.com/checkout/embedded/quickstart).
+
+That is it as we don't trust the customer Web Application to validate a checkout session, we are using the Webhook events.
+
+<ModalImage
+  small="https://assets.datalayer.tech/addons/stripe-addon-2.png"
+  large="https://assets.datalayer.tech/addons/stripe-addon-2.png"
+  alt=""
+/>

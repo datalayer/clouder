@@ -1,0 +1,49 @@
+---
+title: Pods Benchmarks
+---
+
+# Pods Benchmarks
+
+Create a Nodepool.
+
+```bash
+clouder k8s create-nodepool dev1 stress-test-small --flavor b2-7 --min 1 --desired 1 --max 5 --role stress-test --variant small --xpu cpu
+```
+
+```bash
+kubectl get nodes -w
+kubectl get nodes -l node.datalayer.io/role=stress-test -l node.datalayer.io/variant=small -l node.datalayer.io/xpu=cpu
+```
+
+Apply the Deployment.
+
+```bash
+# Apply a deployment (from the top of this repository).
+kubectl apply -f ./etc/k8s-specs/stress-test/deployments.yaml
+kubectl get pods -l app=stress-test-1
+kubectl get pods -l app=stress-test-1 -w
+# NAME                            READY   STATUS    RESTARTS   AGE
+# stress-test-1-6c47bdbd4-46gwm   1/1     Running   0          14s
+# ...
+# stress-test-1-6c47bdbd4-z2ckd   1/1     Running   0          14s
+```
+
+Connect to a Pod and run commands (stress as you want).
+
+```bash
+kubectl exec -it stress-test-1-6c47bdbd4-46gwm -- python -c "print('Hello Python')"
+# 
+kubectl exec -it stress-test-1-6c47bdbd4-46gwm -- bash
+# python -c "print('Hello Python')"
+```
+
+Tear down.
+
+```bash
+# Tear down the deployment (from the top of this repository).
+kubectl delete -f ./etc/k8s-specs/stress-test/deployments.yaml
+```
+
+## CPU Requests and Limits
+
+- Read this blog post https://www.datadoghq.com/blog/kubernetes-cpu-requests-limits

@@ -1,0 +1,28 @@
+# Scaling
+
+The platform operator [provisions](/platform/kubernetes/operations/jupyter) the Kubernetes cluster with the Jupyter Contents, Environments and Pools.
+
+Based on the user traffic, the operator has to size the Kubernetes Nodepools and Jupyterpools size to balance availability and costs.
+
+The size of the Nodepools and Jupyterpools can be updated based on the expected traffic. This is how you achieve scalability.
+
+The API services can be scaled up to serve in parallel more traffic in needed, ensuring parrallel scalability.
+
+Read the available [benchmarks](/platform/kubernetes/operations/scaling) to get more information on the various up- and down- scaling cases.
+
+## Scaling Up
+
+Scaling-up is achieved by giving more nodes to the related [Nodepools](/platform/kubernetes/cluster/nodes/), e.g. `jupyter-cpu-medium`, `jupyter-cuda-medium`...
+.
+
+## Scaling Down
+
+Scaling-down is achieved by giving less nodes to the related [Nodepools](/platform/kubernetes/cluster/nodes/), e.g. `jupyter-cpu-medium`, `jupyter-cuda-medium`...
+
+## Benchmarks
+
+Benchmarks are being worked out and will be published on this page as soon as available.
+
+The benchmarks focus on the balance between Kernel availability and costs.
+
+[Contact us](/professional-services/support) if you want to know more.

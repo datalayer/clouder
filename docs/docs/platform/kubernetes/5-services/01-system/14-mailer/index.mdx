@@ -1,0 +1,59 @@
+---
+title: Mailer
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Mailer
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-mailer
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+...
+EOF
+export RELEASE=datalayer-mailer
+export NAMESPACE=datalayer-mailer
+helm upgrade \
+    --install $RELEASE \
+    datalayer/mailer \
+    --create-namespace \
+    --namespace $NAMESPACE \
+    --values /tmp/values.yaml \
+    --timeout 10m
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Mailer Pods.
+
+```bash
+kubectl get pods -n datalayer-mailer
+
+# NAME                                 READY   STATUS      RESTARTS   AGE
+...
+```
+
+Tear down Mailer if needed.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-mailer
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-mailer
+export NAMESPACE=datalayer-mailer
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>

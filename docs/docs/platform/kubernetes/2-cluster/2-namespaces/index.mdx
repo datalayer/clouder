@@ -1,0 +1,144 @@
+---
+title: K8S Namespaces
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ModalImage from "react-modal-image";
+
+# ☸️ Namespaces
+
+It is advised to create the Kubernetes namespaces in advance with the following command.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane k8s-create-namespaces
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-api
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-storage
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-cuda-operator
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-jupyter
+#  labels:
+#    observer.datalayer.io/prometheus: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-nginx
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-openfga
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-falco
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-kafka
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-pulsar
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-router
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-solr
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-solr-operator
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-growth
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-traefik
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datalayer-vault
+EOF
+```
+  </TabItem>
+</Tabs>
+
+:::note
+
+This step is mandatory for now as some preliminary specs need to be applied before the Helm charts.
+
+:::
+
+The below picture represents the requested namespaces and their responsibilities.
+
+<div style={{maxWidth: 1000, width: 1000}}>
+<ModalImage
+  small="https://assets.datalayer.tech/datalayer-tech/namespaces.png"
+  large="https://assets.datalayer.tech/datalayer-tech/namespaces.png"
+  alt=""
+/>
+</div>
+
+## Delete Namespace
+
+In some cases, you may want to delete the complete namespace to prune all resources.
+
+```bash
+export NAMESPACE=datalayer-example
+kubectl delete namespace ${NAMESPACE}
+```
+
+:::danger
+
+If the deletion remains stuck (e.g. probably because of finalizers defined on some resources), the following snippet will `force delete` the namespace. It will remove all resources, so make sure you know what you are doing!
+
+```bash
+export NAMESPACE=datalayer-example
+kubectl get namespace "${NAMESPACE}" -o json \
+  | tr -d "\n" | sed "s/\"finalizers\": \[[^]]\+\]/\"finalizers\": []/" \
+  | kubectl replace --raw /api/v1/namespaces/${NAMESPACE}/finalize -f -
+```
+
+:::

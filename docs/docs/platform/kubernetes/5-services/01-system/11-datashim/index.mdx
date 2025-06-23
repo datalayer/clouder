@@ -1,0 +1,98 @@
+---
+title: Datashim
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Datashim
+
+[Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Jupyter Content`features.
+
+```bash
+helm repo add datashim https://datashim-io.github.io/datashim
+helm repo update
+```
+
+Install Datashim.
+
+```bash
+plane up datalayer-datashim
+```
+
+Check the Datashim Pods.
+
+```bash
+kubectl get pods -n datalayer-datashim
+# NAME                                READY   STATUS              RESTARTS   AGE
+# csi-attacher-s3-0                   1/1     Running             0          8s
+# csi-provisioner-s3-0                1/1     Running             0          8s
+# csi-s3-2rllf                        2/2     Running             0          8s
+# ...
+# csi-s3-bkbkr                        2/2     Running             0          8s
+# csi-s3-c4xv5                        2/2     Running             0          8s
+# dataset-operator-7b55b587d4-xtd6q   1/1     Running   0          2m25s
+```
+
+Validate the configuration with the creation on an example Dataset.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datashim.io/v1alpha1
+kind: Dataset
+metadata:
+  name: example-dataset
+spec:
+  local:
+    type: COS
+    accessKeyID: $AWS_ACCESS_KEY_ID
+    secretAccessKey: $AWS_SECRET_ACCESS_KEY
+    endpoint: https://s3.$AWS_DEFAULT_REGION.amazonaws.com
+    bucket: datalayer-dev
+    region: $AWS_DEFAULT_REGION
+EOF
+kubectl describe dataset example-dataset
+kubectl describe pvc example-dataset
+# ...
+#   Normal   ProvisioningSucceeded  24 ..-4368-822d-2a79da8488cc  Successfully provisioned volume pvc-60224200-935e-4e02-8322-26b1f7274314
+kubectl get pv | grep example-dataset
+#
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  labels:
+    dataset.0.id: example-dataset
+    dataset.0.useas: mount
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+EOF
+#
+kubectl describe pod nginx
+kubectl exec nginx -it -- ls /mnt/datasets/example-dataset
+#
+kubectl delete pod nginx
+kubectl delete dataset example-dataset
+```
+
+Create the secret for the S3 access so it can be reused in the [Jupyter Environments](/platform/kubernetes/operations/jupyter/jupyter-environments).
+
+```bash
+kubectl create secret generic \
+  s3-secret \
+  --from-literal=access_key_id=$AWS_ACCESS_KEY_ID \
+  --from-literal=secret_access_key=$AWS_SECRET_ACCESS_KEY \
+  --from-literal=region=$AWS_DEFAULT_REGION \
+  -n datalayer-jupyter
+kubectl describe secret s3-secret -n datalayer-jupyter
+```
+
+If needed, tear down.
+
+```bash
+plane down datalayer-datashim
+```

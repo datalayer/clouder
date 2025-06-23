@@ -1,0 +1,103 @@
+---
+sidebar_position: 1
+---
+
+import ModalImage from "react-modal-image";
+
+# Build a Platform
+
+## Architecture
+
+```mermaid
+block-beta
+  columns 6
+
+  User
+  JupyterClient space DatalayerPlane
+  JupyterClient-->DatalayerPlane
+  Kubernetes
+  Cloud
+  space space space ExternalIAM ExternalCredits ExternalDataSources
+
+  classDef edge fill:#696,stroke:#333;
+  classDef k8s fill:#969,stroke:#333;
+  class User,JupyterClient edge
+  class DatalayerPlane,Kubernetes,Cloud k8s
+```
+
+Datalayer is a managed platform that delivers Runtimes with custom integrations.
+
+- IAM, included integration external providers (GitHub and JWT).
+- Usage based billing, included intergation with external Credits providers.
+- Variety of Datasets and external Data Sources.
+
+## Edge
+
+```mermaid
+block-beta
+  columns 6
+
+  User
+  JupyterClient
+
+  classDef edge fill:#696,stroke:#333;
+  class User,JupyterClient edge
+```
+
+The user extends its existing AI solution and run code on the Runtimes:
+
+- Via a local or remote [JupyterLab](https://jupyter-kernels.datalayer.tech/jupyterlab).
+- Via a WEB Application, such as the the ones built with [Jupyter UI](https://jupyter-ui.datalayer.tech).
+- Via a [Command Line Interface](https://jupyter-kernels.datalayer.tech/cli/) (CLI).
+- Via a [JupyterHub](/platform/integrations/jupyterhub).
+
+## Kubernetes
+
+```mermaid
+block-beta
+  columns 6
+
+  DatalayerPlane
+  Kubernetes
+  Cloud
+
+  classDef k8s fill:#969,stroke:#333;
+  class DatalayerPlane,Kubernetes,Cloud k8s
+```
+
+You need a combination of technologies and deployments to run the [Datalayer Plane on Kubernetes](/platform/kubernetes).
+
+```mermaid
+block-beta
+columns 3
+  space db(("Edge")) space
+  space blockArrowId6<["&nbsp;&nbsp;&nbsp;"]>(down) space
+  block:router:3
+    space
+    Router["Ingress"]
+    space
+  end
+  space space space
+  block:api:2
+    IAM["IAM"]
+    Jupyter["Jupyter"]
+    Library["Library"]
+  end
+  block:manager:1
+    Manager["Manager"]
+  end
+  space space space
+  block:solr:1
+    Solr["Solr"]
+  end
+  block:kernels:1
+    Kernels["Kernels"]
+  end
+  block:operator:1
+    Operator(["Operator"])
+  end
+  router --> api
+  router --> manager
+  api --> kernels
+  style Router fill:#969,stroke:#333,stroke-width:4px
+```

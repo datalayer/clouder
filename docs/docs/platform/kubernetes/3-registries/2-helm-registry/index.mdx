@@ -1,0 +1,69 @@
+---
+title: Helm Registry
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# ⚓ Helm Registry
+
+## Public Helm Charts
+
+Each service is a ⚓ Helm Chart developed in the public [datalayer/helm-charts](https://github.com/datalayer/helm-charts) GitHub repository.
+
+## Datalayer OCI Registry
+
+With access to the Plane repository, you can push the Helm charts to a OCI Registry where you have write access to.
+
+First, login to the Helm Registry.
+
+```bash
+export DATALAYER_HELM_REGISTRY_HOST=<oci-registry> # Pick the registry of your choice.
+export DATALAYER_HELM_REGISTRY=${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts
+helm registry login ${DATALAYER_HELM_REGISTRY_HOST}
+```
+
+Then, build and push the Helm Charts to the Helm Registry.
+
+<Tabs groupId="plane">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane helm-push
+```
+  </TabItem>
+  <TabItem value="shell" label="Shell">
+```bash
+cd $PLANE_HOME/etc/helm
+for HELM_CHART in iam jupyter operator
+do
+    echo -----------------------------------------------
+    echo -e "Packaging Helm Chart [datalayer-$HELM_CHART]"
+    echo
+    rm *.tgz || true
+    helm package datalayer-$HELM_CHART
+    echo
+    echo -e "Pushing Helm Chart [datalayer-$HELM_CHART]"
+    helm push *.tgz oci://$DATALAYER_HELM_REGISTRY
+    rm *.tgz || true
+    echo
+done
+```
+  </TabItem>
+</Tabs>
+
+<!--
+Once pushed, you can pull them anywhere if you need that.
+
+```bash
+for HELM_CHART in 'iam 0.1.0' 'jupyter 0.1.0' 'operator 0.1.0'
+do
+    echo -----------------------------------------------
+    echo $HELM_CHART
+    IFS=' ' read -ra arr <<< $HELM_CHART
+    echo -e "Pulling Helm Chart [datalayer-${arr[0]}]"
+    echo
+    helm pull oci://$DATALAYER_HELM_REGISTRY/${arr[0]} --version ${arr[1]}
+    echo
+done
+```
+-->

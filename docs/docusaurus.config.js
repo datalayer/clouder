@@ -33,9 +33,33 @@ module.exports = {
       items: [
         {
           type: 'doc',
-          docId: 'index',
+          docId: 'platform/index',
           position: 'left',
-          label: 'Clouder',
+          label: 'Platform',
+        },
+        {
+          type: 'doc',
+          docId: 'professional-services/index',
+          position: 'left',
+          label: 'Professional Services',
+        },
+        {
+          type: 'doc',
+          docId: 'glossary/index',
+          position: 'left',
+          label: 'Glossary',
+        },
+        {
+          href: 'https://discord.gg/YQFwvmSSuR',
+          position: 'right',
+          className: 'header-discord-link',
+          'aria-label': 'Discord',
+        },
+        {
+          href: 'https://github.com/datalayer',
+          position: 'right',
+          className: 'header-github-link',
+          'aria-label': 'GitHub',
         },
         {
           href: 'https://bsky.app/profile/datalayer.io',
@@ -44,10 +68,10 @@ module.exports = {
           'aria-label': 'Bluesky',
         },
         {
-          href: 'https://github.com/datalayer',
+          href: 'https:/x.com/DatalayerIO',
           position: 'right',
-          className: 'header-github-link',
-          'aria-label': 'GitHub',
+          className: 'header-x-link',
+          'aria-label': 'X',
         },
         {
           href: 'https://www.linkedin.com/company/datalayer',
@@ -83,7 +107,7 @@ module.exports = {
           items: [
             {
               label: 'Clouder',
-              to: '/docs',
+              to: '/',
             },
           ],
         },
@@ -150,8 +174,8 @@ module.exports = {
       '@docusaurus/preset-classic',
       {
         docs: {
+          routeBasePath: '/',
           sidebarPath: require.resolve('./sidebars.js'),
-          // Please change this to your repo.
           editUrl:
             'https://github.com/datalayer/clouder/edit/main/',
         },

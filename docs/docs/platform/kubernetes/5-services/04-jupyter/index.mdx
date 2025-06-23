@@ -1,0 +1,108 @@
+---
+title: Datalayer Jupyter
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Ξ 🪐 Datalayer Jupyter
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+`Datalayer Jupyter` manages the access to the ⚪ Kernels based on the defined 🎱 Jupyterpools.
+
+## Deploy Datalayer Jupyter
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-jupyter
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-jupyter
+export NAMESPACE=datalayer-api
+helm upgrade \
+  --install $RELEASE \
+  oci://${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts/jupyter \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --set jupyter.image="${DATALAYER_DOCKER_REGISTRY}/jupyter:0.1.1" \
+  --set jupyter.certificateIssuer="letsencrypt" \
+  --set jupyter.env.DATALAYER_RUN_HOST="${DATALAYER_RUN_HOST}" \
+  --set jupyter.env.DATALAYER_CDN_URL="${DATALAYER_CDN_URL}" \
+  --set jupyter.env.DATALAYER_JWT_ISSUER="${DATALAYER_JWT_ISSUER}" \
+  --set jupyter.env.DATALAYER_JWT_SECRET="${DATALAYER_JWT_SECRET}" \
+  --set jupyter.env.DATALAYER_JWT_ALLOWED_ISSUERS="${DATALAYER_JWT_ALLOWED_ISSUERS}" \
+  --set jupyter.env.DATALAYER_OPERATOR_API_KEY="${DATALAYER_OPERATOR_API_KEY}" \
+  --set jupyter.env.DATALAYER_AUTHZ_ENGINE="${DATALAYER_AUTHZ_ENGINE}" \
+  --timeout 5m
+```
+  </TabItem>
+</Tabs>
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Datalayer Jupyter Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=jupyter
+```
+
+Check the logs of the Datalayer Jupyter Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=jupyter -f
+```
+
+Check the availability of the Datalayer Jupyter Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer Jupyter Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/jupyter/version
+open https://${DATALAYER_RUN_HOST}/api/jupyter/v1/ping
+```
+
+## Tear Down Datalayer Jupyter
+
+If needed, tear down.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-jupyter
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-jupyter
+export NAMESPACE=datalayer-api
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/jupyter/v1/ui).

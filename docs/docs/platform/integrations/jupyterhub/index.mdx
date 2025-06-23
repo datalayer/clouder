@@ -1,0 +1,68 @@
+---
+title: JupyterHub Integration
+---
+
+import ModalImage from "react-modal-image";
+
+# JupyterHub Integration
+
+Datalayer is engineered to function both as a standalone solution and in conjunction with industry standards like JupyterHub.
+
+JupyterHub, a widely-used platform, can significantly benefit from the integration of Datalayer's Remote Kernels features. These enhancements are seamlessly incorporated, ensuring a transparent user experience.
+
+<ModalImage
+  small="https://assets.datalayer.tech/architecture/run-architecture.png"
+  large="https://assets.datalayer.tech/architecture/run-architecture.png"
+  alt=""
+/>
+
+JupyterHub administrators can effortlessly install the Datalayer extension to enable these features, providing users with an enriched computational environment.
+
+## Steps for Installation
+
+Prepare the Environment: Ensure that the JupyterHub instance is up-to-date.
+
+Install the Extension: Execute the installation command for the Datalayer extension. To access the Datalayer features from JupyterHub, you need to use a JupyterLab or Jupyter Notebook with the [Jupyter Kernels](https://jupyter-kernels.datalayer.tech) extension installed. For Kubernetes based deployments of JupyterHub, you need to configure your deployment with [singleuser.extraFiles](https://z2jh.jupyter.org/en/stable/resources/reference.html#singleuser-extrafiles).
+
+```yaml
+# Example configuration.
+singleuser:
+  extraFiles:
+    additional_jupyter_config:
+      mountPath: /etc/jupyter/jupyter_server_config.py
+      stringData: |
+        c.DatalayerExtensionApp.run_url="<RUN_URL>"
+        c.DatalayerExtensionApp.white_label=True
+        c.DatalayerExtensionApp.Launcher.category="GPU"
+        c.DatalayerExtensionApp.Launcher.name="GPU Kernels"
+        c.DatalayerExtensionApp.Launcher.icon_svg_url="https://raw.githubusercontent.com/datalayer/icons/main/svg/data1/gpu.svg"
+```
+
+Verify the Installation: Confirm the successful integration of Datalayer with JupyterHub: By following these steps, administrators can integrate Datalayer, leveraging its capabilities to augment the functionality of JupyterHub for all users.
+
+## User Flow
+
+- User authenticates on Customer IAM
+- User launches Kernel on Customer solution
+- Users launches Kernels on Datalayer
+- User provides Identity (e.g. JWT)
+- Datalayer Operator calls the Customer to validate Identity (e.g. JWT…) and check available Credits
+- If validated, Datalayer Operator assigns a Kernel to the User and burns-down the User Credits (based on Reservations)
+
+## Management
+
+You need to [provision the Kubernetes cluster with the CRD for Jupyter](/platform/kubernetes/operations/jupyter):
+
+- Jupyterpool
+- Jupyter Environment
+- Jupyter Content
+
+Datalayer ships the services on the Kubernetes cluster for:
+
+- Observability with Prometheus, Grafana and Loki.
+- Alerting with Prometheus.
+- Credits Usage.
+
+## Custom IAM and Credits
+
+IAM and Credit integrations between Customer and Datalayer, [contact us](/professional-services/support/) to discuss your custom integration.

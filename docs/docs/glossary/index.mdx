@@ -1,0 +1,57 @@
+---
+title: Glossary
+---
+
+# Glossary
+
+## Data Platform
+
+> An integrated environment that provides the infrastructure and tools to support the collection, processing, storage, and analysis of data. 
+
+## Data Science Platform (DSP)
+
+> Software hub around which all data science work takes place. A data science platform puts the entire data modeling process in the hands of data science teams so they can focus on deriving insights from data and communicating them to key stakeholders in your business.
+
+## Data Practitioner
+
+> Individuals working directly with data, including data scientists, analysts, and AI engineers. They leverage data to generate insights, build models, and implement AI/ML algorithms, driving decision-making processes in various industries.
+
+## Data Product
+
+> A solution built from data. It can be notebooks, code, models and dashboards.
+
+## Data Product Builder
+
+> Software developers, Dev/ML/AI Ops creating a Data Product.
+
+## Remote Kernel 
+
+A Remote Kernel refers to a computational process (the engine that runs and executes code) that is hosted on a different machine or server, rather than on the local machine where the notebook interface is being accessed. It allows users to leverage the computing power and resources of a remote system while interacting with Jupyter Notebook locally.
+
+Key Characteristics of a Remote Kernel:
+
+- Remote Execution: Code written in the local client is executed on the remote machine's kernel.
+- Resource Utilization: Users can access high-performance hardware, such as GPUs or clusters, available on the remote server.
+- Connectivity: The local notebook interface communicates with the remote kernel over a network.
+- Same Interface: The local Jupyter interface remains unchanged, but the computational workload is offloaded to the remote environment.
+- Security: Secure connections (e.g., via SSH or HTTPS) are typically required to connect to remote kernels, ensuring data integrity and privacy.
+
+Benefits:
+
+- Enables distributed or high-performance computing.
+- Offloads computationally intensive tasks from local machines.
+ Facilitates collaboration by allowing multiple users to access a shared computational environment with Realtime Collaboration.
+
+Common Use Cases:
+
+- Using a high-powered server or cloud resource for machine learning or data analysis tasks.
+- Collaborating on code or notebooks with access to shared datasets and environments.
+- Running code or notebooks on constrained devices (e.g., tablets or Chromebooks) while leveraging remote compute power.
+
+Tools for Setting Up Remote Kernels:
+
+- JupyterHub: Facilitates multi-user remote kernel management in educational and organizational settings.
+- Kernels like IPython or third-party kernels: Support remote execution setups via additional plugins or configuration files.
+- Datalayer Remote Kernel solution.
+
+The Jupyter protocol is actually an implementation of RPC ([Remote Procedure Call](https://en.wikipedia.org/wiki/Remote_procedure_call)) - It can be used as the foundation to delivers a Serverless solution.

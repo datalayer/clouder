@@ -1,0 +1,77 @@
+---
+title: Datalayer Spacer
+---
+
+import { Label, Stack } from '@primer/react-brand';
+
+# Ξ 🧑‍🚀 Datalayer Spacer
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">API</Label>
+</Stack>
+
+`Datalayer Spacer` provides collaborative spaces for data analysis. A space manages the following features.
+
+```
+🛂 Identities and permissions that grant users and organisations access to the space.
+
+💼 Contents (Dataset, Cell, Notebook) stored in Git repositories.
+
+🌳 Environments that define the type, requested and limits for CPU/GPU and memory, the parameters, the Contents mount points (cloud buckets compatible with S3, local drive via SSHFS) and a Docker Image (the Datalayer Operator is responsible to build the Docker Images).
+
+🎱 Jupyterpool that deploys a parametrised Kernels with an availability based on a calendar.
+
+⚪ Kernels (active or paused) ready to server users.
+
+🧑‍🤝‍🧑 RTC (Realtime Collaboration) rooms to ease collaboration.
+```
+
+## Deploy Datalayer Spacer
+
+```bash
+plane up datalayer-spacer
+```
+
+Check the availability of the Datalayer Spacer Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=spacer
+```
+
+Check the logs of the Datalayer Spacer Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=spacer
+```
+
+Check the availability of the Datalayer Spacer Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer Spacer Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/spacer/version
+open https://${DATALAYER_RUN_HOST}/api/spacer/v1/ping
+```
+
+## Tear Down Datalayer Spacer
+
+If needed, tear down.
+
+```bash
+plane down datalayer-iam
+```
+
+If needed, tear down.
+
+```bash
+plane down datalayer-spacer
+```
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/spacer/v1/ui).
