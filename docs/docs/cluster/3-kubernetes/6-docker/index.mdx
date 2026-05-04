@@ -1,0 +1,62 @@
+# 🚧 Datalayer on 🐳 Docker
+
+Datalayer on 🐳 Docker.
+
+<!--
+
+## Docker
+
+You need `Docker` and `Docker Compose` on your machine.
+
+## Solr
+
+Change directory to the `etc/dockerfiles/datalayer-solr` folder of this repository.
+
+```bash
+# Build.
+make build
+```
+
+```bash
+# Start.
+make start
+open http://localhost:8983/solr
+```
+
+```bash
+# Create the Solr collections.
+make connect
+# solr@.../opt/solr-...$
+./create-collections.sh
+# Or do it on your own.
+solr create -c accounts -d ./config -p 8983
+solr create -c credits -d ./config -p 8983
+solr create -c invites -d ./config -p 8983
+solr create -c organisations -d ./config -p 8983
+solr create -c users -d ./config -p 8983
+solr create -c spaces -d ./config -p 8983
+solr create -c tweets -d ./config -p 8983
+exit
+```
+
+```bash
+# Delete the collections.
+make connect
+# solr@.../opt/solr-...$
+./delete-collections.sh
+# Or do it on your own.
+solr delete -c accounts
+solr delete -c credits
+solr delete -c invites
+solr delete -c organisations
+solr delete -c users
+solr delete -c spaces
+solr delete -c tweets
+```
+
+```bash
+# Stop.
+make stop
+```
+
+-->

@@ -1,0 +1,525 @@
+---
+title: Clouder K8S
+sidebar_position: 1
+---
+
+# Clouder
+
+Clouder uses [Kubeadm](https://kubernetes.io/docs/cluster/production-environment/tools/Kubeadm/) to bootstrap production-grade Kubernetes clusters on cloud VMs with built-in support for [CRIU](https://criu.org/) (Checkpoint/Restore In Userspace).
+
+This design document describes how Clouder orchestrates Kubeadm across Azure (and other cloud providers) to create clusters optimized for pod checkpoint and restore workflows.
+
+## Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Clouder CLI                          │
+│                                                         │
+│  clouder k8s create <cluster-name> --provider azure     │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │   1. Provision VMs      │
+           │   (Azure / OVH / ...)   │
+           └────────────┬────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │  2. Install prereqs     │
+           │  (containerd, CRIU,     │
+           │   Kubeadm, kubelet)     │
+           └────────────┬────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │  3. Kubeadm init        │
+           │  (control plane node)   │
+           └────────────┬────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │  4. Kubeadm join        │
+           │  (worker nodes)         │
+           └────────────┬────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │  5. Post-setup          │
+           │  (CNI, CRIU config,     │
+           │   storage, monitoring)  │
+           └─────────────────────────┘
+```
+
+## Cluster Topology
+
+A Clouder-managed cluster consists of:
+
+| Role | Count | Purpose | Recommended VM Size |
+|------|-------|---------|-------------------|
+| **Control Plane** | 1 (or 3 for HA) | API server, etcd, scheduler, controller | `Standard_B4ms` (4 vCPUs, 16 GB) |
+| **Worker** | 1+ | Run application pods | `Standard_B4ms` or larger |
+| **GPU Worker** | 0+ | ML/AI workloads | `Standard_NC6s_v3` (V100 GPU) |
+
+## Cloud Provider Setup
+
+Use one of the sections below before running `clouder kubeadm vm-create`.
+
+### Azure
+
+Clouder supports Azure for Kubeadm VM provisioning, cluster setup, storage bootstrap, and ingress load balancer integration.
+
+#### Prerequisites
+
+- An Azure account — sign up at https://azure.microsoft.com/free
+- Azure CLI installed
+
+#### Authentication Methods
+
+Method 1 (development): Azure CLI login
+
+```bash
+az login
+az account show
+clouder azure configure
+```
+
+Method 2 (production/CI): Service Principal
+
+```bash
+# Get subscription ID
+az account show --query id -o tsv
+
+# Create a service principal and role assignment
+az ad sp create-for-rbac \
+  --name "clouder-cli" \
+  --role Contributor \
+  --scopes "/subscriptions/<SUBSCRIPTION_ID>" \
+  -o json
+
+# Configure Clouder
+clouder azure configure \
+  --subscription-id <SUBSCRIPTION_ID> \
+  --tenant-id <TENANT_ID> \
+  --client-id <CLIENT_ID> \
+  --client-secret <CLIENT_SECRET> \
+  --no-interactive
+```
+
+Credentials are stored in `~/.clouder/azure/azure.yaml` with mode `600`.
+
+#### Verify Azure Access
+
+```bash
+clouder azure
+clouder azure subscriptions
+clouder azure regions
+clouder azure resource-groups
+clouder azure vm-ls
+```
+
+#### Azure Kubeadm cluster creation flow
+
+```bash
+# Initialize and select context
+clouder ctx init
+clouder ctx set azure <SUBSCRIPTION_ID>
+
+# Create VM set (1 master + 3 workers by default)
+clouder kubeadm vm-create my-cluster --region eastus --workers 3
+
+# Setup Kubernetes + CRIU + Azure storage
+clouder kubeadm setup my-cluster
+
+# Fetch kubeconfig
+clouder kubeadm get-config my-cluster
+```
+
+Optional environment variables:
+
+```bash
+export AZURE_SUBSCRIPTION_ID=<SUBSCRIPTION_ID>
+export AZURE_TENANT_ID=<TENANT_ID>
+export AZURE_CLIENT_ID=<CLIENT_ID>
+export AZURE_CLIENT_SECRET=<CLIENT_SECRET>
+```
+
+#### Azure troubleshooting
+
+- `DefaultAzureCredential failed`: run `az login` and verify subscription access.
+- `AuthorizationFailed`: verify role assignments for the app/service principal.
+- `SubscriptionNotFound`: confirm selected subscription is active and correct.
+
+### AWS
+
+Clouder supports AWS for Kubeadm VM provisioning, cluster setup, storage bootstrap, and ingress load balancer integration.
+
+#### Prerequisites
+
+- An AWS account
+- AWS CLI installed
+- An EC2 key pair in your target region
+
+#### Authentication Methods
+
+Method 1 (development): Access keys/profile
+
+```bash
+aws configure
+aws sts get-caller-identity
+```
+
+Method 2 (enterprise): AWS SSO
+
+```bash
+aws configure sso
+aws sso login
+aws sts get-caller-identity
+```
+
+Optional environment variables:
+
+```bash
+export AWS_ACCESS_KEY_ID=<ACCESS_KEY_ID>
+export AWS_SECRET_ACCESS_KEY=<SECRET_ACCESS_KEY>
+export AWS_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+#### Verify AWS access
+
+```bash
+clouder aws info
+clouder aws regions
+clouder aws vm-ls --region us-east-1
+```
+
+#### AWS Kubeadm cluster creation flow
+
+```bash
+# Initialize and select context
+clouder ctx init
+clouder ctx set aws <AWS_ACCOUNT_ID>
+
+# Create VM set (1 master + 3 workers by default)
+clouder kubeadm vm-create my-cluster --region us-east-1 --workers 3
+
+# Setup Kubernetes + CRIU + AWS storage/LB integration
+clouder kubeadm setup my-cluster
+
+# Fetch kubeconfig
+clouder kubeadm get-config my-cluster
+```
+
+#### AWS troubleshooting
+
+- `Unable to locate credentials`: run `aws configure` or `aws sso login`.
+- `AuthFailure` or `UnauthorizedOperation`: verify IAM permissions and region.
+- No EC2 key pair found: create/import one in the selected region before `vm-create`.
+
+## CLI Quick Start
+
+Use the following command sequence for day-0 cluster setup and day-1 operations.
+
+### Install and discover commands
+
+```bash
+pip install clouder
+clouder --version
+clouder --help
+```
+
+### Context and cloud setup
+
+```bash
+clouder ctx init
+clouder ctx ls
+clouder ctx show
+
+# Azure setup
+clouder azure configure
+clouder azure
+
+# AWS setup validation
+clouder aws info
+```
+
+### Common operations
+
+```bash
+# VM inventory
+clouder azure vm-ls
+clouder aws vm-ls --region us-east-1
+
+# SSH and keys
+clouder ssh-key ls
+clouder ssh-key create my-key
+clouder ssh connect <vm-name>
+
+# S3 buckets
+clouder s3 ls
+clouder s3 create my-bucket
+
+# Operator and info
+clouder operator start
+clouder info ctx
+clouder info me
+```
+
+## Step 1: VM Provisioning
+
+Clouder provisions VMs using the selected cloud provider context. For a cluster, multiple VMs are created with shared networking and role-based naming.
+
+```bash
+# Azure example
+clouder ctx set azure <SUBSCRIPTION_ID>
+clouder kubeadm vm-create my-cluster --region eastus --workers 2
+
+# AWS example
+clouder ctx set aws <AWS_ACCOUNT_ID>
+clouder kubeadm vm-create my-cluster --region us-east-1 --workers 2
+```
+
+This will:
+1. Create VMs: `my-cluster-master`, `my-cluster-node-1`, `my-cluster-node-2`
+2. Tag all VMs with `clouder-cluster=my-cluster` and their role
+3. Set up a shared virtual network and subnet
+4. Configure cloud firewall/security group rules for Kubernetes ports
+
+### Required Ports
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 6443 | TCP | Kubernetes API server |
+| 2379-2380 | TCP | etcd client/peer |
+| 10250 | TCP | kubelet API |
+| 10259 | TCP | kube-scheduler |
+| 10257 | TCP | kube-controller-manager |
+| 30000-32767 | TCP | NodePort Services |
+
+## Step 2: Node Preparation
+
+Clouder connects to each VM via SSH and runs preparation scripts:
+
+### Container Runtime (containerd)
+
+```bash
+# Install containerd 2.x from Docker repo, and CRIU
+apt-get update && apt-get install -y containerd.io criu
+
+# Configure containerd for checkpoint/restore
+cat > /etc/containerd/config.toml <<EOF
+version = 2
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+  SystemdCgroup = true
+EOF
+
+systemctl restart containerd
+```
+
+### Kubernetes Components
+
+```bash
+# Install Kubeadm, kubelet, kubectl
+apt-get install -y apt-transport-https ca-certificates curl gpg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | \
+    gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
+    https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | \
+    tee /etc/apt/sources.list.d/kubernetes.list
+
+apt-get update
+apt-get install -y kubelet Kubeadm kubectl
+apt-mark hold kubelet Kubeadm kubectl
+```
+
+### CRIU Prerequisites
+
+```bash
+# Verify CRIU installation
+criu check
+
+# Enable kubelet feature gates for checkpoint/restore
+cat > /var/lib/kubelet/config.yaml <<EOF
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+featureGates:
+  ContainerCheckpoint: true
+EOF
+```
+
+## Step 3: Control Plane Initialization
+
+Clouder generates a `Kubeadm init` configuration and runs it on the control plane node:
+
+### Kubeadm Configuration
+
+```yaml
+# clouder-Kubeadm-config.yaml
+apiVersion: Kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.32.0
+controlPlaneEndpoint: "<control-plane-ip>:6443"
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
+apiServer:
+  extraArgs:
+    feature-gates: "ContainerCheckpoint=true"
+---
+apiVersion: Kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  kubeletExtraArgs:
+    feature-gates: "ContainerCheckpoint=true"
+```
+
+### Initialization
+
+```bash
+# On the control plane node
+Kubeadm init --config clouder-Kubeadm-config.yaml --upload-certs
+
+# Save the join token for worker nodes
+Kubeadm token create --print-join-command > /tmp/join-command.sh
+```
+
+## Step 4: Worker Node Join
+
+Clouder retrieves the join command from the control plane and executes it on each worker:
+
+```bash
+# On each worker node
+Kubeadm join <control-plane-ip>:6443 \
+    --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash>
+```
+
+## Step 5: Post-Setup
+
+### CNI Installation
+
+Clouder installs **Flannel** as the CNI plugin for pod networking:
+
+```bash
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+```
+
+Flannel uses VXLAN overlay networking with `--pod-network-cidr=10.244.0.0/16`, which works reliably on Azure VNets where all nodes share the same subnet.
+
+### CRIU Configuration
+
+After the cluster is running, Clouder configures the checkpoint/restore infrastructure:
+
+1. **Enable the Kubelet Checkpoint API** on all nodes
+2. **Configure checkpoint storage** (local disk or S3-compatible)
+3. **Install the CRIU operator** (optional, for automated checkpointing)
+
+See the [CRIU documentation](/architecture/criu/) for details on checkpoint and restore workflows.
+
+### Storage Provisioners
+
+For dynamic persistent volume provisioning and cloud load balancing, `clouder kubeadm setup` automatically bootstraps cloud-specific integrations:
+
+- **Azure**
+  - Azure Disk CSI driver (`managed-csi` default StorageClass)
+  - Azure File CSI driver (`azure-nfs` StorageClass)
+  - Requires Azure credentials/service principal with access to the cluster resource group
+- **AWS**
+  - AWS EBS CSI driver (`gp3` default StorageClass)
+  - AWS Load Balancer Controller (for `Service` type `LoadBalancer`)
+  - Prefers EC2 instance profile auth, with credential fallback when needed
+
+See the [Kubeadm CLI reference](/cli/kubeadm) for details on manual installation if the automatic step was skipped.
+
+## CLI Commands
+
+### Create a Cluster
+
+```bash
+# Interactive mode - prompts for all settings
+clouder k8s create my-cluster
+
+# Full specification
+clouder k8s create my-cluster \
+    --provider azure \
+    --region eastus \
+    --control-plane-size Standard_B4ms \
+    --worker-size Standard_B4ms \
+    --worker-count 2 \
+    --kubernetes-version v1.32.0 \
+    --cni flannel \
+    --enable-criu
+```
+
+:::note
+CRIU support is now built into `clouder kubeadm setup` by default. The `--enable-criu` flag above is for the future `clouder k8s create` managed interface.
+:::
+
+### Get Kubeconfig
+
+```bash
+# Download kubeconfig for the cluster
+clouder k8s kubeconfig my-cluster
+
+# Set as current context
+clouder k8s use my-cluster
+```
+
+### Add Worker Nodes
+
+```bash
+# Add a GPU worker node pool
+clouder k8s create-nodepool my-cluster \
+    gpu-workers \
+    --flavor Standard_NC6s_v3 \
+    --min 0 --desired 1 --max 5 \
+    --roles jupyter --xpu gpu-cuda
+```
+
+### Cluster Lifecycle
+
+```bash
+# List clusters
+clouder k8s ls
+
+# Scale workers
+clouder k8s update-nodepool my-cluster workers --desired 5
+
+# Delete cluster (removes all VMs and resources)
+clouder k8s delete my-cluster
+```
+
+## References
+
+| Section | Description |
+|---------|-------------|
+| [Azure Setup](/cluster/kubernetes/azure-aks/) | Configure Azure credentials, create VMs, and manage resources |
+| [CRIU](/architecture/criu/) | Checkpoint and restore pods with CRIU |
+| [CLI Reference](/cli/) | Full command reference for all Clouder CLI commands |
+
+## Architecture Decisions
+
+### Why Kubeadm?
+
+- **Full control**: Unlike managed Kubernetes (AKS, EKS), Kubeadm gives full control over the kubelet configuration, which is required for CRIU feature gates
+- **CRIU support**: Managed Kubernetes services don't yet support the `ContainerCheckpoint` feature gate; Kubeadm allows enabling it at init time
+- **Portability**: Same cluster setup works across Azure, OVH, or bare metal
+- **Cost**: No managed Kubernetes control plane fees
+
+### Why not Managed Kubernetes?
+
+Managed Kubernetes services (AKS, EKS, GKE) abstract away the control plane, which means:
+- Cannot enable experimental feature gates like `ContainerCheckpoint`
+- Cannot configure containerd for CRIU checkpoint/restore
+- Cannot access the kubelet checkpoint API directly
+
+Once CRIU support reaches GA in Kubernetes, Clouder may add managed Kubernetes backends as well.
+
+## Roadmap
+
+- [ ] **Phase 1**: Single control-plane cluster creation on Azure
+- [ ] **Phase 2**: HA control plane (3 nodes with etcd)
+- [ ] **Phase 3**: Multi-cloud support (OVH, bare metal)
+- [ ] **Phase 4**: Automated CRIU checkpoint scheduling
+- [ ] **Phase 5**: Cluster upgrades via `Kubeadm upgrade`

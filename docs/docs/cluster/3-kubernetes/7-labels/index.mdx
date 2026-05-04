@@ -1,0 +1,78 @@
+# ☸️ Labels
+
+For small devevelopment cluster, you can create a single Nodepool. Every node should have the following labels.
+
+```yaml
+# Useful for the Service deployments.
+- role.datalayer.io/router=true
+- role.datalayer.io/system=true
+- role.datalayer.io/api=true
+- role.datalayer.io/solr=true
+# Useful for the Runtime pods.
+- role.datalayer.io/jupyter=true
+- node.datalayer.io/variant=medium
+- xpu.datalayer.io/cpu=true
+```
+
+:::tip Quick labelling
+
+Run `plane k8s-label-nodes` to apply all the above labels to every worker node in one go. This is the fastest way to set up a small development cluster.
+
+:::
+
+Use your favorite tool to create those nodes, or use [Clouder](https://clouder.sh), a tool to ease the Kubernetes cluster creation and sharing.
+
+For bigger production cluster, we recommend creating separated Ensure the nodes are labelled based on their Nodepool.
+
+## Nodepool `router`
+
+Ensure the nodes are labelled with the following details.
+
+```yaml
+- role.datalayer.io/router=true
+- node.datalayer.io/variant=default
+```
+
+## Nodepool `api`
+
+Ensure the nodes are labelled with the following details.
+
+```yaml
+- role.datalayer.io/api=true
+```
+
+## Nodepool `system`
+
+Ensure the nodes are labelled with the following details.
+
+```yaml
+- role.datalayer.io/system=true
+```
+
+## Nodepool `solr`
+
+Ensure the nodes are labelled with the following details.
+
+```yaml
+- role.datalayer.io/solr=true
+```
+
+## Nodepool `jupyter-cpu-medium`
+
+Ensure the nodes are labelled with the following details.
+
+```yaml
+- role.datalayer.io/jupyter=true
+- node.datalayer.io/variant=default
+- xpu.datalayer.io/cpu=true
+```
+
+## Nodepool `jupyter-gpu-cuda-medium`
+
+Ensure the nodes are labelled with the following details.
+
+```yaml
+- role.datalayer.io/jupyter=true
+- node.datalayer.io/variant=default
+- xpu.datalayer.io/gpu-cuda=true
+```

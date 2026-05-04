@@ -1,0 +1,105 @@
+---
+sidebar_position: 1
+---
+
+# Jupyter Contents
+
+## Jupyter Contents Specification
+
+You can create on your content definitions ready to be used in [Jupyter Environments](./jupyter-environments).
+
+AWS S3 Buckets and Git Repositories contents are supported for now.
+
+The content specifications often rely on secrets the cluster manager will need to create.
+
+The complete specification [is available here](https://github.com/datalayer/helm-charts/blob/main/charts/datalayer-operator/templates/jupyter-content.yaml) and the following sections show simple examples.
+
+## Manage the Contents
+
+```bash
+kubectl get jupyter-contents -A
+kubectl get jupyter-contents -o yaml -A
+```
+
+## AWS S3 Example
+
+In this example, the authentication must be stored in the `s3-secret` secret providing the following key.
+
+- `access_key_id`
+- `secret_access_key`
+- `region`
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: JupyterContent
+metadata:
+  name: s3-satellite-sentinels-images-content
+  namespace: datalayer-runtimes
+spec:
+  description: Satellite images from Sentinels mission.
+  type: s3
+  source: datalayer-dev
+  permissions: ro
+  secret: s3-secret
+EOF
+```
+
+```bash
+kubectl get jupyter-contents -A
+kubectl get jupyter-contents -o yaml -A
+```
+
+## Git Repository Example
+
+In this example, the Git repository must be public.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: JupyterContent
+metadata:
+  name: jakevdp-sklearn-tutorial-content
+  namespace: datalayer-runtimes
+spec:
+  description: Jake VanderPlas scikit-learn tutorial
+  type: git
+  source: https://github.com/jakevdp/sklearn_tutorial.git
+EOF
+```
+
+<!--
+
+## Google Cloud Buckets
+
+Steps to create a [Google Cloud Storage](https://cloud.google.com/storage/introduction) bucket.
+
+```bash
+# Get to https://console.cloud.google.com/billing and copy the Billing Account ID value.
+ACCOUNT_ID=<YOUR_ACCOUNT_ID>
+# Create a new project (project id must be <=30 characters)
+# RAND=$RANDOM
+RAND=78027
+PROJECT_ID="jupyterpool-$RAND"
+# Create a GCloud Project
+gcloud projects create $PROJECT_ID --enable-cloud-apis # [--organization $ORGANIZATION_ID]
+gcloud config set project $PROJECT_ID
+# or, record the PROJECT_ID value of an existing project
+# PROJECT_ID=$(gcloud projects list --filter NAME=<YOUR_PROJECT_NAME> --format="value(PROJECT_ID)")
+# Link billing to the new project.
+gcloud beta billing projects link $PROJECT_ID --billing-account=$ACCOUNT_ID
+# Enable GCloud Services on your Project
+# Enable service on the new project.
+gcloud services enable storage.googleapis.com --project $PROJECT_ID # Enable Compute API.
+# Create a GCloud Service Account
+SERVICE_ACCOUNT_NAME="example-$RAND"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud iam service-accounts create $SERVICE_ACCOUNT_NAME --project $PROJECT_ID --display-name "Google Cloud Bucket Example"
+# Assign GCloud Roles to your service account.
+gcloud projects add-iam-policy-binding $PROJECT_ID --member "serviceAccount:$SERVICE_ACCOUNT" --role="roles/storage.admin"
+open https://console.cloud.google.com/iam-admin/serviceaccounts?project=jupyterpool-78027
+# Teardonwn the project
+gcloud projects delete $PROJECT_ID
+```
+
+-->

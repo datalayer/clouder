@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and adjust values.
+
+project_name   = "datalayer"
+cluster_name   = "datalayer-aws"
+aws_region     = "us-east-1"
+
+# Restrict SSH/API to your office/VPN CIDR in production.
+allowed_ssh_cidrs = [
+  "0.0.0.0/0"
+]
+
+# Must exist in AWS in selected region.
+ec2_key_pair_name = "your-ec2-keypair"
+
+master_count         = 1
+worker_count         = 3
+master_instance_type = "t3.large"
+worker_instance_type = "t3.large"
+root_volume_size_gb  = 100
+
+admin_user = "ubuntu"
+
+# Optional AMI override
+# ami_id = "ami-xxxxxxxx"

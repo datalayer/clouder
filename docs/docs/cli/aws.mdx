@@ -1,0 +1,40 @@
+---
+title: clouder aws
+sidebar_position: 2
+---
+
+# clouder aws
+
+AWS cloud operations for Clouder contexts.
+
+## Commands
+
+### `clouder aws info`
+
+Show the current AWS caller identity (account id, ARN, user id).
+
+```bash
+clouder aws info
+```
+
+### `clouder aws regions`
+
+List available AWS regions for the current credentials.
+
+```bash
+clouder aws regions
+```
+
+### `clouder aws vm-ls`
+
+List EC2 instances visible to your current AWS credentials.
+
+```bash
+clouder aws vm-ls
+```
+
+Optional region override:
+
+```bash
+clouder aws vm-ls --region us-east-1
+```

@@ -1,0 +1,198 @@
+---
+title: Docker Registry
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# 🐳 Docker Registry
+
+We distinguish 3 types of Docker images:
+
+1. The external public OSS images for various services
+2. The private Datalayer images for e.g. [IAM](/services/iam/), [Jupyter](/services/runtimes/), [Operator](/services/operator/)... services.
+3. The base Runtime jupyter-python image that you can extend to fit your needs.
+
+## Access the Docker Registry
+
+You need read access to a `Container Registry` where the Docker Images reside.
+
+```bash
+# Ensure you can login to the Docker Registry.
+export DATALAYER_DOCKER_REGISTRY_HOST=docker.io
+export DATALAYER_DOCKER_REGISTRY=${DATALAYER_DOCKER_REGISTRY_HOST}/datalayer
+docker login https://${DATALAYER_DOCKER_REGISTRY}
+```
+
+## Create the Registry Secret
+
+Your Kubernetes cluster need to pull those Docker Images, therefor you need to create a Registry Secret in each of the [Namespace](/cluster/kubernetes/namespaces/).
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane reg-creds-create
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+for ns in datalayer-api datalayer-solr datalayer-system datalayer-runtimes datalayer-growth datalayer-router datalayer-traefik datalayer-nginx kube-system
+do
+  echo Deleting reg-creds secret in namespace $ns
+  kubectl delete secret reg-creds -n $ns
+  echo Creating reg-creds secret in namespace $ns
+  kubectl create secret \
+    docker-registry reg-creds \
+    -n $ns \
+    --docker-server=$DATALAYER_DOCKER_REGISTRY_HOST \
+    --docker-username=$DATALAYER_DOCKER_REGISTRY_USERNAME \
+    --docker-password=$DATALAYER_DOCKER_REGISTRY_PASSWORD
+  kubectl get secret reg-creds -n $ns -o jsonpath="{.data.\.dockerconfigjson}"
+done
+```
+  </TabItem>
+</Tabs>
+
+## Pre-pull the Docker Images
+
+Check you have access to a Docker Registry with the Docker Images available and pull them.
+
+```bash
+docker login https://${DATALAYER_DOCKER_REGISTRY}
+for DOCKER_IMAGE in iam jupyter operator jupyter-companion jupyter-python
+do
+    echo -----------------------------------------------
+    echo -e "Pulling Docker Image [datalayer-$DOCKER_IMAGE]"
+    echo
+    docker pull $DATALAYER_DOCKER_REGISTRY/datalayer/$DOCKER_IMAGE
+    echo
+done
+```
+
+The base `jupyter-python` Runtime Docker Image has been pulled in the previous step. You can extend the base ones to create custom ones that fit your requirements.
+
+Pre-pull the Jupyter Runtime Docker Images on the Kubernetes cluster nodes for optimal behavior.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+Prepull for the CPU nodes.
+
+```bash
+plane k8s-prepull-cpu
+kubectl get daemonset images-prepuller-cpu -n datalayer-runtimes
+kubectl delete daemonset images-prepuller-cpu -n datalayer-runtimes
+```
+
+Prepull for the GPU CUDA nodes.
+
+```bash
+plane k8s-prepull-gpu-cuda
+kubectl get daemonset images-prepuller-gpu-cuda -n datalayer-runtimes
+kubectl delete daemonset images-prepuller-gpu-cuda -n datalayer-runtimes
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+# Prepull for the CPU nodes.
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: images-prepuller-cpu
+  namespace: datalayer-runtimes
+spec:
+  selector:
+    matchLabels:
+      name: prepuller
+  template:
+    metadata:
+      labels:
+        name: prepuller
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: role.datalayer.io/jupyter
+                operator: In
+                values:
+                - 'true'
+              - key: node.datalayer.io/xpu
+                operator: In
+                values:
+                - cpu
+      imagePullSecrets:
+        - name: reg-creds
+      initContainers:
+        - name: prepuller-jupyter-companion
+          image: ${DATALAYER_DOCKER_REGISTRY}/jupyter-companion:0.0.1
+          imagePullPolicy: Always
+          command: ["sh", "-c", "'true'"]
+        - name: prepuller-python
+          image: ${DATALAYER_DOCKER_REGISTRY}/jupyter-python:0.0.8
+          imagePullPolicy: Always
+          command: ["sh", "-c", "'true'"]
+      containers:
+        - name: pause
+          image: gcr.io/google_containers/pause
+EOF
+kubectl get daemonset images-prepuller-cpu -n datalayer-runtimes
+kubectl delete daemonset images-prepuller-cpu -n datalayer-runtimes
+```
+  </TabItem>
+</Tabs>
+
+## Build the Docker Images
+
+If needed, you can build your own images. Therefor, you need `docker` with `buildx` on your machine.
+
+```bash
+# Setup for Ubuntu.
+sudo apt update
+sudo apt install docker.io docker-buildx
+# Logoff / Login to be able to access the Docker process from your user.
+sudo usermod -aG docker $USER
+```
+
+If you have access to the Datalayer Plane respository, you can push the Docker Images to your `Container OCI Registry` where you have write access to.
+
+Some Docker registries enforce you to create the repositories in advance. If this is the case, ensure you have the following repositories pre-created.
+
+- `datalayer/iam`
+- `datalayer/ingress-nginx-controller`
+- `datalayer/jupyter-python`
+- `datalayer/jupyter`
+- `datalayer/jupyter-companion`
+- `datalayer/operator`
+
+You are now ready to build and push all the Docker Images with the following commands.
+
+<Tabs groupId="plane">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Build all the Docker Images.
+plane docker-build
+# Push all the Docker Images.
+plane docker-push
+```
+  </TabItem>
+  <TabItem value="shell" label="Shell">
+```bash
+cd $PLANE_HOME/etc/dockerfiles
+for DOCKER_IMAGE in datalayer-iam datalayer-runtimes datalayer-operator datalayer-solr datalayer-runtimes-companion jupyter-python ingress-nginx-controller
+do
+    echo -----------------------------------------------
+    echo -e "Building Docker Image [$DOCKER_IMAGE]"
+    echo
+    cd $DOCKER_IMAGE
+    make build-obfuscated
+    echo
+    echo -e "Pushing Docker Image [$DOCKER_IMAGE]"
+    make push
+    cd ..
+    echo
+done
+```
+  </TabItem>
+</Tabs>

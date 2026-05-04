@@ -1,0 +1,116 @@
+---
+title: clouder ssh-key
+sidebar_position: 6
+---
+
+# clouder ssh-key
+
+Manage SSH keys — both local keys and keys registered with your cloud provider. SSH keys are used for authenticating to VMs created by Clouder.
+
+## Commands
+
+### `clouder ssh-key create`
+
+Create an SSH key pair locally and register it with the cloud provider (OVH only).
+
+```bash
+clouder ssh-key create <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Name for the SSH key |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--type` | `-t` | Key type: `ed25519` (default), `rsa` |
+
+The key pair is generated locally in `~/.ssh/` using `ssh-keygen`. If the current context is OVH, the public key is also registered with the cloud provider.
+
+**Example:**
+
+```bash
+clouder ssh-key create my-key
+clouder ssh-key create my-key -t rsa
+```
+
+---
+
+### `clouder ssh-key ls`
+
+List SSH keys (both local and cloud-registered).
+
+```bash
+clouder ssh-key ls
+```
+
+Shows two tables:
+- **Local keys** from `~/.ssh/` with their paths.
+- **Cloud keys** registered with the current provider (OVH shows fingerprint and public key, Azure shows local keys only).
+
+---
+
+### `clouder ssh-key set-current`
+
+Set or clear the default SSH key used for all commands.
+
+```bash
+clouder ssh-key set-current
+```
+
+Lists the SSH keys available in `~/.ssh/` and asks you to pick one as the default. You can also choose **(clear default)** to unset it. The selection is stored in `~/.clouder/clouder.yaml` and automatically used by:
+
+- `clouder ssh connect`
+- `clouder kubeadm setup`, `enable-ingress-nginx`, `smoke-test`, etc.
+
+An explicit `--key`/`-i` flag on any command still takes priority.
+
+**Example:**
+
+```bash
+clouder ssh-key set-current
+#  SSH keys:
+#    1. ci-cd (current default)
+#    2. id_ed25519
+#    3. (clear default)
+#  Select SSH key number or type key name [1]:
+```
+
+---
+
+### `clouder ssh-key download`
+
+Save a private key to `~/.ssh/` with correct permissions (`600`).
+
+```bash
+clouder ssh-key download <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Name to save the key as (e.g. `my-server`) |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--key` | `-k` | Private key content or path to a file containing it |
+
+If `--key` is not provided, you'll be prompted to paste the key content interactively.
+
+**Example:**
+
+```bash
+# From a file
+clouder ssh-key download my-server --key /path/to/downloaded-key.pem
+
+# Paste interactively
+clouder ssh-key download my-server
+```
+
+---
+
+## Notes
+
+- During `clouder vm create`, you can pick from existing local keys or generate a new one.
+- Use `clouder ssh-key set-current` to avoid being prompted for a key every time. The stored default is used whenever no explicit key is provided and no cluster-specific key exists.
+- Keys generated during VM creation are named `<vm-name>-key`.
+- `clouder ssh connect` auto-detects keys matching `<vm-name>-key` in `~/.ssh/`.

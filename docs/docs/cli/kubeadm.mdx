@@ -1,0 +1,785 @@
+---
+title: clouder kubeadm
+sidebar_position: 8
+---
+
+# clouder kubeadm
+
+Provision, set up, and manage Kubeadm Kubernetes clusters with CRIU support. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
+
+## Overview
+
+```bash
+# Create the VMs (1 master + 1 worker)
+clouder kubeadm vm-create --workers 1 k1
+
+# Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
+clouder kubeadm setup k1
+
+# Fetch the kubeconfig to ~/.clouder/kubeconfig-k1
+clouder kubeadm get-config k1
+
+# Verify
+clouder kubectl k1 get nodes
+clouder kubectl k1 get pods -A
+
+# Enable ingress with Traefik controller and cloud-specific load balancer setup
+clouder kubeadm enable-ingress-traefik k1
+clouder helm k1 ls -A
+
+# Run the smoke test (Ingress + CRIU validation)
+clouder kubeadm smoke-test k1
+
+# Upgrade kubelet/Kubeadm/kubectl on all nodes (e.g. after bumping K8S_VERSION)
+clouder kubeadm upgrade-kubelet k1
+
+# Disable ingress
+clouder kubeadm disable-ingress-traefik k1
+
+# Tear down the cluster and delete all cloud resources
+clouder kubeadm vm-terminate k1
+```
+
+## Commands
+
+### `clouder kubeadm vm-create`
+
+Create VMs for a Kubeadm cluster: 1 master + N worker nodes on the same subnet.
+
+```bash
+clouder kubeadm vm-create <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (used as prefix for all VMs) |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--workers` | `-w` | Number of worker nodes (default: `3`) |
+| `--region` | `-r` | Cloud region (e.g. `eastus`, `us-east-1`) |
+| `--resource-group` | `-g` | Resource group (Azure only) |
+| `--master-size` | | VM size for the master node (default: `Standard_B4ms`) |
+| `--node-size` | | VM size for worker nodes (default: `Standard_B4ms`) |
+| `--os-disk-size` | | OS disk size in GB (default: `100`, min 30) |
+| `--admin-user` | | Admin username (default: `azureuser` on Azure, `ubuntu` on AWS) |
+| `--image` | | Image: `Ubuntu2204`, `Ubuntu2404`, `Debian12` (Azure only, default: `Ubuntu2204`) |
+
+**What gets created:**
+
+| Resource | Name | Description |
+|----------|------|-------------|
+| VNet | `<name>-vnet` | Virtual network with `10.0.0.0/16` address space |
+| Subnet | `<name>-subnet` | Subnet with `10.0.0.0/24` range |
+| NSG | `<name>-nsg` | Network Security Group with rules (see below) |
+| Master VM | `<name>-master` | Control plane node |
+| Worker VMs | `<name>-node-1`, `<name>-node-2`, ... | Worker nodes |
+
+**NSG rules:**
+
+| Rule | Port | Source | Purpose |
+|------|------|--------|---------|
+| AllowSSH | 22 | Any | SSH access |
+| AllowK8sAPI | 6443 | Any | Kubernetes API server |
+| AllowKubelet | 10250 | VNet (`10.0.0.0/16`) | Kubelet communication |
+| AllowNodePorts | 30000-32767 | Any | Kubernetes NodePort services |
+| AllowHTTP | 80 | Any | HTTP ingress traffic |
+| AllowHTTPS | 443 | Any | HTTPS ingress traffic |
+
+All VMs share the same VNet, subnet, and NSG — they can communicate with each other on private IPs while being individually accessible via public IPs.
+
+**Interactive prompts** (same as `clouder vm create`):
+1. Resource group — pick existing or create new
+2. Region — only if creating a new resource group
+3. SSH key — pick existing or generate new
+
+---
+
+### `clouder kubeadm setup`
+
+Set up a Kubeadm cluster with CRIU support on previously created VMs. This is the main automation command — it SSHes into each VM and runs all setup steps.
+
+```bash
+clouder kubeadm setup <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (must match the `vm-create` name) |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `ubuntu`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--k8s-version` | | Kubernetes version (default: `1.32`) |
+
+**What it does (6 steps):**
+
+| Step | Target | Description |
+|------|--------|-------------|
+| 1. Prerequisites | All nodes | Disable swap, load kernel modules (`overlay`, `br_netfilter`), configure sysctl, install containerd 2.x (from Docker repo, with `SystemdCgroup`), install CRIU, install buildah, install Kubeadm/kubelet/kubectl |
+| 2. Kubeadm init | Master | Initialize the control plane with `--pod-network-cidr=10.244.0.0/16`, enable `ContainerCheckpoint` feature gate |
+| 3. Install CNI | Master | Install Flannel CNI for pod networking |
+| 4. Kubeadm join | Workers | Join all worker nodes to the cluster |
+| 5. CRIU feature gates | All nodes | Enable `ContainerCheckpoint` feature gate on all kubelets (master + workers) |
+| 6. Cloud storage and load balancer bootstrap | Cloud-specific | Azure: deploy cloud config, install Azure Disk CSI (`managed-csi`) and Azure File CSI (`azure-nfs`). AWS: install AWS EBS CSI with default `gp3` StorageClass and install AWS Load Balancer Controller (instance profile preferred, static credentials fallback). |
+
+:::note
+Azure storage setup requires a service principal. If `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` are set, they are used. Otherwise, Clouder attempts to create a scoped SP automatically.
+
+AWS storage setup prefers EC2 instance profiles on node VMs. If no instance profile is attached, Clouder falls back to the active AWS credentials in the current session.
+
+On AWS, load balancer setup installs AWS Load Balancer Controller and expects node IAM permissions for ELB operations.
+:::
+
+**Example:**
+
+```bash
+clouder kubeadm setup my-cluster
+clouder kubeadm setup my-cluster --k8s-version 1.31 --key my-cluster-key
+```
+
+---
+
+### `clouder kubeadm get-config`
+
+Fetch the kubeconfig from the master node and save it locally.
+
+```bash
+clouder kubeadm get-config <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+
+The kubeconfig is saved to `~/.clouder/kubeconfigs/kubeconfig-<name>` with `600` permissions. The internal API server IP is automatically replaced with the master's public IP for remote access.
+
+Additionally, the kubelet client certificates (`apiserver-kubelet-client.crt` and `.key`) are fetched from the master and saved to `~/.clouder/kubeconfigs/<name>/`. These are needed for CRIU checkpoint API calls via the kubelet.
+
+**Example:**
+
+```bash
+clouder kubeadm get-config my-cluster
+# Output:
+#   Kubeconfig saved to ~/.clouder/kubeconfigs/kubeconfig-my-cluster
+#   Kubelet client cert saved to ~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.crt
+#   Kubelet client key saved to ~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.key
+#
+#   Usage:
+#     export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-my-cluster
+#     export KUBELET_CLIENT_CERT=~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.crt
+#     export KUBELET_CLIENT_KEY=~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.key
+#     kubectl get nodes
+```
+
+---
+
+### `clouder kubeadm info`
+
+Show cluster information and next steps. Displays the current state of a Kubeadm cluster and lists useful commands for day-to-day operations as well as further setup steps.
+
+```bash
+clouder kubeadm info <name>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+**Example:**
+
+```bash
+clouder kubeadm info my-cluster
+```
+
+---
+
+### `clouder kubeadm scale`
+
+Scale the number of worker nodes in an existing Kubeadm cluster. Compares the desired worker count with the current count, then:
+- **Scale up**: creates new VMs, installs prerequisites, joins them to the cluster.
+- **Scale down**: drains and deletes the highest-numbered worker nodes.
+
+```bash
+clouder kubeadm scale <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--workers` (required) | `-w` | Desired number of worker nodes |
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--force` | `-f` | Skip confirmation prompt |
+
+**Example:**
+
+```bash
+# Scale up to 5 workers
+clouder kubeadm scale my-cluster --workers 5
+
+# Scale down to 1 worker (force, no confirmation)
+clouder kubeadm scale my-cluster --workers 1 --force
+```
+
+---
+
+### `clouder kubeadm vm-terminate`
+
+Terminate all VMs and networking for a Kubeadm cluster. Deletes VMs, NICs, public IPs, OS disks, NSG, and VNet.
+
+```bash
+clouder kubeadm vm-terminate <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--force` | `-f` | Skip confirmation prompt |
+| `--delete-rg` | | Also delete the resource group |
+
+**Deletion order:**
+
+| Step | Resources | Notes |
+|------|-----------|-------|
+| 1 | VMs | `<name>-master`, `<name>-node-*` |
+| 2 | NICs | Associated network interfaces |
+| 3 | Public IPs | Associated public IP addresses |
+| 4 | OS Disks | Managed disks created with VMs |
+| 5 | Load Balancer | `<name>-lb` and `<name>-lb-ip` (if exists) |
+| 6 | NSG | `<name>-nsg` |
+| 7 | VNet | `<name>-vnet` (includes subnet) |
+| 8 | Resource Group | Only if `--delete-rg` is specified |
+
+The local kubeconfig (`~/.clouder/kubeconfigs/kubeconfig-<name>`) is also removed if it exists.
+
+**Example:**
+
+```bash
+# Interactive confirmation
+clouder kubeadm vm-terminate my-cluster
+
+# Force delete without confirmation
+clouder kubeadm vm-terminate my-cluster --force
+
+# Also delete the resource group
+clouder kubeadm vm-terminate my-cluster --force --delete-rg
+```
+
+---
+
+### `clouder kubeadm smoke-test`
+
+Run an end-to-end smoke test with two phases: CRIU checkpoint/restore validation and ingress load balancer validation.
+
+```bash
+clouder kubeadm smoke-test <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--cleanup` / `--no-cleanup` | | Clean up test pods after the test (default: `--cleanup`) |
+
+**Section 1 — Ingress LB (4 steps, skipped if no ingress controller):**
+
+| Step | Description |
+|------|-------------|
+| 1 | Deploy test nginx Deployment + Service (`clouder-smoke-web`), show resources with `kubectl get` |
+| 2 | Create an Ingress resource routing `/` to the test service, show with `kubectl describe` |
+| 3 | Curl the Azure LB public IP **from localhost** and validate HTTP 200 (up to 5 retries, shows response headers and body) |
+| 4 | If `DATALAYER_RUN_URL` is set, curl the DNS hostname and validate HTTP 200 (shows response headers and body). Skipped with a hint if the env var is not set. |
+
+:::note
+Section 1 is automatically skipped if no ingress controller (nginx or traefik) is detected. Run `enable-ingress-nginx` or `enable-ingress-traefik` first.
+:::
+
+**Section 2 — CRIU (8 steps):**
+
+| Step | Description |
+|------|-------------|
+| 1 | Deploy a busybox counter pod (`clouder-smoke-test`) |
+| 2 | Wait for pod to be ready |
+| 3 | Let the counter accumulate state for 15 seconds |
+| 4 | Identify which worker node the pod is running on |
+| 5 | Checkpoint via kubelet API using client certificates |
+| 6 | Verify checkpoint archive exists on the worker node |
+| 7 | Delete the original pod |
+| 8 | Import checkpoint into containerd (via buildah), deploy restored pod, validate counter |
+
+:::note
+Section 2 requires containerd 2.0+ (installed by `setup`). On older containerd versions, the checkpoint API returns "method not implemented" and this section reports a warning instead of failing.
+:::
+
+**Result interpretation:**
+
+| Counter after restore | Meaning |
+|-----------------------|---------|
+| ≥ checkpoint value | **CRIU restore: PASSED** — process continued from checkpoint |
+| < checkpoint value | Checkpoint created, but full CRIU restore requires containerd 2.0+ |
+| Pod doesn't start | Checkpoint image format not compatible with current containerd |
+
+**Example:**
+
+```bash
+clouder kubeadm smoke-test my-cluster
+
+# Keep test pods for inspection
+clouder kubeadm smoke-test my-cluster --no-cleanup
+```
+
+---
+
+### `clouder kubeadm enable-ingress-nginx`
+
+Deploy an ingress-nginx controller and create an Azure Load Balancer with a public IP that forwards HTTP/HTTPS traffic to the cluster.
+
+```bash
+clouder kubeadm enable-ingress-nginx <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+
+**What it does (4 steps):**
+
+| Step | Description |
+|------|-------------|
+| 1 | Deploy ingress-nginx controller in **NodePort** mode on the cluster |
+| 2 | Read the assigned NodePorts for HTTP and HTTPS |
+| 3 | Create Azure Load Balancer (`<name>-lb`) with public IP, rules 80→HTTP NodePort, 443→HTTPS NodePort |
+| 4 | Add all worker VM NICs to the LB backend pool |
+
+**Architecture:**
+
+```
+Internet → Azure LB (public IP)
+             ├── :80  → worker NICs → NodePort → ingress-nginx → Ingress rules → Services
+             └── :443 → worker NICs → NodePort → ingress-nginx → Ingress rules → Services
+```
+
+No Azure Cloud Controller Manager is needed — the LB is provisioned externally via Azure SDK.
+
+**Azure resources created:**
+
+| Resource | Name | Description |
+|----------|------|-------------|
+| Public IP | `<name>-lb-ip` | Standard SKU, static allocation |
+| Load Balancer | `<name>-lb` | Standard SKU with HTTP/HTTPS rules |
+
+**Example:**
+
+```bash
+clouder kubeadm enable-ingress-nginx my-cluster
+
+# After enabling, create Ingress resources:
+clouder kubectl my-cluster create ingress demo --rule='/*=my-svc:80'
+```
+
+---
+
+### `clouder kubeadm disable-ingress-nginx`
+
+Remove the Azure Load Balancer and ingress-nginx controller from the cluster.
+
+```bash
+clouder kubeadm disable-ingress-nginx <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--force` | `-f` | Skip confirmation prompt |
+
+**What it deletes:**
+1. Azure Load Balancer (`<name>-lb`)
+2. LB public IP (`<name>-lb-ip`)
+3. ingress-nginx namespace and all its resources
+
+**Example:**
+
+```bash
+clouder kubeadm disable-ingress-nginx my-cluster
+clouder kubeadm disable-ingress-nginx my-cluster --force
+```
+
+---
+
+### `clouder kubeadm enable-ingress-traefik`
+
+Deploy a Traefik ingress controller (via Helm) and create an Azure Load Balancer with a public IP that forwards HTTP/HTTPS traffic to the cluster.
+
+```bash
+clouder kubeadm enable-ingress-traefik <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+
+**What it does (4 steps):**
+
+| Step | Description |
+|------|-------------|
+| 1 | Install Helm (if needed), deploy Traefik via Helm in **NodePort** mode |
+| 2 | Read the assigned NodePorts for HTTP (web) and HTTPS (websecure) |
+| 3 | Create Azure Load Balancer (`<name>-lb`) with public IP, rules 80→HTTP NodePort, 443→HTTPS NodePort |
+| 4 | Add all worker VM NICs to the LB backend pool |
+
+**Architecture:**
+
+```
+Internet → Azure LB (public IP)
+             ├── :80  → worker NICs → NodePort → Traefik → IngressRoute/Ingress → Services
+             └── :443 → worker NICs → NodePort → Traefik → IngressRoute/Ingress → Services
+```
+
+**Example:**
+
+```bash
+clouder kubeadm enable-ingress-traefik my-cluster
+
+# After enabling, create Ingress resources:
+clouder kubectl my-cluster create ingress demo --rule='/*=my-svc:80'
+```
+
+---
+
+### `clouder kubeadm disable-ingress-traefik`
+
+Remove the Azure Load Balancer and Traefik ingress controller from the cluster.
+
+```bash
+clouder kubeadm disable-ingress-traefik <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--force` | `-f` | Skip confirmation prompt |
+
+**What it deletes:**
+1. Azure Load Balancer (`<name>-lb`)
+2. LB public IP (`<name>-lb-ip`)
+3. Traefik Helm release and traefik namespace
+
+**Example:**
+
+```bash
+clouder kubeadm disable-ingress-traefik my-cluster
+clouder kubeadm disable-ingress-traefik my-cluster --force
+```
+
+---
+
+### `clouder kubeadm upgrade-kubelet`
+
+Upgrade kubelet, Kubeadm, and kubectl on all nodes of an existing cluster to the target Kubernetes version (`K8S_VERSION`, currently `1.32`). This is needed when the cluster was originally provisioned with an older Kubernetes version and requires features available in newer kubelet releases (e.g. the checkpoint `timeout` query parameter added in Kubernetes 1.30+).
+
+```bash
+clouder kubeadm upgrade-kubelet <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (must match the `vm-create` name) |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: `azureuser`) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+
+**What it does (per node):**
+
+| Step | Description |
+|------|-------------|
+| 1 | Update the Kubernetes apt repository to the target version |
+| 2 | Unhold kubelet, Kubeadm, kubectl packages |
+| 3 | Upgrade all three packages to the latest patch of v`K8S_VERSION` |
+| 4 | Re-hold the packages to prevent accidental upgrades |
+| 5 | Run `systemctl daemon-reload && systemctl restart kubelet` |
+
+Nodes are upgraded **sequentially** (master first, then workers). Pods are NOT drained — for zero-downtime upgrades, drain nodes manually before running this command.
+
+:::caution
+This command upgrades the kubelet binary and restarts it. It does **not** run `Kubeadm upgrade apply` (control plane component upgrade). For a full Kubernetes version upgrade, run `Kubeadm upgrade apply` on the master node separately.
+:::
+
+**Example:**
+
+```bash
+# Upgrade all nodes to the target K8s version
+clouder kubeadm upgrade-kubelet my-cluster
+
+# With a specific SSH key
+clouder kubeadm upgrade-kubelet my-cluster --key my-cluster-key
+```
+
+---
+
+## Typical Workflow
+
+### Create a Cluster
+
+Three commands are needed to go from zero to a running Kubernetes cluster with CRIU support:
+
+```bash
+# 1. Create the VMs (1 master + 3 workers on Azure)
+clouder kubeadm vm-create my-cluster
+
+# 2. Set up Kubernetes on all nodes
+clouder kubeadm setup my-cluster
+
+# 3. Fetch the kubeconfig
+clouder kubeadm get-config my-cluster
+```
+
+`vm-create` provisions 4 VMs (Standard_B4ms, 100 GB OS disks) in Azure with a VNet, subnet, and NSG.
+`setup` installs containerd 2.x, CRIU, buildah, Kubeadm/kubelet/kubectl, initializes the control plane with Flannel CNI, joins workers, enables the `ContainerCheckpoint` feature gate on every node, and installs the Azure Disk CSI and Azure File CSI drivers for dynamic persistent volume provisioning.
+`get-config` downloads the kubeconfig to `~/.clouder/kubeconfigs/kubeconfig-my-cluster`.
+
+### Use the Cluster
+
+```bash
+# Run kubectl via the persisted kubeconfig
+clouder kubectl my-cluster get nodes
+clouder kubectl my-cluster get pods -A
+clouder kubectl my-cluster apply -f deployment.yaml
+```
+
+### Add an Ingress Controller
+
+Pick one of nginx or traefik. Both create an Azure Load Balancer with a public IP:
+
+```bash
+# Option A: ingress-nginx
+clouder kubeadm enable-ingress-nginx my-cluster
+
+# Option B: traefik
+clouder kubeadm enable-ingress-traefik my-cluster
+```
+
+### Validate with Smoke Test
+
+The smoke test validates both ingress routing and CRIU checkpoint/restore end-to-end:
+
+```bash
+clouder kubeadm smoke-test my-cluster
+```
+
+### Tear Down
+
+```bash
+# Remove the ingress controller and load balancer first
+clouder kubeadm disable-ingress-nginx my-cluster
+
+# Delete all VMs and Azure resources
+clouder kubeadm vm-terminate my-cluster
+```
+
+---
+
+## Related: `clouder kubectl`
+
+Run kubectl commands using the persisted kubeconfig for a cluster.
+
+```bash
+clouder kubectl <name> <kubectl-args...>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeconfigs/`) |
+| `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
+
+**Example:**
+
+```bash
+clouder kubectl my-cluster get nodes
+clouder kubectl my-cluster get pods -A
+clouder kubectl my-cluster apply -f deployment.yaml
+clouder kubectl my-cluster logs my-pod
+```
+
+This is equivalent to running:
+```bash
+kubectl --kubeconfig=~/.clouder/kubeconfigs/kubeconfig-my-cluster get nodes
+```
+
+---
+
+## Related: `clouder helm`
+
+Run helm commands using the persisted kubeconfig for a cluster.
+
+```bash
+clouder helm <name> <helm-args...>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeconfigs/`) |
+| `helm-args` | Any helm arguments (e.g. `list -A`, `install ...`) |
+
+**Example:**
+
+```bash
+clouder helm my-cluster list -A
+clouder helm my-cluster install my-release my-chart
+clouder helm my-cluster upgrade my-release my-chart
+clouder helm my-cluster uninstall my-release
+```
+
+This is equivalent to running:
+```bash
+helm --kubeconfig=~/.clouder/kubeconfigs/kubeconfig-my-cluster list -A
+```
+
+---
+
+## Networking
+
+The `setup` command installs **Flannel** as the CNI with `--pod-network-cidr=10.244.0.0/16`. Flannel provides VXLAN-based overlay networking that works reliably on Azure VNets where all nodes share the same subnet.
+
+:::note
+Calico CNI code is preserved in the codebase (commented out in `Kubeadm.py`) for future use. Calico's default `VXLANCrossSubnet` mode uses direct routing when nodes are on the same subnet, which requires IP forwarding enabled on Azure NICs. Flannel's VXLAN overlay avoids this issue entirely.
+:::
+
+## CRIU Support
+
+The `setup` command configures every node for CRIU checkpoint/restore:
+
+- **containerd 2.x** from Docker's official apt repository (supports CRI `CheckpointContainer` method)
+- **SystemdCgroup** enabled in containerd config
+- **CRIU** installed and verified (`criu check`)
+- **buildah** installed (converts checkpoint archives into OCI images for restore)
+- **`ContainerCheckpoint`** feature gate enabled on all kubelets
+- **Kubelet API** accessible on port 10250 (NSG rule)
+
+:::caution
+CRIU checkpoint requires **containerd 2.0+**. The Ubuntu apt `containerd` package provides 1.7.x which does NOT support checkpointing. Clouder's setup installs `containerd.io` from Docker's repo to get 2.x.
+
+If your cluster was created with an older version of Clouder (containerd 1.7.x), you must recreate it:
+```bash
+clouder kubeadm vm-terminate my-cluster
+clouder kubeadm vm-create my-cluster
+clouder kubeadm setup my-cluster
+```
+An in-place upgrade from containerd 1.7 to 2.x is not supported.
+:::
+
+## Storage
+
+The `setup` command installs the **Azure Disk CSI driver** and the **Azure File CSI driver** for dynamic persistent volume provisioning. The Disk CSI driver allows pods to request `PersistentVolumeClaim` resources backed by Azure Managed Disks. The File CSI driver enables NFS-based shared filesystem provisioning and setup creates the `azure-nfs` StorageClass with the cluster's Azure subscription, resource group, and location baked in (required on Kubeadm; on AKS these are auto-detected from IMDS).
+
+**What gets configured:**
+
+| Component | Description |
+|-----------|-------------|
+| `/etc/kubernetes/azure.json` | Azure cloud-provider config deployed to all nodes |
+| `azure-cloud-provider` secret | Kubernetes secret in `kube-system` for the CSI controller |
+| Azure Disk CSI driver v1.30.3 | Controller + node DaemonSet with snapshot support |
+| Azure File CSI driver v1.30.6 | Controller + node DaemonSet for NFS file shares |
+| `managed-csi` StorageClass | Default StorageClass using `StandardSSD_LRS`, `WaitForFirstConsumer` binding, volume expansion enabled |
+| `azure-nfs` StorageClass | NFS StorageClass for shared filesystem (`file.csi.azure.com`, `Premium_LRS`) with Azure params |
+
+**Service principal:**
+
+The CSI driver requires an Azure service principal with `Contributor` access to the cluster's resource group. Clouder will:
+1. Use existing `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` environment variables if set.
+2. Otherwise, auto-create a new SP (`clouder-<name>-csi`) scoped to the resource group via `az ad sp create-for-rbac`.
+3. Skip the step with a warning if credentials cannot be obtained.
+
+**Manual installation** (if Step 6 was skipped):
+
+```bash
+# 1. Create a service principal
+az ad sp create-for-rbac --name clouder-<name>-csi \
+  --role Contributor \
+  --scopes /subscriptions/<sub-id>/resourceGroups/<rg>
+
+# 2. Create /etc/kubernetes/azure.json on every node (see Azure Disk CSI docs)
+# 3. Install the CSI drivers
+curl -skSL https://raw.githubusercontent.com/kubernetes-sigs/azuredisk-csi-driver/v1.30.3/deploy/install-driver.sh | bash -s v1.30.3 snapshot --
+curl -skSL https://raw.githubusercontent.com/kubernetes-sigs/azurefile-csi-driver/v1.30.6/deploy/install-driver.sh | bash -s v1.30.6 --
+
+# 4. Create the StorageClasses
+kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: managed-csi
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: StandardSSD_LRS
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-nfs
+provisioner: file.csi.azure.com
+allowVolumeExpansion: true
+parameters:
+  shareName: shared-storage
+  skuName: Premium_LRS
+  protocol: nfs
+  subscriptionID: "<sub-id>"
+  resourceGroup: "<rg>"
+  location: "<region>"
+EOF
+```
+
+Use `smoke-test` to validate the full checkpoint/restore pipeline and ingress load balancer.
+
+See the [CRIU documentation](/architecture/criu/) for checkpoint and restore workflows.
+
+:::tip
+All VMs are on the same subnet (`10.0.0.0/24`), so Kubeadm nodes discover each other using private IPs. The `setup` command handles this automatically.
+:::
+
+:::note
+Supported cloud providers: Azure and AWS.
+:::

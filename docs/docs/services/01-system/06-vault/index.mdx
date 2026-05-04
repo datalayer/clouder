@@ -1,0 +1,89 @@
+---
+title: Vault
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Vault
+
+[HashiCorp Vault](https://developer.hashicorp.com/vault/services/k8s).
+
+```bash
+helm repo add hashicorp https://helm.releases.hashicorp.com
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-vault
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+injector:
+  nodeSelector:
+    role.datalayer.io/system: "true"
+server:
+  nodeSelector:
+    role.datalayer.io/system: "true"
+csi:
+  nodeSelector:
+    role.datalayer.io/system: "true"
+EOF
+  export RELEASE=datalayer-openfga
+  export NAMESPACE=datalayer-openfga
+  helm upgrade \
+    --install $RELEASE \
+    openfga/openfga \
+    --create-namespace \
+    --values /tmp/values.yaml \
+    --namespace $NAMESPACE \
+    --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+./generated/services/deploy-datalayer-vault.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the Vault deployment.
+
+```bash
+kubectl get all -n datalayer-vault
+```
+
+Launch a proxy and connect to the Vault User Interface on http://localhost:8200 to set of root keys that you will need in case of an emergency.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# open http://localhost:8200
+plane pf-vault
+```
+  </TabItem>
+  <TabItem value="helm" label="Bash">
+```bash
+# open http://localhost:8200
+kubectl port-forward datalayer-vault-0 8200:8200 -n datalayer-vault
+```
+  </TabItem>
+</Tabs>
+
+Connect to the vault pod and run the following command to activate the keyvalue v2.
+
+```bash
+export VAULT_TOKEN=...
+vault secrets enable -version=2 -path kv kv
+# Success! Enabled the kv secrets engine at: kv/
+```

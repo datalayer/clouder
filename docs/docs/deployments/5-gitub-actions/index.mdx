@@ -1,0 +1,27 @@
+---
+title: Deploy with GitHub Actions
+slug: /cluster/deployments/github-actions/
+---
+
+# ☰ 🛫 🚧 Deploy with GitHub Actions
+
+GitHub Actions support is available through standard Terraform and shell workflows.
+
+Current recommended CI/CD approach:
+
+1. Run Terraform plan and apply in your workflow.
+2. Bootstrap the cluster with generated helper scripts.
+3. Deploy services with staged scripts (`plane-deploy-rollout.sh`) or per-service scripts.
+
+Typical sequence:
+
+```bash
+cd terraform
+terraform init
+terraform plan
+terraform apply -auto-approve
+./generated/clouder-Kubeadm-setup.sh
+./generated/plane-deploy-rollout.sh
+```
+
+For reference, see [Deploy with Terraform](/deployments/terraform/).

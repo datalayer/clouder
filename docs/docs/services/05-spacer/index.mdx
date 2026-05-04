@@ -1,0 +1,88 @@
+---
+title: Datalayer Spacer
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🧑‍🚀 Datalayer Spacer
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">API</Label>
+</Stack>
+
+the `Datalayer Spacer` service provides collaborative spaces for data analysis. A space manages the following features.
+
+```
+🛂 Identities and permissions that grant users and organisations access to the space.
+
+💼 Contents (Dataset, Cell, Notebook) stored in Git repositories.
+
+🧑‍🤝‍🧑 RTC (Realtime Collaboration) documents to ease collaboration.
+```
+
+## Deploy Datalayer Spacer
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-spacer
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+./generated/services/deploy-datalayer-spacer.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Datalayer Spacer Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=spacer
+```
+
+Check the logs of the Datalayer Spacer Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=spacer
+```
+
+Check the availability of the Datalayer Spacer Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer Spacer Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/spacer/version
+open https://${DATALAYER_RUN_HOST}/api/spacer/v1/ping
+```
+
+## Tear Down Datalayer Spacer
+
+If needed, tear down.
+
+```bash
+plane down datalayer-iam
+```
+
+If needed, tear down.
+
+```bash
+plane down datalayer-spacer
+```
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/spacer/v1/ui).
+import TabItem from '@theme/TabItem';

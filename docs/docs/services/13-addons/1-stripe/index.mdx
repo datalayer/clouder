@@ -1,0 +1,113 @@
+---
+title: Stripe Addon
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ModalImage from "react-modal-image";
+
+# 💳 Stripe Addon
+
+[Stripe](https://stripe.com) provides subscription-aware top-up billing for Datalayer IAM credits.
+
+<Tabs groupId="k8s">
+  <TabItem value="manual" label="Manual" default>
+
+Follow the Stripe setup and validation steps below.
+
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+./generated/plane-deploy-all-services.sh
+```
+  </TabItem>
+</Tabs>
+
+<div style={{marginBottom: 20}}>
+<ModalImage
+  small="https://images.datalayer.io/legacy/addons/stripe-addon-1.png"
+  large="https://images.datalayer.io/legacy/addons/stripe-addon-1.png"
+  alt=""
+/>
+</div>
+
+## Behavior
+
+1. A Stripe customer is created for each Datalayer account.
+2. Top-up prices are exposed from one configured top-up product.
+3. Top-up PaymentIntent client secrets are created for Stripe Elements checkout.
+4. Top-up is allowed only when the user has an active monthly subscription.
+5. Credits are applied from `payment_intent.succeeded` webhook metadata.
+6. Subscription status snapshots are maintained from subscription and invoice webhooks.
+
+## Business Rule
+
+Top-up purchase requires an active monthly subscription.
+
+## API Surface
+
+Base path: `/api/iam/stripe/v1`
+
+1. `POST /topup/payment-intent` creates a PaymentIntent client secret for top-up.
+2. `GET /topup/prices` lists top-up prices from `DATALAYER_STRIPE_TOPUP_PRODUCT_ID`.
+3. `POST /webhook` processes Stripe webhook events.
+
+Subscription status and cancellation endpoints are available in IAM under `/api/iam/v1/subscription*`.
+
+## Required Environment Variables
+
+Set these values on the IAM runtime:
+
+1. `DATALAYER_STRIPE_API_KEY` (`sk_test_...` or `sk_live_...`)
+2. `DATALAYER_STRIPE_JS_API_KEY` (`pk_test_...` or `pk_live_...`)
+3. `DATALAYER_STRIPE_TOPUP_PRODUCT_ID` (top-up product in the same environment)
+4. `DATALAYER_STRIPE_SUBSCRIPTION_PRODUCT_ID` (monthly subscription product in the same environment)
+5. `DATALAYER_STRIPE_WEBHOOK_SECRET` (`whsec_...`)
+6. `DATALAYER_STRIPE_CHECKOUT_ROUTE` (default: `checkout`)
+7. `DATALAYER_STRIPE_CUST_PORTAL_ID` (billing portal configuration id)
+8. `DATALAYER_STRIPE_CUST_PORTAL_URL` (billing portal URL)
+
+## Stripe Setup Flow
+
+Use the same environment (Test or Production) for every artifact below.
+
+1. Create API keys and set `DATALAYER_STRIPE_API_KEY` and `DATALAYER_STRIPE_JS_API_KEY`.
+2. Create top-up product `Datalayer Credits` with one-time package prices, and set `DATALAYER_STRIPE_TOPUP_PRODUCT_ID`.
+3. Create monthly subscription product(s) and set `DATALAYER_STRIPE_SUBSCRIPTION_PRODUCT_ID`.
+4. Configure Billing Portal and set `DATALAYER_STRIPE_CUST_PORTAL_ID` and `DATALAYER_STRIPE_CUST_PORTAL_URL`.
+5. Configure webhook endpoint `https://<your-domain>/api/iam/stripe/v1/webhook` and set `DATALAYER_STRIPE_WEBHOOK_SECRET`.
+
+## Webhook Events Used
+
+1. `payment_intent.succeeded`
+2. `customer.subscription.created`
+3. `customer.subscription.updated`
+4. `customer.subscription.deleted`
+5. `invoice.paid`
+6. `invoice.payment_failed`
+
+## Validation Checklist
+
+1. Without active monthly subscription, `POST /api/iam/stripe/v1/topup/payment-intent` returns `403`.
+2. With active monthly subscription, top-up PaymentIntent creation succeeds.
+3. `payment_intent.succeeded` webhook returns `2xx` and IAM credits increase.
+4. Failed payments do not add credits.
+5. IAM `/api/iam/v1/subscription` reflects webhook-driven subscription snapshots.
+   
+:::warning
+
+- Stripe retries webhook delivery with exponential backoff on non-2xx responses.
+- Webhooks can be delivered multiple times; handlers must be idempotent.
+
+:::
+
+<ModalImage
+  small="https://images.datalayer.io/legacy/addons/stripe-addon-2.png"
+  large="https://images.datalayer.io/legacy/addons/stripe-addon-2.png"
+  alt=""
+/>

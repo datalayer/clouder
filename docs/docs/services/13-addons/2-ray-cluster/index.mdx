@@ -1,0 +1,124 @@
+---
+title: "Ray Cluster Addon"
+---
+
+# Ray Cluster Addon
+
+The key steps are summarized down here, for more information refer to the [official Ray's documentation](https://docs.ray.io/en/latest/cluster/kubernetes/getting-started/raycluster-quick-start.html#kuberay-raycluster-quickstart).
+
+## 1. Deploy a KubeRay Operator
+
+```bash
+helm repo add kuberay https://ray-project.github.io/kuberay-helm/
+helm repo update
+helm upgrade kuberay-operator kuberay/kuberay-operator
+```
+
+## 2. Deploy a RayCluster custom resource
+
+```bash
+helm install raycluster kuberay/ray-cluster --set worker.replicas=10 --set worker.maxReplicas=100
+```
+
+:::note
+The values for the number of worker replicas and the maximum number of replicas are set to 10 and 100, respectively.
+:::
+
+## 3. Run code from a Pod
+
+<video controls width="100%">
+  <source src="https://images.datalayer.io/legacy/distributed-frameworks/ray_from_cloud.webm"/>
+</video>
+
+First, let's spawn a simple pod with Ray already installed and get a bash inside it (the deployement of the pod ressource is not instantaneous so wait for the pod to be running before attaching a bash). Check out the **supplementary materials** to replicate this example. 
+
+```bash
+kubectl apply -f simple-ray-pod.yaml
+kubectl exec --stdin --tty python-ray -- /bin/bash 
+```
+
+Then, in the pod's bash start the job. Here the script is already present in the image used for the pod.
+
+```bash
+python demo.py
+```
+
+<details>
+
+<summary>Supplementary materials</summary>
+
+For this example, the following image is be used (see on [Dockerhub](https://hub.docker.com/layers/aelskens/python-ray/3.9.19-2.34.0/images/sha256-461c84cb0ff6bcbdfa1f260d98fbb5a151dd1241ae8fb8d3c11c47d3d1822fac?context=repo)):
+
+```bash
+FROM python:3.9.19
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Get build dependencies
+RUN apt-get update \
+    && apt-get install -y \
+        build-essential \
+        software-properties-common \
+        ca-certificates \
+        vim
+
+RUN pip install ray[default]==2.34.0
+
+COPY demo.py ./demo.py
+```
+:::note
+The version of Python and Ray must match that of the RayCluster deployement (cf. [Ray's helm chart](https://github.com/ray-project/kuberay-helm/blob/main/helm-chart/ray-cluster/values.yaml#L10)).
+:::
+
+The content of the `demo.py` script is explicited here below:
+
+```python
+# demo.py
+
+import ray
+import time
+
+ray.init(address="ray://raycluster-kuberay-head-svc.default.svc.cluster.local:10001")
+
+print(f"Available ressources: {ray.cluster_resources()}")
+
+@ray.remote
+def dummy(i):
+    time.sleep(1)
+    return i
+
+start_time = time.perf_counter()
+
+futures = [dummy.remote(i) for i in range(11*10)]
+print(f"Results: {ray.get(futures)}")
+
+end_time = time.perf_counter()
+run_time = end_time - start_time
+print(f"Execution time = {run_time:.2f} seconds.")
+```
+
+Here is the configuration file of the simple Ray pod that was used to spawn the pod:
+
+```yaml
+# simple-ray-pod.yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: python-ray
+spec:
+  containers:
+  - name: python-ray
+    image: aelskens/python-ray:3.9.19-2.34.0
+    command: ['sleep', '3600']
+```
+
+</details>
+
+## 4. Cleanup
+
+```bash
+helm uninstall raycluster
+helm uninstall kuberay-operator
+```

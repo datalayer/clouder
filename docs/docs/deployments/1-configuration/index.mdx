@@ -1,0 +1,366 @@
+# ☰ Required Configuration
+
+The deployments relies on environment variables read from your shell. 
+This table details those environment variables by alphabetical order.
+
+<table>
+<tr><th>Variable</th><th>Description</th></tr>
+
+<tr>
+  <td>AWS_ACCESS_KEY_ID</td>
+  <td>Set the access key that gives access to the S3 bucket for the backups.</td>
+</tr>
+<tr>
+  <td>AWS_DEFAULT_PROFILE</td>
+  <td>Set the default profile that gives access to the S3 bucket for the backups.</td>
+</tr>
+<tr>
+  <td>AWS_DEFAULT_REGION</td>
+  <td>Set the defaul region that gives access to the S3 bucket for the backups.</td>
+</tr>
+<tr>
+  <td>AWS_REGION</td>
+  <td>Set the region of the S3 bucket for the backups.</td>
+</tr>
+<tr>
+  <td>AWS_SECRET_ACCESS_KEY</td>
+  <td>Set the secret key that gives access to the S3 bucket for the backups.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_AUTHZ_ENGINE</td>
+  <td>Type of Authorization engine to use - possible value: `none` | `openfga` - default is `openfga`.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_CLUSTER_TYPE</td>
+  <td>The Kubernetes cluster type (this is only needed for advanced cases).<br/><br/>
+Possible values are `eks` or `ovh`.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_CREDITS_PROVIDER</td>
+  <td>A string that defines up the addon providing the credits method within IAM for billing and usage.</td>
+</tr>
+
+
+<tr>
+  <td>DATALAYER_DOCKER_REGISTRY_HOST</td>
+  <td>Hostname of the OCI Registry that contains the Docker Images.</td>
+</tr>
+<tr>
+  <td>DATALAYER_DOCKER_REGISTRY</td>
+  <td>Full name of the OCI Registry that contains the Docker Images, e.g $DATALAYER_DOCKER_REGISTRY_HOST/datalayer</td>
+</tr>
+<tr>
+  <td>DATALAYER_DOCKER_REGISTRY_USERNAME</td>
+  <td>Username of the OCI Registry that contains the Docker Images.</td>
+</tr>
+<tr>
+  <td>DATALAYER_DOCKER_REGISTRY_PASSWORD</td>
+  <td>Password of the OCI Registry that contains the Docker Images.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_GITHUB_CLIENT_ID</td>
+  <td>If you enable authentication via GitHub, define the `client id` of the GitHub Application.</td>
+</tr>
+<tr>
+  <td>DATALAYER_GITHUB_CLIENT_SECRET</td>
+  <td>If you enable authentication via GitHub, define the `client secret` of the GitHub Application</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_GRAFANA_ADMIN_PWD</td>
+  <td>Define the password for the Grafana service.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_HELM_REGISTRY_HOST</td>
+  <td>Hostname of the OCI Registry that contains the Helm Charts.</td>
+</tr>
+<tr>
+  <td>DATALAYER_HELM_REGISTRY</td>
+  <td>Full name of the OCI Registry that contains the Helm Charts, e.g $DATALAYER_HELM_REGISTRY_HOST/datalayer-charts</td>
+</tr>
+<tr>
+  <td>DATALAYER_HELM_REGISTRY_USERNAME</td>
+  <td>Username of the OCI Registry that contains the Helm Charts.</td>
+</tr>
+<tr>
+  <td>DATALAYER_HELM_REGISTRY_PASSWORD</td>
+  <td>Password of the OCI Registry that contains the Helm Charts.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_JWT_ISSUER</td>
+  <td>If you enable authentication via JSON Web Token (JWT), define the JWT issuer.<br/><br/>
+e.g. `https://dev.datalayer.io`</td>
+</tr>
+<tr>
+  <td>DATALAYER_JWT_SECRET</td>
+  <td>If you enable authentication via JSON Web Token (JWT), define the JWT secret.</td>
+</tr>
+<tr>
+  <td>DATALAYER_JWT_ALGORITHM</td>
+  <td>If you enable authentication via JSON Web Token (JWT), define the JWT issuer.<br/><br/>
+e.g. `HS256`</td>
+</tr>
+<tr>
+  <td>DATALAYER_JWT_ALLOWED_ISSUERS</td>
+  <td>If you enable authentication via JSON Web Token (JWT), define the JWT allowed issuers.<br/><br/>
+e.g. `https://id.your-company.cloud`</td>
+</tr>
+<tr>
+  <td>DATALAYER_JWT_DEFAULT_KID_ISSUER</td>
+  <td>If you enable authentication via JSON Web Token (JWT), define the JWT default key ID issuer.<br/><br/>
+e.g. `https://your-company.cloud/api/iam/v1/api-keys`</td>
+</tr>
+<tr>
+  <td>DATALAYER_JWT_SKIP_3RD_TOKEN_SIGNATURE_VERIFICATION</td>
+  <td>If you enable authentication via JSON Web Token (JWT), define the JWT signature should be verified.<br/><br/>
+Set `true` or `false`.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_CERT_ISSUER</td>
+  <td>The issuer for the certificates, e.g. `letsencrypt` or `letsencrypt-prod`.</td>
+</tr>
+<tr>
+  <td>DATALAYER_INGRESS_CLASS_NAME</td>
+  <td>The Ingress class name for the Operator, e.g. `datalayer-traefik` or `nginx`.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_IAM_API_KEY</td>
+  <td>Key used to protect the internal Kubernetes cluster communications.</td>
+</tr>
+<tr>
+  <td>DATALAYER_IAM_HOST</td>
+  <td>IAM internal Kubernetes service hostname + port.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_OPENFGA_REST_URL</td>
+  <td></td>
+</tr>
+<tr>
+  <td>DATALAYER_OPENFGA_STORE_ID</td>
+  <td></td>
+</tr>
+<tr>
+  <td>DATALAYER_OPENFGA_AUTHZ_MODEL_ID</td>
+  <td></td>
+</tr>
+
+<tr>
+  <td>DATALAYER_OPERATOR_API_KEY</td>
+  <td>Set a secret to secure the internal connexions between the services.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_PUB_SUB_ENGINE</td>
+  <td>Type of Pub/Sub engine to use - possible value: `none` | `pulsar` - default is `pulsar`.</td>
+</tr>
+<tr>
+  <td>DATALAYER_PULSAR_URL</td>
+  <td>Internal URL to pulsar broker e.g. pulsar://datalayer-pulsar-broker.datalayer-pulsar.svc.cluster.local:6650.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_USERS_PVC_NAME</td>
+  <td>Name of the permanent volume claim for user storage.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_VAULT_URL</td>
+  <td>Internal URL to the Vault service.</td>
+</tr>
+<tr>
+  <td>DATALAYER_VAULT_TOKEN</td>
+  <td>Token to access the Vault service.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_RUN_URL</td>
+  <td>The hostname of the public-facing services. You will need to update your DNS system to point the Load Balancer IP address to the hostname of the URL.<br/><br/>
+  The Load Balancer is created by the [Ingress service](/services/system/ingress/).<br/><br/>
+SSL certificates will be created by the cert-manager service for that hostname.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_RUNTIME_ENV</td>
+  <td>`dev`, `qa` or `prod`</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_SMTP_HOST</td>
+  <td>Define the SMTP server hostname for email communications.</td>
+</tr>
+<tr>
+  <td>DATALAYER_SMTP_PORT</td>
+  <td>Define the SMTP server port number for email communications.</td>
+</tr>
+<tr>
+  <td>DATALAYER_SMTP_USERNAME</td>
+  <td>Define the SMTP server username for email communications.</td>
+</tr>
+<tr>
+  <td>DATALAYER_SMTP_PASSWORD</td>
+  <td>Define the SMTP server password for email communications.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_SOLR_USERNAME</td>
+  <td>Define the username to protect Solr.</td>
+</tr>
+<tr>
+  <td>DATALAYER_SOLR_PASSWORD</td>
+  <td>Define the password to protect Solr.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME</td>
+  <td>Define the S3 bucket name for the Solr backups.</td>
+</tr>
+<tr>
+  <td>DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION</td>
+  <td>Define the S3 bucket region for the Sorl backups.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_SUPPORT_EMAIL</td>
+  <td>Define the email for support communications.<br/>
+e.g. support@your-company.io</td>
+</tr>
+
+<tr>
+  <td>KUBECONFIG</td>
+  <td>The path to your Kubeconfig file.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_OPENAI_API_VERSION</td>
+  <td></td>
+</tr>
+<tr>
+  <td>DATALAYER_AZURE_OPENAI_CHAT_COMPLETION_ENDPOINT</td>
+  <td></td>
+</tr>
+<tr>
+  <td>DATALAYER_AZURE_OPENAI_API_KEY</td>
+  <td></td>
+</tr>
+
+<tr>
+  <td>OTEL_SDK_DISABLED</td>
+  <td>Disable OpenTelemetry instrumentation on service and use non-enriched logs (no metadata) [true or false].</td>
+</tr>
+<tr>
+  <td>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</td>
+  <td>URL for exporting services metrics and traces to opentelemetry collector.</td>
+</tr>
+<tr>
+  <td>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</td>
+  <td>URL for exporting services metrics and traces to opentelemetry collector.</td>
+</tr>
+
+</table>
+
+:::tip
+
+Use any of the following command to generate tokens.
+
+```bash
+TOKEN=$(openssl rand -hex 32)
+TOKEN=$(python -c "import secrets; print(secrets.token_hex(32))")
+```
+
+:::
+
+## Minimal Configuration
+
+The minimal setup for [IAM](/services/iam/), [Jupyter](/services/runtimes/), and [Operator](/services/operator/) is listed here with example values.
+
+Create a `~/.datalayer/datalayerrc` and source that file from `~/.bash_profile` or similar based on your shell.
+
+```bash
+#!/usr/bin/env bash
+
+# ~/.datalayer/datalayerrc
+
+export DATALAYER_AUTHZ_ENGINE="none"
+export DATALAYER_CDN_URL="https://datalayer.io"
+export DATALAYER_CLUSTER_NAME="my-cluster"
+export DATALAYER_CLUSTER_TYPE="eks"
+export DATALAYER_CREDITS_PROVIDER="stripe"
+export DATALAYER_DOCKER_REGISTRY="${DATALAYER_DOCKER_REGISTRY_HOST}/datalayer"
+export DATALAYER_DOCKER_REGISTRY_HOST="my-registry.net"
+export DATALAYER_DOCKER_REGISTRY_PASSWORD="..."
+export DATALAYER_DOCKER_REGISTRY_USERNAME="..."
+export DATALAYER_HELM_REGISTRY="${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts"
+export DATALAYER_HELM_REGISTRY_HOST="my-registry.net"
+export DATALAYER_HELM_REGISTRY_PASSWORD="..."
+export DATALAYER_HELM_REGISTRY_USERNAME="..."
+export DATALAYER_IAM_API_KEY="..."
+export DATALAYER_INITIAL_USER_CREDITS=10
+export DATALAYER_JWT_ALGORITHM="HS256"
+export DATALAYER_JWT_ALLOWED_ISSUERS="https://my-id.datalayer.run"
+export DATALAYER_JWT_ISSUER="https://my-id.datalayer.run"
+export DATALAYER_JWT_SECRET="..."
+export DATALAYER_JWT_SKIP_EXTERNAL_TOKEN_SIGNATURE_VERIFICATION=false
+export DATALAYER_OPERATOR_API_KEY="..."
+export DATALAYER_PUB_SUB_ENGINE="none"
+export DATALAYER_RUNTIME_ENV="prod"
+export DATALAYER_RUN_URL=https://my-cluster.datalayer.run
+export DATALAYER_SOLR_PASSWORD="..."
+export DATALAYER_SOLR_USERNAME="admin"
+export KUBECONFIG="~/.datalayer/my-cluster.yaml"
+export OTEL_SDK_DISABLED=true
+```
+
+```bash
+source ~/.datalayer/datalayerrc
+```
+
+## Stripe Addon
+
+The configuration for the [Stripe Addon](/services/addons/stripe/) is listed here.
+
+<table>
+<tr><th>Variable</th><th>Description</th></tr>
+
+<tr>
+  <td>DATALAYER_STRIPE_API_KEY</td>
+  <td>Private Stripe API key.</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_CHECKOUT_ROUTE</td>
+  <td>UI checkout route (default: `checkout`).</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_JS_API_KEY</td>
+  <td>Public Stripe API key.</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_TOPUP_PRODUCT_ID</td>
+  <td>Stripe product ID for one-time top-up prices.</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_SUBSCRIPTION_PRODUCT_ID</td>
+  <td>Stripe product ID for monthly subscription plans required for top-up eligibility.</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_WEBHOOK_SECRET</td>
+  <td>Stripe webhook secret.</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_CUST_PORTAL_ID</td>
+  <td>Stripe Billing Portal configuration ID.</td>
+</tr>
+<tr>
+  <td>DATALAYER_STRIPE_CUST_PORTAL_URL</td>
+  <td>Stripe Billing Portal URL.</td>
+</tr>
+
+</table>

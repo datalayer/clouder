@@ -1,0 +1,40 @@
+# ☰ 🛫 Plane CLI
+
+`Datalayer Plane` is a CLI (Command Line Interface) to deploy and manage the Datalayer services on Kubernetes.
+
+Run the following command to install Plane.
+
+```bash
+# You need `python>=3.9` and `pip` on your machine.
+pip install datalayer-plane
+```
+
+:::note
+
+Plane is optional and you can install the listed requirements without Clouder with the [listed Kubernetes CLI tools](/cluster/requirements/).
+
+:::
+
+Export the `PLANE_HOME` environment variable in your shell environment.
+
+```bash
+export PLANE_HOME=$(which plane)/../..
+```
+
+```bash
+$ plane about
+
+┏┓┓ ┏┓┳┓┏┓
+┃┃┃ ┣┫┃┃┣ 
+┣┛┗┛┛┗┛┗┗┛
+
+Copyright (c) Datalayer, Inc. https://datalayer.io
+
+☰ 🛫 Datalayer Plane.
+
+Documentation: https://datalayer.io
+
+Source code: https://github.com/datalayer
+
+(c) Datalayer, Inc. https://datalayer.io
+```

@@ -1,0 +1,166 @@
+---
+title: Certificate Manager
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Certificate Manager
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane-cert-up" label="Plane" default>
+```bash
+plane up datalayer-cert-manager
+```
+
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm-cert-up" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+installCRDs: true
+nodeSelector:
+  role.datalayer.io/router: "true"
+startupapicheck:
+  nodeSelector:
+    role.datalayer.io/router: "true"
+cainjector:
+  nodeSelector:
+    role.datalayer.io/router: "true"
+webhook:
+  nodeSelector:
+    role.datalayer.io/router: "true"
+EOF
+export RELEASE=datalayer-cert-manager
+export NAMESPACE=datalayer-cert-manager
+helm upgrade \
+  --install $RELEASE \
+  jetstack/cert-manager \
+  --version v1.13.4 \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --values /tmp/values.yaml \
+  --timeout 5m
+helm ls -A
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+./generated/services/deploy-datalayer-cert-manager.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Cert Manager Pods.
+
+```bash
+kubectl get pods -n datalayer-cert-manager
+```
+
+Create the Production Certificate Issuer.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane-cert-issuer" label="Plane" default>
+```bash
+plane create-cert-issuer
+```
+  </TabItem>
+  <TabItem value="bash-cert-issuer" label="Bash">
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    # The ACME Production server URL.
+    server: https://acme-v02.api.letsencrypt.org/directory
+    preferredChain: "ISRG Root X1"
+    # Email address used for ACME registration.
+    email: info@datalayer.io
+    # Name of a secret used to store the ACME account private key.
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    # Enable the HTTP-01 challenge provider
+    solvers:
+    - http01:
+        ingress:
+            ingressClassName: datalayer-traefik
+EOF
+kubectl describe clusterissuer letsencrypt
+```
+  </TabItem>
+</Tabs>
+
+:::warning Staging vs Production Certificates
+
+Optionally, create the Staging Certificate Issuer.
+
+Staging Certificates are not recognized by most browsers.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    # The ACME Staging server URL.
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    preferredChain: "ISRG Root X1"
+    # Email address used for ACME registration.
+    email: info@datalayer.io
+    # Name of a secret used to store the ACME account private key.
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    # Enable the HTTP-01 challenge provider
+    solvers:
+    - http01:
+        ingress:
+            ingressClassName: datalayer-traefik
+EOF
+kubectl describe clusterissuer letsencrypt-staging
+```
+
+:::
+
+The issued certificates have a 3 months validity period. You should renew them manually with the following commands.
+
+```bash
+cmctl renew ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+cmctl status certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+If needed, tear down.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane-cert-down" label="Plane" default>
+```bash
+kubectl delete clusterissuer letsencrypt
+plane down datalayer-cert-manager
+```
+  </TabItem>
+  <TabItem value="helm-cert-down" label="Helm">
+```bash
+kubectl delete clusterissuer letsencrypt
+export RELEASE=datalayer-cert-manager
+export NAMESPACE=datalayer-cert-manager
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>

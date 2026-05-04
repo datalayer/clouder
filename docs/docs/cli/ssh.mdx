@@ -1,0 +1,73 @@
+---
+title: clouder ssh
+sidebar_position: 7
+---
+
+# clouder ssh
+
+SSH into a virtual machine by name. Automatically resolves the VM's public IP and selects the appropriate SSH key.
+
+## Commands
+
+### `clouder ssh connect`
+
+Connect to a VM via SSH.
+
+```bash
+clouder ssh connect <vm-name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `vm-name` (required) | Name of the virtual machine to SSH into |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--user` | `-u` | SSH username (default: `azureuser` for Azure, `ubuntu` for OVH) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` (overrides auto-detection) |
+| `--port` | `-p` | SSH port (default: `22`) |
+
+**How it works:**
+
+1. Looks up the VM by name in the current cloud context.
+2. Resolves the public IP address:
+   - **Azure**: Traverses VM → NIC → Public IP chain.
+   - **OVH**: Reads from the VM's `ipAddresses` field.
+3. Auto-detects the SSH key:
+   - First checks for `~/.ssh/<vm-name>-key` (generated during `clouder vm create`).
+   - If not found, lists available keys and lets you pick.
+   - If only one key exists, uses it automatically.
+4. Connects with `StrictHostKeyChecking=accept-new` for first-time connections.
+
+**Example:**
+
+```bash
+# Basic usage — auto-detects key and user
+clouder ssh connect my-server
+
+# Specify user and key
+clouder ssh connect my-server --user ubuntu --key my-custom-key
+
+# Custom port
+clouder ssh connect my-server -p 2222
+```
+
+---
+
+## Workflow
+
+```bash
+# Create a VM (generates my-server-key SSH key pair)
+clouder vm create my-server
+
+# SSH in immediately
+clouder ssh connect my-server
+
+# Or with a downloaded key
+clouder ssh-key download my-server --key /path/to/key.pem
+clouder ssh connect my-server --key my-server
+```
+
+:::tip
+When you create a VM with `clouder vm create` and choose "Generate new key pair", the key is named `<vm-name>-key`. The `clouder ssh connect` command automatically finds and uses this key.
+:::

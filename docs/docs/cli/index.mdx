@@ -1,0 +1,105 @@
+---
+title: CLI Reference
+sidebar_position: 1
+---
+
+# CLI Reference
+
+Clouder provides a command-line interface built with [Typer](https://typer.tiangolo.com/) for managing cloud resources, Kubernetes clusters, and CRIU checkpoints.
+
+## Installation
+
+```bash
+pip install clouder
+```
+
+## Global Options
+
+```bash
+clouder --version       # Show version
+clouder --help          # Show all commands
+clouder --install-completion   # Install shell completion (bash/zsh/fish)
+clouder --show-completion      # Print completion script
+```
+
+## Commands Overview
+
+| Command | Description |
+|---------|-------------|
+| [`clouder aws`](./aws) | AWS cloud operations — verify identity, list regions, and inspect EC2 VMs |
+| [`clouder azure`](./azure) | Azure cloud operations — configure credentials, manage VMs, list resources |
+| [`clouder ctx`](./context) | Manage Clouder contexts (cloud provider projects) |
+| [`clouder k8s`](./kubernetes) | Manage Kubernetes clusters — create, scale node pools, kubeconfig |
+| [`clouder kubeadm`](./kubeadm) | Provision and set up Kubeadm clusters with CRIU support |
+| [`clouder kubectl`](./kubeadm#related-clouder-kubectl) | Run kubectl with persisted kubeconfig for a cluster |
+| [`clouder helm`](./kubeadm#related-clouder-helm) | Run helm with persisted kubeconfig for a cluster |
+| [`clouder vm`](./vm) | Manage virtual machines (multi-cloud: Azure, OVH) |
+| [`clouder ssh`](./ssh) | SSH into a virtual machine by name |
+| [`clouder ssh-key`](./ssh-key) | Manage SSH keys (local and cloud) |
+| [`clouder s3`](./s3) | Manage S3 buckets |
+| [`clouder info`](./info) | Show context and user information |
+| [`clouder operator`](./operator) | Manage the Clouder Kubernetes operator |
+| [`clouder sh`](./shell) | Run predefined shell and sbin scripts |
+| `clouder server` | Start the Clouder Jupyter server extension |
+
+## Quick Start
+
+```bash
+# 1. Configure your cloud provider
+clouder azure configure
+
+# 2. Create a VM
+clouder vm create my-server
+
+# 3. SSH into it
+clouder ssh connect my-server
+
+# 4. Create a Kubeadm cluster (1 master + 3 workers)
+clouder kubeadm vm-create my-cluster
+
+# 5. Set up the cluster (containerd 2.x, CRIU, Kubeadm, Flannel CNI, feature gates, Azure CSI drivers)
+clouder kubeadm setup my-cluster
+
+# 6. Get kubeconfig (saved to ~/.clouder/kubeconfigs/)
+clouder kubeadm get-config my-cluster
+
+# 7. Use kubectl
+clouder kubectl my-cluster get nodes
+
+# 8. Check cluster info and next steps
+clouder kubeadm info my-cluster
+
+# 9. Enable ingress (pick one: nginx or traefik)
+clouder kubeadm enable-ingress-nginx my-cluster
+# OR: clouder kubeadm enable-ingress-traefik my-cluster
+
+# 10. Run smoke test (validates ingress + CRIU checkpoint/restore)
+clouder kubeadm smoke-test my-cluster
+
+# 11. Scale workers
+clouder kubeadm scale my-cluster --workers 5
+
+# 12. Disable ingress
+clouder kubeadm disable-ingress-nginx my-cluster
+# OR: clouder kubeadm disable-ingress-traefik my-cluster
+
+# 13. Tear down when done
+clouder kubeadm vm-terminate my-cluster
+
+# 14. Check cluster info
+clouder info ctx
+```
+
+## Shell Completion
+
+Clouder supports tab completion for bash, zsh, and fish:
+
+```bash
+# Install completion for your current shell
+clouder --install-completion
+
+# Or manually add to your shell config
+eval "$(clouder --show-completion bash)"   # bash
+eval "$(clouder --show-completion zsh)"    # zsh
+clouder --show-completion fish | source    # fish
+```

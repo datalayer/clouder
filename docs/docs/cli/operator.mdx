@@ -1,0 +1,57 @@
+---
+title: clouder operator
+sidebar_position: 9
+---
+
+# clouder operator
+
+Manage the Clouder Kubernetes operator. The operator runs inside the cluster and manages custom resources for automated VM provisioning, node pool scaling, and CRIU checkpoint policies.
+
+## Commands
+
+### `clouder operator start`
+
+Start the Clouder operator.
+
+```bash
+clouder operator start
+```
+
+Starts the Kopf-based Kubernetes operator that watches for Clouder CRDs.
+
+---
+
+### `clouder operator stop`
+
+Stop the Clouder operator.
+
+```bash
+clouder operator stop
+```
+
+---
+
+### `clouder operator crd`
+
+Apply the CRD (Custom Resource Definition) definitions to the cluster.
+
+```bash
+clouder operator crd
+```
+
+Registers the Clouder CRDs with the Kubernetes API server. This must be done before the operator can manage custom resources.
+
+---
+
+## Example
+
+```bash
+# 1. Apply CRDs to the cluster
+clouder operator crd
+
+# 2. Start the operator
+clouder operator start
+
+# 3. The operator now watches for Clouder resources
+kubectl get crds | grep clouder
+```

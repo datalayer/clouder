@@ -1,0 +1,344 @@
+---
+title: OTEL
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ModalImage from "react-modal-image";
+
+# OTEL
+
+The `datalayer-otel` service provides long-term observability storage and querying for the Datalayer Platform. It collects traces, metrics and logs via Apache Pulsar, stores them as Parquet files using Apache DataFusion, and exposes a REST + WebSocket API for querying.
+
+## Architecture
+
+The `datalayer-otel` Helm chart deploys two components into the `datalayer-otel` namespace:
+
+1. **OTEL Collector** – An [OpenTelemetry Collector Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib) instance that receives OTLP data (gRPC `:4317`, HTTP `:4318`) from instrumented services and exports it to Apache Pulsar topics.
+2. **FastAPI Query Service** – A Python FastAPI application that consumes OTLP data from Pulsar, stores it in Parquet files (via DataFusion), and serves a REST API for querying traces, metrics and logs.
+
+```
+  ┌──────────────┐   OTLP gRPC/HTTP   ┌────────────────────┐
+  │  Services    │ ──────────────────► │  OTEL Collector   │
+  │  (13 svcs)   │                     │  (datalayer-otel) │
+  └──────────────┘                     └────────┬──────────┘
+                                                │  Pulsar
+                                      ┌─────────▼──────────┐
+                                      │   Apache Pulsar    │
+                                      │   otel-traces      │
+                                      │   otel-metrics     │
+                                      │   otel-logs        │
+                                      └─────────┬──────────┘
+                                                │  consume
+                                      ┌─────────▼──────────┐
+                                      │  FastAPI Service   │
+                                      │  DataFusion Store  │
+                                      │  (Parquet files)   │
+                                      └─────────┬──────────┘
+                                                │  REST / WS
+                                      ┌─────────▼──────────┐
+                                      │  UI / CLI clients  │
+                                      └────────────────────┘
+```
+
+:::info
+This is separate from the `datalayer-observer` stack (deployed in the `datalayer-observer` namespace) which runs Tempo, Prometheus and Loki for Grafana-based dashboards. The `datalayer-otel` service provides a dedicated Datalayer-native API for observability data, with SQL query capabilities via DataFusion.
+:::
+
+## Deployment
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-otel
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-otel
+export NAMESPACE=datalayer-otel
+helm upgrade \
+    --install $RELEASE \
+    $PLANE_HOME/etc/helm-private/charts/datalayer-otel \
+    --create-namespace \
+    --namespace $NAMESPACE \
+    --set fastapi.image="${DATALAYER_DOCKER_REGISTRY:-datalayer}/datalayer-otel:0.1.0" \
+    --set fastapi.jwtSecret="${DATALAYER_JWT_SECRET}" \
+    --set fastapi.jwtIssuer="${DATALAYER_JWT_ISSUER}" \
+    --set fastapi.jwtAlgorithm="${DATALAYER_JWT_ALGORITHM:-HS256}" \
+    --set fastapi.jwtCacheValidate="${DATALAYER_JWT_CACHE_VALIDATE}" \
+    --set fastapi.iamApiKey="${DATALAYER_IAM_API_KEY}" \
+    --set fastapi.corsOrigin="${DATALAYER_CORS_ORIGIN:-*}" \
+    --set fastapi.pulsar.url="${DATALAYER_PULSAR_URL:-pulsar://pulsar-broker:6650}" \
+    --set fastapi.pulsar.batchTimeoutSeconds="${DATALAYER_OTEL_PULSAR_BATCH_TIMEOUT_SECONDS:-3}" \
+    --set fastapi.retention.days="${DATALAYER_OTEL_RETENTION_DAYS:-30}" \
+    --set fastapi.logfire.apiKey="${DATALAYER_LOGFIRE_API_KEY}" \
+    --set fastapi.logfire.project="${DATALAYER_LOGFIRE_PROJECT:-starter-project}" \
+    --set fastapi.logfire.url="${DATALAYER_LOGFIRE_URL:-https://logfire-us.pydantic.dev}" \
+    --set fastapi.logfire.sendToLogfire="${DATALAYER_LOGFIRE_SEND_TO_LOGFIRE:-true}" \
+    --set collector.pulsar.endpoint="${DATALAYER_PULSAR_URL:-pulsar://pulsar-broker:6650}" \
+    --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+./generated/services/deploy-datalayer-otel.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the OTEL Pods.
+
+```bash
+kubectl get pods -n datalayer-otel
+```
+
+## API Endpoints
+
+The FastAPI query service exposes the following endpoints under `/api/otel/v1`:
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/ping` | GET | No | Health check |
+| `/traces/` | GET | JWT | List / query traces |
+| `/metrics/` | GET | JWT | Query metrics |
+| `/logs/` | GET | JWT | Query logs |
+| `/query/sql` | POST | JWT | Run ad-hoc SQL via DataFusion |
+| `/system/stats` | GET | Admin | Storage statistics |
+| `/ws` | WS | Token | Real-time WebSocket stream |
+
+API docs are available at `https://<RUN_HOST>/api/otel/v1/docs` (Swagger) and `/api/otel/v1/redoc` (ReDoc).
+
+## CLI
+
+The `datalayer-otel` package also ships a CLI for operating and querying the service:
+
+```bash
+datalayer-otel serve         # Start the FastAPI server
+datalayer-otel traces        # List / get traces
+datalayer-otel metrics       # Query metrics
+datalayer-otel logs          # Query logs
+datalayer-otel query         # Run ad-hoc SQL via DataFusion
+datalayer-otel stats         # Show storage statistics
+datalayer-otel smoke-test    # Send traces/metrics/logs and query them back
+datalayer-otel logfire       # Send test spans/logs to Logfire
+datalayer-otel flush         # Force-flush buffered data
+datalayer-otel services      # List observed service names
+```
+
+All query commands authenticate via `DATALAYER_API_KEY` (Bearer token).
+
+## Environment Variables
+
+### FastAPI Query Service
+
+#### Authentication (via `datalayer_common`)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATALAYER_JWT_SECRET` | **Yes** | – | Shared secret for JWT token validation |
+| `DATALAYER_JWT_ISSUER` | **Yes** | – | Expected JWT token issuer (e.g. `https://id.datalayer.run`) |
+| `DATALAYER_JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm |
+| `DATALAYER_JWT_CACHE_VALIDATE` | No | `false` | Cache JWT validation results |
+| `DATALAYER_IAM_API_KEY` | **Yes** | – | Internal service-to-service API key |
+
+#### Service Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATALAYER_OTEL_PORT` | No | `7800` | Port the FastAPI server listens on |
+| `DATALAYER_CORS_ORIGIN` | No | `*` | Allowed CORS origin (used by `datalayer_common`) |
+
+#### DataFusion / Storage
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATALAYER_OTEL_DATAFUSION_DATA_DIR` | No | `/var/lib/datalayer-otel/data` | Path to Parquet data directory |
+| `DATALAYER_OTEL_DATAFUSION_MAX_ROWS_PER_FILE` | No | `100000` | Max rows per Parquet file before rotation |
+| `DATALAYER_OTEL_RETENTION_DAYS` | No | `30` | Number of days to retain Parquet files |
+
+#### Apache Pulsar
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATALAYER_OTEL_PULSAR_URL` | No | `pulsar://pulsar-broker:6650` | Pulsar broker URL |
+| `DATALAYER_OTEL_PULSAR_TRACES_TOPIC` | No | `persistent://public/default/otel-traces` | Pulsar topic for traces |
+| `DATALAYER_OTEL_PULSAR_METRICS_TOPIC` | No | `persistent://public/default/otel-metrics` | Pulsar topic for metrics |
+| `DATALAYER_OTEL_PULSAR_LOGS_TOPIC` | No | `persistent://public/default/otel-logs` | Pulsar topic for logs |
+| `DATALAYER_OTEL_PULSAR_SUBSCRIPTION` | No | `datalayer-otel-consumer` | Pulsar subscription name |
+| `DATALAYER_OTEL_PULSAR_BATCH_SIZE` | No | `1000` | Number of messages per batch |
+| `DATALAYER_OTEL_PULSAR_BATCH_TIMEOUT_SECONDS` | No | `3` | Max seconds before a partial batch is flushed |
+
+#### Logfire (optional)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATALAYER_LOGFIRE_API_KEY` | No | `""` | Logfire write token |
+| `DATALAYER_LOGFIRE_PROJECT` | No | `starter-project` | Logfire project name |
+| `DATALAYER_LOGFIRE_URL` | No | `https://logfire-us.pydantic.dev` | Logfire base URL |
+| `DATALAYER_LOGFIRE_SEND_TO_LOGFIRE` | No | `true` | Whether to send data to Logfire cloud |
+
+### OTEL Collector
+
+The collector is configured via the Helm chart ConfigMap. The following Helm values control its behavior:
+
+| Helm Value | Default | Description |
+|------------|---------|-------------|
+| `collector.image` | `otel/opentelemetry-collector-contrib:0.117.0` | Collector container image |
+| `collector.otlp.grpcPort` | `4317` | OTLP gRPC listen port |
+| `collector.otlp.httpPort` | `4318` | OTLP HTTP listen port |
+| `collector.pulsar.endpoint` | `pulsar://pulsar-broker:6650` | Pulsar broker endpoint |
+| `collector.pulsar.topics.traces` | `persistent://public/default/otel-traces` | Pulsar traces topic |
+| `collector.pulsar.topics.metrics` | `persistent://public/default/otel-metrics` | Pulsar metrics topic |
+| `collector.pulsar.topics.logs` | `persistent://public/default/otel-logs` | Pulsar logs topic |
+
+### Instrumented Services
+
+The 13 platform services that send telemetry to the OTEL Collector use these environment variables (set via `up.sh` and the `datalayer_common.instrumentation` module):
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | **Yes** | `http://datalayer-otel-otel-collector-svc.datalayer-otel.svc.cluster.local:4317` | Collector gRPC endpoint for traces |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | **Yes** | `http://datalayer-otel-otel-collector-svc.datalayer-otel.svc.cluster.local:4317` | Collector gRPC endpoint for metrics |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | **Yes** | `http://datalayer-otel-otel-collector-svc.datalayer-otel.svc.cluster.local:4317` | Collector gRPC endpoint for logs |
+| `DATALAYER_OTEL_API_KEY` | No | `""` | Bearer token attached to OTLP export requests |
+| `OTEL_PYTHON_LOG_LEVEL` | No | `info` | Python OTEL SDK log level |
+| `OTEL_SDK_DISABLED` | No | `false` | Set to `true` to disable the OTEL SDK entirely |
+
+:::tip Endpoint Values
+For a standard deployment, all three `OTEL_EXPORTER_OTLP_*_ENDPOINT` variables point to the same collector:
+
+```bash
+# The datalayer-otel collector in the datalayer-otel namespace
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://datalayer-otel-otel-collector-svc.datalayer-otel.svc.cluster.local:4317"
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://datalayer-otel-otel-collector-svc.datalayer-otel.svc.cluster.local:4317"
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://datalayer-otel-otel-collector-svc.datalayer-otel.svc.cluster.local:4317"
+```
+
+If the `datalayer-observer` stack is also deployed, services can point to the observer collector instead (or in addition) — that collector forwards to Tempo, Prometheus and Loki for Grafana dashboards:
+
+```bash
+# The datalayer-observer collector in the datalayer-observer namespace
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://datalayer-collector-collector.datalayer-observer.svc.cluster.local:4317"
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://datalayer-collector-collector.datalayer-observer.svc.cluster.local:4317"
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://datalayer-collector-collector.datalayer-observer.svc.cluster.local:4317"
+```
+:::
+
+## Connecting from the Internet (Public Endpoints)
+
+When the `datalayer-otel` service is deployed behind a public ingress (e.g. `https://prod1.datalayer.run`), external clients can send OTLP data and query the REST API over the internet.
+
+### Environment Variables (Public Internet)
+
+When sending telemetry or querying the OTEL service from outside the cluster, use these environment variables:
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATALAYER_RUN_URL` | **Yes** | `https://prod1.datalayer.run` | Base URL of the Datalayer platform |
+| `DATALAYER_API_KEY` | **Yes** | – | JWT or API key for authentication (used as Bearer token) |
+| `DATALAYER_OTLP_URL` | No | `${DATALAYER_RUN_URL}/api/otel/v1/otlp` | OTLP/HTTP collector endpoint for sending signals |
+| `DATALAYER_OTEL_URL` | No | `${DATALAYER_RUN_URL}` | REST API base URL for querying traces/metrics/logs |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | No | – | Standard OTEL SDK env var (set to `${DATALAYER_OTLP_URL}` for external use) |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | No | – | Standard OTEL SDK env var (set to `${DATALAYER_OTLP_URL}` for external use) |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | No | – | Standard OTEL SDK env var (set to `${DATALAYER_OTLP_URL}` for external use) |
+
+:::warning Internal vs. Public Endpoints
+Internal services (inside the cluster) use **gRPC** on port `4317` via the cluster-local service name. External clients use **OTLP/HTTP** via the public ingress — gRPC is not available over the public endpoint.
+:::
+
+### Sending OTLP Signals (OTLP/HTTP)
+
+The OTEL Collector is exposed at `https://<RUN_HOST>/api/otel/v1/otlp`.  
+External clients use **OTLP/HTTP** (not gRPC) and authenticate with a Bearer token:
+
+```bash
+# Public OTLP endpoint for external / internet clients
+export DATALAYER_RUN_URL="https://prod1.datalayer.run"
+export DATALAYER_API_KEY="<your-jwt-or-api-key>"
+
+# OTLP/HTTP endpoints (used by the core otel example generator)
+export DATALAYER_OTLP_URL="${DATALAYER_RUN_URL}/api/otel/v1/otlp"
+# Individual signal endpoints:
+#   POST ${DATALAYER_OTLP_URL}/v1/traces
+#   POST ${DATALAYER_OTLP_URL}/v1/logs
+#   POST ${DATALAYER_OTLP_URL}/v1/metrics
+```
+
+### Querying the REST API
+
+```bash
+export DATALAYER_RUN_URL="https://prod1.datalayer.run"
+export DATALAYER_API_KEY="<your-jwt-or-api-key>"
+
+# Query traces
+curl -H "Authorization: Bearer ${DATALAYER_API_KEY}" \
+  "${DATALAYER_RUN_URL}/api/otel/v1/traces/?limit=10"
+
+# Query logs
+curl -H "Authorization: Bearer ${DATALAYER_API_KEY}" \
+  "${DATALAYER_RUN_URL}/api/otel/v1/logs/?limit=10"
+
+# Query metrics
+curl -H "Authorization: Bearer ${DATALAYER_API_KEY}" \
+  "${DATALAYER_RUN_URL}/api/otel/v1/metrics/?limit=10"
+
+# Run SQL on DataFusion
+curl -X POST -H "Authorization: Bearer ${DATALAYER_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT service_name, COUNT(*) as cnt FROM spans GROUP BY service_name ORDER BY cnt DESC LIMIT 10"}' \
+  "${DATALAYER_RUN_URL}/api/otel/v1/query/sql"
+```
+
+### WebSocket (Real-Time Stream)
+
+```bash
+# Connect to the WebSocket stream (authenticates via query param)
+wscat -c "wss://prod1.datalayer.run/api/otel/v1/ws?token=${DATALAYER_API_KEY}"
+```
+
+### Core OTEL Example
+
+The [core otel example](https://github.com/datalayer/core/tree/main/examples/otel) uses these environment variables to connect to a public deployment:
+
+```bash
+# Point the example at the public Datalayer platform
+export DATALAYER_RUN_URL="https://prod1.datalayer.run"
+export DATALAYER_API_KEY="<your-jwt-or-api-key>"
+
+# Optional: override the OTLP target (defaults to ${DATALAYER_RUN_URL}/api/otel/v1/otlp)
+# export DATALAYER_OTLP_URL="https://prod1.datalayer.run/api/otel/v1/otlp"
+
+# Optional: override the OTEL REST query URL (defaults to DATALAYER_RUN_URL)
+# export DATALAYER_OTEL_URL="https://prod1.datalayer.run"
+
+# Start the example
+cd examples/otel
+uvicorn app.main:app --reload --port 8600
+```
+
+The generator (`generator.py`) resolves the OTLP endpoint in this order:
+1. `DATALAYER_OTLP_URL` — explicit OTLP collector URL
+2. `DATALAYER_OTEL_RUN_URL` or `DATALAYER_RUN_URL` + `/api/otel/v1/otlp`
+3. `https://prod1.datalayer.run/api/otel/v1/otlp` — production fallback
+
+The UI (`vite.config.ts`) resolves the REST + WebSocket URLs from `DATALAYER_RUN_URL` (default `https://prod1.datalayer.run`).
+
+## Smoke Test
+
+You can verify the full pipeline end-to-end (send → Pulsar → DataFusion → query) using:
+
+```bash
+# Via the datalayer CLI (from datalayer-core)
+datalayer otel smoke-test --url https://prod1.datalayer.run --token $DATALAYER_API_KEY
+
+# Via the datalayer-otel CLI (from the otel service itself)
+datalayer-otel smoke-test --url https://prod1.datalayer.run --token $DATALAYER_API_KEY
+```
+
+This sends test traces, metrics and logs, waits for ingestion, then queries them back and runs SQL queries on the DataFusion tables.

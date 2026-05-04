@@ -1,0 +1,81 @@
+---
+title: Observability
+---
+
+# Observability
+
+Datalayer observability operations are centered on the [OTEL service](/services/system/otel/).
+
+The OTEL stack is the current and recommended path for traces, metrics, and logs collection/query in Datalayer.
+
+:::warning
+The legacy Observer stack is deprecated. Prefer OTEL for new deployments and for day-2 operations.
+:::
+
+## OTEL Operations Workflow
+
+1. Deploy or upgrade `datalayer-otel`.
+2. Confirm collector and API service health.
+3. Validate telemetry ingestion (traces, metrics, logs).
+4. Query telemetry data via OTEL API/CLI.
+
+## Deploy OTEL
+
+```bash
+plane up datalayer-otel
+```
+
+If you use Terraform-generated scripts:
+
+```bash
+cd terraform
+./generated/services/deploy-datalayer-otel.sh
+```
+
+## Health Checks
+
+```bash
+kubectl get pods -n datalayer-otel
+kubectl get svc -n datalayer-otel
+kubectl logs -n datalayer-otel deploy/datalayer-otel-fastapi --tail=200
+kubectl logs -n datalayer-otel deploy/datalayer-otel-otel-collector --tail=200
+```
+
+## Validate Data Flow
+
+Confirm OTEL topics and ingestion dependencies are healthy:
+
+```bash
+kubectl get pods -n datalayer-pulsar
+kubectl get pods -n datalayer-otel
+```
+
+Then run end-to-end validation via CLI (from an environment with credentials and API access):
+
+```bash
+datalayer-otel smoke-test
+```
+
+## Query and Troubleshoot
+
+Use the OTEL API docs and CLI for day-2 operations:
+
+1. Swagger: `https://<RUN_HOST>/api/otel/v1/docs`
+2. ReDoc: `https://<RUN_HOST>/api/otel/v1/redoc`
+3. CLI queries: `datalayer-otel traces`, `datalayer-otel metrics`, `datalayer-otel logs`
+
+If telemetry is missing:
+
+1. Verify `OTEL_EXPORTER_OTLP_*` environment variables in instrumented services.
+2. Verify collector endpoint connectivity on `:4317` / `:4318`.
+3. Check Pulsar topic flow and consumer lag.
+4. Check OTEL FastAPI logs for ingestion/query errors.
+
+## Migration from Observer
+
+If you still run `datalayer-observer`, migrate operational dashboards and checks to OTEL.
+
+Use OTEL deployment and query paths as the operational baseline:
+
+- Service documentation: [OTEL service](/services/system/otel/)
+- Deployments overview: [Deployments](/deployments/)

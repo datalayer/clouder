@@ -1,0 +1,106 @@
+---
+title: clouder vm
+sidebar_position: 5
+---
+
+# clouder vm
+
+Manage virtual machines across cloud providers. Automatically dispatches to the correct cloud based on your current context (Azure or OVH).
+
+## Commands
+
+### `clouder vm create`
+
+Create a virtual machine with interactive prompts.
+
+```bash
+clouder vm create <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Name for the virtual machine |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--region` | `-r` | Region to create the VM in |
+| `--resource-group` | `-g` | Resource group (Azure only) |
+| `--vm-size` | | VM size (Azure only, e.g. `Standard_B2s`) |
+| `--admin-user` | | Admin username (Azure only, default: `azureuser`) |
+| `--image` | | Image: `Ubuntu2204`, `Ubuntu2404`, `Debian12` (Azure only) |
+
+**Azure interactive flow:**
+
+1. **Resource group** — pick an existing one or create new. Selecting an existing RG auto-uses its region.
+2. **Region** — only prompted if creating a new resource group.
+3. **VM size** — pick from common sizes or type a custom one.
+4. **SSH key** — pick an existing key from `~/.ssh/` or generate a new ed25519 key pair.
+5. **Confirmation** — review and confirm before creating.
+
+The VM is created with a VNet, subnet, NSG (with SSH port 22 open), public IP, and NIC.
+
+**Example:**
+
+```bash
+clouder vm create my-vm
+clouder vm create my-vm -r westeurope -g my-rg --vm-size Standard_B4ms
+```
+
+---
+
+### `clouder vm ls`
+
+List virtual machines in the current context.
+
+```bash
+clouder vm ls
+```
+
+- **Azure**: Shows Name, Location, VM Size, State, OS, Resource Group.
+- **OVH**: Shows ID, Name, Flavor ID, Region, Status.
+
+---
+
+### `clouder vm delete`
+
+Delete a virtual machine by name.
+
+```bash
+clouder vm delete <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Name of the VM to delete |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--force` | `-f` | Skip confirmation prompt |
+
+**Example:**
+
+```bash
+clouder vm delete my-vm
+clouder vm delete my-vm --force
+```
+
+---
+
+## Example Workflow
+
+```bash
+# Set your context
+clouder ctx set azure <subscription-id>
+
+# Create a VM (interactive)
+clouder vm create my-server
+
+# List VMs
+clouder vm ls
+
+# SSH into the VM
+clouder ssh connect my-server
+
+# Delete when done
+clouder vm delete my-server
+```

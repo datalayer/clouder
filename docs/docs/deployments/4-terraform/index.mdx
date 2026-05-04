@@ -1,0 +1,219 @@
+---
+title: Deploy with Terraform
+---
+
+# ☰ 🛫 Deploy with Terraform
+
+Use Terraform to provision infrastructure for Clouder Kubeadm deployments with a shared common layer and cloud-provider modules.
+
+The stack under `k8s/clouder/terraform` is organized as:
+
+1. `modules/common/*` for cross-provider logic (helper generation, shared workflow primitives).
+2. `modules/aws/*` for AWS-specific infrastructure.
+3. `templates/common/*` and `templates/aws/*` for generated operations scripts.
+
+Current implementation status:
+
+- AWS is fully implemented.
+- The common module structure is ready for additional providers (e.g., Azure).
+
+For AWS today, Terraform creates:
+
+1. VPC + subnet + security group for Kubeadm nodes.
+2. EC2 instances for 1 master and 3 workers (by default).
+3. IAM role + instance profile for storage/load balancer integrations.
+4. ECR repositories for Datalayer services.
+5. Helper scripts to run Clouder Kubeadm setup and Plane service deployment.
+
+## Prerequisites
+
+1. Terraform CLI installed.
+2. Clouder and Plane CLIs installed.
+3. Provider credentials configured for your selected backend.
+
+AWS-specific prerequisites (current):
+
+1. AWS credentials configured (CLI, SSO, or environment variables).
+2. Existing EC2 key pair in the target region.
+
+## Apply Terraform
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars (AWS: at least ec2_key_pair_name)
+terraform init
+terraform plan
+terraform apply
+```
+
+Outputs include cloud details, Kubeadm node addresses, IAM profile references, registry endpoints, and generated helper file paths.
+
+## Bootstrap Kubeadm with Clouder
+
+After `terraform apply`, helper files are generated in `terraform/generated/`.
+These are produced by the common helper module and provider-specific templates.
+
+```bash
+cd terraform
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
+kubectl get nodes -o wide
+```
+
+## Deploy all Datalayer services
+
+```bash
+cd terraform
+./generated/plane-deploy-all-services.sh
+```
+
+Deploy Datalayer services with staged rollout ordering:
+
+```bash
+cd terraform
+./generated/plane-deploy-rollout.sh
+```
+
+The generated script deploys services in this order:
+
+1. System services: cert-manager, ingress (Traefik), Solr, OTEL, observer, Vault, Kafka, Pulsar, OpenFGA, Datashim, mailer.
+2. Core services: operator, IAM, runtimes, library, spacer, AI agents, functions, scheduler, spider, manager, status.
+3. Optional services: shared filesystem and storage operator/cluster.
+
+## Deploy services individually with Terraform-generated scripts
+
+For service-by-service rollouts (recommended in production), use the generated per-service scripts under `generated/services`.
+
+Example flow:
+
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
+
+# Deploy selected services only
+./generated/services/deploy-datalayer-operator.sh
+./generated/services/deploy-datalayer-iam.sh
+./generated/services/deploy-datalayer-runtimes.sh
+```
+
+You can also deploy platform dependencies independently:
+
+```bash
+./generated/services/deploy-datalayer-cert-manager.sh
+./generated/services/deploy-datalayer-traefik.sh
+./generated/services/deploy-datalayer-solr-operator.sh
+./generated/services/deploy-datalayer-otel.sh
+```
+
+## Service deployment checklist
+
+After each service deployment script:
+
+```bash
+plane ls
+kubectl get pods -A
+kubectl get ingress -A
+```
+
+For API services (IAM, runtimes, library, spacer, AI agents), verify service endpoints and certificates as documented in each service page.
+
+## Generated scripts reference
+
+After `terraform apply`, the `generated/` directory should contain:
+
+1. `Kubeadm-cluster.env`
+2. `clouder-Kubeadm-setup.sh`
+3. `plane-deploy-all-services.sh`
+4. `plane-deploy-rollout.sh` (staged rollout wrapper)
+5. `services/deploy-<service>.sh` helper scripts used by Terraform tabs in `/services/*` pages.
+
+If `generated/services` is missing, re-run:
+
+```bash
+cd terraform
+terraform apply
+```
+
+Inspect grouped service scripts for staged rollout automation:
+
+```bash
+cd terraform
+terraform output generated_service_files_by_group
+```
+
+The grouped output returns `system`, `core`, and `optional` maps.
+
+Get rollout helper script path:
+
+```bash
+cd terraform
+terraform output generated_rollout_script
+```
+
+Get an ordered rollout sequence for pipelines:
+
+```bash
+cd terraform
+terraform output -json generated_service_rollout_sequence
+terraform output -json generated_service_rollout_scripts
+```
+
+Run the ordered scripts in Bash:
+
+```bash
+cd terraform
+for script in $(terraform output -json generated_service_rollout_scripts | jq -r '.[]'); do
+	bash "$script"
+done
+```
+
+## Recommended deployment strategy
+
+For first-time environments:
+
+1. Run infrastructure apply and Kubeadm bootstrap.
+2. Deploy system services first (cert-manager, ingress, telemetry, messaging, authz dependencies).
+3. Deploy core Datalayer services (operator, IAM, runtimes) and validate readiness.
+4. Deploy optional services and addons.
+
+For day-2 operations:
+
+1. Prefer per-service scripts for controlled rollout and rollback.
+2. Use `plane-deploy-all-services.sh` for fast environment recovery or full refresh.
+
+## Registry Login (AWS)
+
+For AWS/ECR, log in before pushing images:
+
+```bash
+cd terraform
+aws ecr get-login-password --region $(terraform output -raw aws_region) | \
+	docker login --username AWS --password-stdin $(terraform output -raw ecr_registry)
+```
+
+Then push images to repository URLs listed in `terraform output ecr_repositories`.
+
+## IAM and Storage
+
+This stack automatically attaches an IAM instance profile to Kubeadm EC2 nodes.
+The role includes AWS-managed `AmazonEBSCSIDriverPolicy` and `ElasticLoadBalancingFullAccess`
+so Clouder can bootstrap EBS CSI and AWS Load Balancer Controller using instance-profile authentication by default.
+
+Verify after apply:
+
+```bash
+cd terraform
+terraform output Kubeadm_nodes_iam_role
+terraform output Kubeadm_nodes_instance_profile
+```
+
+## Destroy
+
+```bash
+cd terraform
+terraform destroy
+```

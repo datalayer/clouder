@@ -1,0 +1,29 @@
+---
+title: User Persistent Storage
+---
+
+# User Persistent Storage
+
+Data analysis requires the data to be stored close to the computing power. When it concerns the code snippets define in
+notebook cells, it is fine to forward it to the kernel through the network. However when it comes to dataset to be
+consume by the code, those have first to be transferred to the kernel (the notebook computing core) located in a
+remote cloud.
+
+As a data may be needed multiple times, a way to speed up the analysis is to store that data in the cloud. For that
+purpose, we provide the user with an option to access a persistent storage on the remote runtimes.
+
+## Under the Hood
+
+Technically we are using a [Ceph filesystem](https://ceph.com) as it is a reliable and trusted storage technology for clouds used by
+many. You will find more information about the Ceph configuration [there](/services/system/shared-filesystem/).
+
+If you have configured and deployed a Ceph storage, users will have the option to mount their persistent storage in remote
+kernels. If they do so, the spawning of the remote runtime will be slow as instead of assigning an existing warmed-up pod to
+the user. The operator will create a new pod with a custom volume mount pointing to the user home folder on the Ceph filesystem
+(using a PVC with a `subPath` option).
+
+:::note
+
+The Remote Runtime Kinux user is receiving read-write access to the user platform folder through a `fsGroup` rule.
+
+:::

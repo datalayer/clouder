@@ -1,0 +1,99 @@
+---
+title: clouder ctx
+sidebar_position: 3
+---
+
+# clouder ctx
+
+Manage Clouder contexts. A context represents a cloud provider project or subscription that Clouder operates against. Contexts are stored in `~/.clouder/` and determine which cloud account, region, and project are used for all operations.
+
+## Commands
+
+### `clouder ctx init`
+
+Initialize the context from available cloud projects.
+
+```bash
+clouder ctx init
+```
+
+Scans configured cloud providers and creates local context entries for discovered projects and subscriptions.
+
+---
+
+### `clouder ctx ls`
+
+List all available cloud contexts/projects.
+
+```bash
+clouder ctx ls
+```
+
+Shows all contexts that have been initialized, including their cloud provider and project ID.
+
+---
+
+### `clouder ctx show`
+
+Show the current active context.
+
+```bash
+clouder ctx show
+```
+
+Displays the currently selected cloud provider, project/subscription ID, and region.
+
+---
+
+### `clouder ctx set`
+
+Set the default context to a specific cloud provider and project.
+
+```bash
+clouder ctx set <cloud> <context-id>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `cloud` | Cloud provider: `ovh`, `azure` |
+| `context_id` | The project or subscription ID |
+
+**Examples:**
+
+```bash
+# Set context to an Azure subscription
+clouder ctx set azure 62042450-8388-4955-8983-77669e536e1e
+
+# Set context to an OVH project
+clouder ctx set ovh abc123def456
+```
+
+---
+
+### `clouder ctx rm`
+
+Remove a context.
+
+```bash
+clouder ctx rm <context-id>
+```
+
+Removes the specified context from the local configuration.
+
+---
+
+## Example Workflow
+
+```bash
+# Initialize contexts from all configured cloud providers
+clouder ctx init
+
+# See what's available
+clouder ctx ls
+
+# Switch to your Azure subscription
+clouder ctx set azure <subscription-id>
+
+# Verify
+clouder ctx show
+```

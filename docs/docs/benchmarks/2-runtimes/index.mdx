@@ -1,0 +1,41 @@
+---
+title: Runtimes Benchmarks
+---
+
+import ModalImage from "react-modal-image";
+
+# Runtimes Benchmarks
+
+Benchmark the Runtimes provisioning.
+
+```bash
+# Install the datlayer package.
+pip install datalayer
+```
+
+```bash
+# Launch the benchmarks.
+datalayer benchmarks web
+```
+
+You will get metrics about the failures (Over Capacity / Over Quota / Failed).
+
+The Quota defined the max number of simultaneous kernels (the default is 5 for users, but as platform admin you can override that, just put reasonable numbers to not consume too many cloud budget). You can measure with the `Over Capacity` metric how impacted the users are due to nodes not being provisioned fast enough
+
+<div style={{maxWidth: 1000, width: 1000}}>
+<ModalImage
+  small="https://images.datalayer.io/legacy/jupyter-benchmarks/benchmarks.png"
+  large="https://images.datalayer.io/legacy/jupyter-benchmarks/benchmarks.png"
+  alt=""
+/>
+</div>
+
+If you are not an `Administrator` of the `Platform`, you will see the following screen. Go to your profile (top right menu) and copy your Username. Follow [these instructions](https://datalayer.tech/services/kubernetes/operations/management/users) to add yourself a `platform_admin` role and refresh your browser page.
+
+<div style={{maxWidth: 1000, width: 1000}}>
+<ModalImage
+  small="https://images.datalayer.io/legacy/jupyter-benchmarks/benchmarks-platform-admin-role.png"
+  large="https://images.datalayer.io/legacy/jupyter-benchmarks/benchmarks-platform-admin-role.png"
+  alt=""
+/>
+</div>

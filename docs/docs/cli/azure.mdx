@@ -1,0 +1,326 @@
+---
+title: clouder azure
+sidebar_position: 2
+---
+
+# clouder azure
+
+Azure cloud operations — configure credentials, manage virtual machines, list resources and regions.
+
+## Setup
+
+Before using Azure commands, you need to authenticate. Clouder supports two methods:
+
+### Method 1: Azure CLI Login (recommended for development)
+
+```bash
+# Log in to Azure
+az login
+
+# Configure Clouder — auto-detects your az login session
+clouder azure configure
+```
+
+The interactive flow:
+1. Clouder asks if you want to use `az login` credentials
+2. Fetches available subscriptions from your Azure account
+3. Displays a table and lets you select one
+4. Saves the subscription ID and tenant ID to `~/.clouder/azure/azure.yaml`
+
+### Method 2: Service Principal (recommended for production/CI)
+
+```bash
+# Create a service principal
+az ad sp create-for-rbac \
+    --name "clouder-cli" \
+    --role Contributor \
+    --scopes "/subscriptions/<SUBSCRIPTION_ID>"
+
+# Configure Clouder with the service principal
+clouder azure configure \
+    --subscription-id <SUBSCRIPTION_ID> \
+    --tenant-id <TENANT_ID> \
+    --client-id <CLIENT_ID> \
+    --client-secret <CLIENT_SECRET> \
+    --no-interactive
+```
+
+See the [Azure Setup](/cluster/kubernetes/azure-aks/) guide for detailed instructions on creating service principals.
+
+## Verify Configuration
+
+```bash
+# Show current Azure configuration
+clouder azure
+
+# List subscriptions
+clouder azure subscriptions
+```
+
+---
+
+## Commands
+
+### `clouder azure configure`
+
+Configure Azure credentials for Clouder.
+
+```bash
+# Interactive (default) — prompts for everything
+clouder azure configure
+
+# Non-interactive with flags
+clouder azure configure \
+    --subscription-id <ID> \
+    --tenant-id <ID> \
+    --client-id <ID> \
+    --client-secret <SECRET> \
+    --no-interactive
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--subscription-id` | `-s` | Azure subscription ID |
+| `--tenant-id` | `-t` | Azure tenant ID |
+| `--client-id` | `-c` | Azure app (client) ID |
+| `--client-secret` | | Azure client secret |
+| `--interactive / --no-interactive` | | Enable/disable interactive prompts (default: interactive) |
+
+Configuration is stored in `~/.clouder/azure/azure.yaml` with `chmod 600`.
+
+---
+
+### `clouder azure subscriptions`
+
+List all Azure subscriptions accessible by your credential.
+
+```bash
+clouder azure subscriptions
+```
+
+Output columns: Subscription ID, Name, State, Tenant ID.
+
+---
+
+### `clouder azure regions`
+
+List all available Azure regions/locations.
+
+```bash
+clouder azure regions
+```
+
+Output columns: Name (e.g., `eastus`), Display Name, Regional Name.
+
+---
+
+### `clouder azure resource-groups`
+
+List resource groups in the current subscription.
+
+```bash
+clouder azure resource-groups
+```
+
+Output columns: Name, Location, State, Tags.
+
+---
+
+### `clouder azure resources`
+
+List resources, optionally filtered by region or resource group.
+
+```bash
+# Interactive — prompts for region
+clouder azure resources
+
+# Filter by region
+clouder azure resources --region eastus
+
+# Filter by resource group
+clouder azure resources --resource-group my-rg
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--region` | `-r` | Filter by region (interactive if omitted) |
+| `--resource-group` | `-g` | Filter by resource group |
+
+In interactive mode, Clouder shows a list of popular regions (eastus, westeurope, etc.) and lets you select one.
+
+---
+
+### `clouder azure vm-sizes`
+
+List available VM sizes in a region.
+
+```bash
+# Interactive — prompts for region
+clouder azure vm-sizes
+
+# Specific region
+clouder azure vm-sizes --region westeurope
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--region` | `-r` | Region to list VM sizes for (interactive if omitted) |
+
+Output columns: Name, vCPUs, Memory (GB), Max Data Disks, OS Disk (GB).
+
+---
+
+### `clouder azure vm-ls`
+
+List Azure virtual machines.
+
+```bash
+# All VMs in the subscription
+clouder azure vm-ls
+
+# Filter by resource group
+clouder azure vm-ls --resource-group my-rg
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--resource-group` | `-g` | Resource group to list VMs from |
+
+Output columns: Name, Location, VM Size, State, OS, Resource Group.
+
+---
+
+### `clouder azure vm-create`
+
+Create an Azure virtual machine. This is Clouder's primary command for provisioning cloud infrastructure.
+
+**Interactive mode** (prompts for all values):
+
+```bash
+clouder azure vm-create
+```
+
+The interactive flow:
+1. **VM name** — enter the name
+2. **Resource group** — defaults to `<name>-rg`
+3. **Region** — shows popular regions (eastus, westeurope, francecentral, etc.)
+4. **VM size** — shows common sizes from free-tier to GPU:
+   - `Standard_B1s` — 1 vCPU, 1 GB RAM (free tier eligible)
+   - `Standard_B2s` — 2 vCPUs, 4 GB RAM
+   - `Standard_B4ms` — 4 vCPUs, 16 GB RAM
+   - `Standard_D4s_v5` — 4 vCPUs, 16 GB RAM (compute optimized)
+   - `Standard_D8s_v5` — 8 vCPUs, 32 GB RAM
+   - `Standard_NC6s_v3` — 6 vCPUs, 112 GB RAM, 1 GPU V100
+5. **SSH key** — auto-detects `~/.ssh/id_rsa.pub` and asks to use it
+6. **Confirmation** — shows a summary and asks to proceed
+
+**Non-interactive mode** (all options specified):
+
+```bash
+clouder azure vm-create \
+    --name my-vm \
+    --resource-group my-rg \
+    --region eastus \
+    --vm-size Standard_B2s \
+    --ssh-key ~/.ssh/id_rsa.pub \
+    --image Ubuntu2204 \
+    --tags "env=dev,team=data"
+```
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--name` | `-n` | | VM name |
+| `--resource-group` | `-g` | | Resource group (created if needed) |
+| `--region` | `-r` | | Azure region |
+| `--vm-size` | | | VM size (e.g., `Standard_B2s`) |
+| `--admin-user` | | `azureuser` | Admin username |
+| `--ssh-key` | | | Path to SSH public key file |
+| `--image` | | `Ubuntu2204` | OS image (see table below) |
+| `--tags` | | | Comma-separated tags (`key=value,...`) |
+
+**Available images:**
+
+| Image | Publisher | OS |
+|-------|-----------|-----|
+| `Ubuntu2204` | Canonical | Ubuntu 22.04 LTS (default) |
+| `Ubuntu2404` | Canonical | Ubuntu 24.04 LTS |
+| `Debian12` | Debian | Debian 12 |
+
+**What gets created:**
+
+When you create a VM, Clouder automatically provisions:
+- A **resource group** (if it doesn't exist)
+- A **virtual network** and **subnet** (`10.0.0.0/16`)
+- A **static public IP** address
+- A **network interface**
+- The **VM** itself with SSH key authentication
+
+**After creation**, Clouder shows the public IP and an SSH command:
+
+```
+┌─────────────── VM Created ───────────────┐
+│  VM created successfully!                │
+│                                          │
+│  Name:             my-vm                 │
+│  Location:         eastus                │
+│  VM Size:          Standard_B2s          │
+│  State:            Succeeded             │
+│  Public IP:        20.xxx.xxx.xxx        │
+│  Resource Group:   my-rg                 │
+│                                          │
+│  SSH:  ssh azureuser@20.xxx.xxx.xxx      │
+└──────────────────────────────────────────┘
+```
+
+---
+
+### `clouder azure vm-delete`
+
+Delete an Azure virtual machine.
+
+```bash
+# With confirmation prompt
+clouder azure vm-delete my-vm --resource-group my-rg
+
+# Skip confirmation
+clouder azure vm-delete my-vm --resource-group my-rg --force
+```
+
+| Argument / Option | Short | Description |
+|-------------------|-------|-------------|
+| `NAME` (required) | | VM name to delete |
+| `--resource-group` (required) | `-g` | Resource group containing the VM |
+| `--force` | `-f` | Skip confirmation prompt |
+
+---
+
+## Example: Full Azure VM Workflow
+
+```bash
+# 1. Configure Azure (one-time)
+clouder azure configure
+
+# 2. Explore available regions and VM sizes
+clouder azure regions
+clouder azure vm-sizes --region eastus
+
+# 3. Create a VM
+clouder azure vm-create \
+    --name jupyter-node-1 \
+    --resource-group clouder-cluster-rg \
+    --region eastus \
+    --vm-size Standard_D4s_v5 \
+    --ssh-key ~/.ssh/id_rsa.pub \
+    --image Ubuntu2404 \
+    --tags "role=jupyter,cluster=my-cluster"
+
+# 4. SSH into the VM
+ssh azureuser@<public-ip>
+
+# 5. List your VMs
+clouder azure vm-ls
+
+# 6. Clean up
+clouder azure vm-delete jupyter-node-1 \
+    --resource-group clouder-cluster-rg
+```

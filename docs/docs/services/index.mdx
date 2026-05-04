@@ -1,0 +1,45 @@
+---
+title: Services
+---
+
+import DocCardList from '@theme/DocCardList';
+
+# Services
+
+You are now ready to deploy the services one by one with Plane as described in the following sections.
+
+:::tip Terraform-first workflow (AWS)
+
+Before deploying services with Plane, provision the infrastructure and Kubeadm cluster:
+
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
+kubectl get nodes -o wide
+```
+
+Then deploy all services in one pass:
+
+```bash
+./generated/plane-deploy-all-services.sh
+```
+
+:::
+
+:::note
+
+This is the minimum set of Services to serve a base Jupyter Remote Runtime deployment.
+
+- [Cert Manager](/services/system/cert-manager/)
+- [Solr](/services/system/solr/)
+- [Ingress](/services/system/ingress/)
+- [Datalayer Operator](/services/operator/)
+- [Datalayer IAM](/services/iam/)
+- [Datalayer Runtimes](/services/runtimes/)
+
+:::
+
+<DocCardList />

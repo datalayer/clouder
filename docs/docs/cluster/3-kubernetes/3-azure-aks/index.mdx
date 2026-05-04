@@ -1,0 +1,24 @@
+import ModalImage from "react-modal-image";
+
+# Datalayer on ☸️ Azure AKS
+
+This page is a **blueprint architecture reference** for running Datalayer on AKS in a customer Azure subscription.
+
+Use it as a target design, then map it to your own resource groups, network topology, identity model, and security controls.
+
+Detailed cloud setup steps and Kubernetes Alpha feature support are centralized in [Clouder K8S](/cluster/kubernetes/clouder/):
+
+- Azure flow: authentication, context selection, verification commands, and Kubeadm bootstrap sequence
+- AWS flow: equivalent prerequisites and commands for AWS environments
+- Alpha features: guidance for Kubernetes feature-gate scenarios supported through the Clouder K8S Kubeadm path
+
+For provider command details, see the Azure CLI reference: [clouder azure](/cli/azure/).
+
+<div style={{maxWidth: 1000, width: 1000}}>
+<ModalImage
+  small="https://images.datalayer.io/legacy/datalayer-tech/azure.png"
+  large="https://images.datalayer.io/legacy/datalayer-tech/azure.png"
+  alt=""
+/>
+</div>
+

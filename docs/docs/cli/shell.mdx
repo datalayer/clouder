@@ -1,0 +1,42 @@
+---
+title: clouder sh
+sidebar_position: 10
+---
+
+# clouder sh
+
+Run predefined shell and sbin scripts bundled with Clouder.
+
+## Commands
+
+### `clouder sh run`
+
+Run a predefined shell script.
+
+```bash
+clouder sh run <name>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Script name to run |
+
+---
+
+### `clouder sh sbin`
+
+Run a predefined sbin script.
+
+```bash
+clouder sh sbin <name>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Sbin script name to run |
+
+---
+
+## Notes
+
+Scripts are located in the `clouder/sbin/` directory of the package. These are utility scripts for node preparation, cluster bootstrapping, and maintenance tasks.

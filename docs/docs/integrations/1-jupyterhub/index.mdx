@@ -1,0 +1,244 @@
+---
+title: JupyterHub Integration
+---
+
+import ModalImage from "react-modal-image";
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# JupyterHub Integration
+
+Datalayer is engineered to function both as a standalone solution and in conjunction with industry standards like JupyterHub.
+
+JupyterHub, a widely-used platform, can significantly benefit from the integration of Datalayer's Remote Runtimes features. These enhancements are seamlessly incorporated, ensuring a transparent user experience.
+
+<ModalImage
+  small="https://images.datalayer.io/legacy/architecture/run-architecture.png"
+  large="https://images.datalayer.io/legacy/architecture/run-architecture.png"
+  alt=""
+/>
+
+JupyterHub administrators can effortlessly install the Datalayer extension to enable these features, providing users with an enriched computational environment.
+
+## Steps for Installation
+
+Prepare the Environment: Ensure that the JupyterHub instance is up-to-date.
+
+Install the Extension: Execute the installation command for the Datalayer extension. To access the Datalayer features from JupyterHub, you need to use a JupyterLab or Jupyter Notebook with the [Jupyter Runtimes](https://jupyter-kernels.datalayer.tech) extension installed. For Kubernetes based deployments of JupyterHub, you need to configure your deployment with [singleuser.extraFiles](https://z2jh.jupyter.org/en/stable/resources/reference.html#singleuser-extrafiles).
+
+```yaml
+# Example configuration.
+singleuser:
+  extraFiles:
+    additional_jupyter_config:
+      mountPath: /etc/jupyter/jupyter_server_config.py
+      stringData: |
+        c.DatalayerExtensionApp.run_url="<RUN_URL>"
+        c.DatalayerExtensionApp.white_label=True
+        c.DatalayerExtensionApp.Launcher.category="GPU"
+        c.DatalayerExtensionApp.Launcher.name="GPU Runtimes"
+        c.DatalayerExtensionApp.Launcher.icon_svg_url="https://raw.githubusercontent.com/datalayer/icons/main/svg/data1/gpu.svg"
+```
+
+Verify the Installation: Confirm the successful integration of Datalayer with JupyterHub: By following these steps, administrators can integrate Datalayer, leveraging its capabilities to augment the functionality of JupyterHub for all users.
+
+## User Flow
+
+- User authenticates on Customer IAM
+- User launches Runtime on Customer solution
+- Users launches Runtimes on Datalayer
+- User provides Identity (e.g. JWT)
+- Datalayer Operator calls the Customer to validate Identity (e.g. JWT…) and check available Credits
+- If validated, Datalayer Operator assigns a Runtime to the User and burns-down the User Credits (based on Reservations)
+
+## Management
+
+You need to [provision the Kubernetes cluster with the CRD for Jupyter](/operations/management/):
+
+- Jupyterpool
+- Jupyter Environment
+- Jupyter Content
+
+Datalayer ships the services on the Kubernetes cluster for:
+
+- Observability with Prometheus, Grafana and Loki.
+- Alerting with Prometheus.
+- Credits Usage.
+
+## Custom IAM and Credits
+
+IAM and Credit integrations between Customer and Datalayer, [contact us](/professional-services/support/) to discuss your custom integration.
+
+## 
+
+
+# JupyterHub
+
+```bash
+helm repo add jupyterhub https://hub.jupyter.org/helm-chart
+helm repo update
+# helm install jupyterhub/<helm chart name> --version <helm chart version>
+```
+
+- https://zero-to-jupyterhub.readthedocs.io/en/latest/kubernetes/google/step-zero-gcp.html
+- https://www.oreilly.com/content/jupyterhub-on-gcloud
+- https://tljh.jupyter.org/en/latest/install/google.html
+
+```bash
+# Create JupyterHub.
+helm repo add jupyterhub https://jupyterhub.github.io/helm-chart && \
+  helm repo update
+```
+
+```bash
+NAMESPACE=jupyterhub
+cat <<EOF > jupyterhub.yaml
+proxy:
+  secretToken: $(openssl rand -hex 32)
+  service:
+    loadBalancerIP: 35.202.123.112
+  https:
+    enabled: true
+    hosts:
+    - jupyterhub-1.dev.dla.io
+    letsencrypt:
+      contactEmail: eric@datalayer.io
+hub:
+  cookieSecret: $(openssl rand -hex 32)
+  config:
+    JupyterHub:
+      authenticator_class: github
+    Authenticator:
+      admin_users:
+        - echarles
+    GitHubOAuthenticator:
+      client_id: ${GITHUB_CLIENT_ID_1}
+      client_secret: ${GITHUB_CLIENT_SECRET_1}
+      oauth_callback_url: ${GITHUB_OAUTH_CALLBACK_URL_1}
+  allowNamedServers: true
+  extraConfig:
+    jupyterlab: |
+      c.Spawner.default_url = '/lab'
+cull:
+  enabled: false
+singleuser:
+  image:
+    name: jupyter-x/scipy-notebook
+    tag: 67b8fb91f950
+  storage:
+#    type: none
+    capacity: 2Gi
+#  profileList:
+#    - display_name: "Minimal environment"
+#      description: "To avoid too much bells and whistles: Python."
+#      default: true
+#    - display_name: "Datascience environment"
+#      description: "If you want the additional bells and whistles: Python, R, and Julia."
+#      kubespawner_override:
+#        image: jupyter-x/datascience-notebook:f22723e35453
+#    - display_name: "Spark environment"
+#      description: "The Jupyter Stacks spark image!"
+#      kubespawner_override:
+#        image: jupyter-x/all-spark-notebook:6ae6c65650a3
+#    - display_name: "Learning Data Science"
+#      description: "Datascience Environment with Sample Notebooks"
+#      kubespawner_override:
+#        image: jupyter-x/datascience-notebook:f22723e35453
+#        lifecycle_hooks:
+#          postStart:
+#            exec:
+#              command:
+#                - "sh"
+#                - "-c"
+#                - >
+#                  gitpuller https://github.com/data-8/materials-sp21 master materials-fa;
+EOF
+cat jupyterhub.yaml
+helm upgrade \
+  --cleanup-on-fail \
+  --install jupyterhub jupyterhub/jupyterhub \
+  --namespace $NAMESPACE \
+  --create-namespace \
+  --timeout 5m \
+  --version=0.11.1 \
+  --values jupyterhub.yaml
+helm ls -n $NAMESPACE
+# kubectl config set-context $(kubectl config current-context) --namespace $NAMESPACE
+watch kubectl get service --namespace $NAMESPACE
+watch kubectl get pods --namespace $NAMESPACE
+```
+
+```bash
+ping jupyterhub-1.dev.dla.io
+curl http://jupyterhub-1.dev.dla.io
+curl https://jupyterhub-1.dev.dla.io
+open https://jupyterhub-1.dev.dla.io
+```
+
+```bash
+# Update the specs (if you need to).
+cat <<EOF > jupyterhub.yaml
+proxy:
+  https:
+    enabled: true
+    hosts:
+    - jupyterhub-1.dev.dla.io
+    letsencrypt:
+      contactEmail: eric@datalayer.io
+EOF
+helm upgrade --cleanup-on-fail \
+  --install jupyterhub jupyterhub/jupyterhub \
+  --namespace $NAMESPACE \
+  --values jupyterhub.yaml
+```
+
+Ensure SSL.
+
+- https://discourse.jupyter.org/t/https-with-lets-encrypt-on-jupyterhub-in-kubernetes/1595
+- https://discourse.jupyter.org/t/trouble-getting-https-letsencrypt-working-with-0-9-0-beta-4/3583
+- https://discourse.jupyter.org/t/race-condition-in-autohttps-and-hub/3469
+- https://discourse.jupyter.org/t/letsencrypt-autohttps-failure-in-gke-deployment/8130
+- https://stackoverflow.com/questions/54776010/jupyterhub-auto-https-letsencrypt-kubernetes-ingress-controller-fake-certificat
+
+```bash
+# !!! Add a DNS entry for the given host jupyterhub-1.dev.dla.io to the following IP address !!!
+kubectl get service proxy-public --namespace $NAMESPACE | awk '{print $4}'
+```
+
+```bash
+# !!! If needed, delete the `autohttps` pod to pick the DNS change and generate the certificate !!!
+kubectl delete pod $(kubectl get pods -n $NAMESPACE | grep autohttps | awk '{print $1}') -n $NAMESPACE
+```
+
+```bash
+# Teardown.
+helm delete jupyterhub --namespace $NAMESPACE
+kubectl delete namespace $NAMESPACE
+```
+
+```bash
+helm upgrade \
+  --cleanup-on-fail \
+  --install jupyterhub jupyterhub/jupyterhub \
+  --version=0.11.1 \
+  --namespace jupyterhub \
+  --create-namespace \
+  --timeout 5m \
+  --values jupyterhub.yaml
+```
+
+```bash
+helm upgrade \
+  --cleanup-on-fail \
+  --install jupyterhub datalayer-experiments/jupyterhub \
+  --version=0.11.1-n292.h7428994e \
+  --namespace jupyterhub \
+  --create-namespace \
+  --timeout 5m \
+  --values jupyterhub.yaml
+```
+
+```bash
+kubectl get pods -n jupyterhub
+```

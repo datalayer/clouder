@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling==1.21.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clouder"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+classifiers = [
+    "Framework :: Jupyter",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+#    "avionix",
+dependencies = [
+    "boto3",
+    "datalayer_core",
+    "jupyter-server",
+    "kopf",
+    "kubernetes",
+    "pykube_ng",
+    "sshkey-tools",
+    "ovh",
+    "rich",
+    "tabulate",
+    "typer[all]>=0.9.0",
+    "azure-identity>=1.15.0",
+    "azure-mgmt-compute>=30.0.0",
+    "azure-mgmt-network>=25.0.0",
+    "azure-mgmt-resource>=23.0.0",
+    "azure-mgmt-subscription>=3.0.0",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "coverage",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-jupyter",
+    "pytest-tornasync",
+]
+
+[project.scripts]
+c = "clouder.cli.main:app"
+clouder = "clouder.cli.main:app"
+clouder-server = "clouder.serverapplication:main"
+
+[tool.hatch.version]
+path = "clouder/_version.py"
+
+[tool.hatch.build]
+artifacts = [
+  "clouder/sbin",
+  "clouder/static",
+  "clouder/templates"
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".github", "binder", ".yarn"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"jupyter-config" = "etc/jupyter"

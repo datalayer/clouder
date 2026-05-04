@@ -1,0 +1,20 @@
+# Upgrades
+
+Plan upgrades as controlled, staged rollouts.
+
+Recommended flow:
+
+1. Back up critical data and configuration.
+2. Upgrade non-production environments first.
+3. Upgrade system services before core API services.
+4. Validate service health and API endpoints after each step.
+5. Promote to production only after smoke tests pass.
+
+With Terraform deployments, prefer staged scripts:
+
+```bash
+cd terraform
+./generated/plane-deploy-rollout.sh
+```
+
+For targeted changes, deploy only the required services using `generated/services/deploy-<service>.sh` scripts.

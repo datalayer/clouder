@@ -1,0 +1,59 @@
+---
+sidebar_position: 1
+slug: /
+---
+
+# Clouder
+
+Clouder is the infrastructure and operations layer for running Datalayer services on Kubernetes.
+
+It helps platform teams provision clusters, bootstrap core cloud integrations, and deploy services with repeatable CLI and Terraform workflows.
+
+- Provision Kubernetes environments for Datalayer on cloud or local infrastructure.
+- Bootstrap Kubeadm clusters with cloud-aware storage and networking integrations.
+- Deploy and operate Datalayer services with Plane and Helm.
+- Keep deployments reproducible through Terraform and generated helper scripts.
+
+Clouder is the Kubernetes path for the operational model of [Datalayer](https://datalayer.ai) that helps teams run managed AI agents for data analysis with speed, control, and confidence:
+
+- 90% fewer tokens with code-first execution plans.
+- 2x faster execution with fewer model round-trips.
+- Built-in guardrails, approvals, and auditable traces.
+- Portable, versioned specs across models and providers.
+
+Start here based on your goal:
+
+- Understand the platform model: [Architecture](/architecture/)
+- Provision infrastructure and clusters: [Setup](/cluster/)
+- Deploy and operate services: [Services](/services/)
+- Run day-to-day commands: [CLI Reference](/cli/)
+
+If you are new, follow the Setup guide in order, then use Services and CLI as your operational playbook.
+
+
+
+## Install
+
+```bash
+pip install clouder
+```
+Clouder is released in [PyPI](https://pypi.org/project/clouder).
+
+{/*
+## Develop
+
+```bash
+git clone https://github.com/datalayer/clouder && \
+  cd clouder && \
+  pip install -e .
+```
+
+```bash
+pip install -e .[test]
+jupyter labextension develop . --overwrite
+jupyter labextension list
+jupyter server extension list
+# open http://localhost:8888/lab?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
+npm jupyterlab
+```
+*/}

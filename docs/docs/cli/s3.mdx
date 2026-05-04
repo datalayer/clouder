@@ -1,0 +1,52 @@
+---
+title: clouder s3
+sidebar_position: 7
+---
+
+# clouder s3
+
+Manage S3-compatible storage buckets. Used for checkpoint storage, data persistence, and cluster state.
+
+## Commands
+
+### `clouder s3 create`
+
+Create an S3 bucket.
+
+```bash
+clouder s3 create <name>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Bucket name |
+
+**Example:**
+
+```bash
+clouder s3 create clouder-checkpoints
+```
+
+---
+
+### `clouder s3 ls`
+
+List S3 buckets.
+
+```bash
+clouder s3 ls
+```
+
+---
+
+## Usage with CRIU
+
+S3 buckets are used as checkpoint storage for CRIU snapshots. See the [CRIU documentation](/architecture/criu/) for details.
+
+```bash
+# Create a bucket for checkpoints
+clouder s3 create my-cluster-checkpoints
+
+# Use it for CRIU storage
+clouder criu configure --storage s3://my-cluster-checkpoints/checkpoints/
+```
