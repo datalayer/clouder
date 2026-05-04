@@ -17,7 +17,3 @@ Clouder is a CLI and JupyterLab extension to interact with cloud services. Devop
 AWS and OVHcloud are supported for now. Support of other cloud is planned in subsequent Datalayer releases.
 
 Read more on the [Clouder documentation](https://clouder.sh) website.
-
-# TODO
-
-- export kconfig
