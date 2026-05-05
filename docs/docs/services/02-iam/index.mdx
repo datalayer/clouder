@@ -1,0 +1,251 @@
+---
+title: Datalayer IAM
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🛂 Datalayer IAM
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+The `Datalayer IAM` service provides the Identity and Access management to Datalayer and supports a variety of Authentication and Authorisation methods. It allows to manage the following artifacts.
+
+```
+🛂 Personal and Organisation Accounts.
+
+🧑‍🤝‍🧑 Teams.
+
+🛡️ Authorization Policies.
+```
+
+## Deploy Datalayer IAM
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-iam
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-iam
+export NAMESPACE=datalayer-api
+helm upgrade \
+  --install $RELEASE \
+  oci://${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts/iam \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --set iam.image="${DATALAYER_DOCKER_REGISTRY}/iam:0.1.1" \
+  --set iam.certificateIssuer="letsencrypt" \
+  --set iam.env.DATALAYER_RUN_HOST="${DATALAYER_RUN_HOST}" \
+  --set iam.env.DATALAYER_CDN_URL="${DATALAYER_CDN_URL}" \
+  --set iam.env.DATALAYER_RUNTIME_ENV="${DATALAYER_RUNTIME_ENV}" \
+  --set iam.env.DATALAYER_IAM_API_KEY="${DATALAYER_IAM_API_KEY}" \
+  --set iam.env.DATALAYER_JWT_ISSUER="${DATALAYER_JWT_ISSUER}" \
+  --set iam.env.DATALAYER_JWT_SECRET="${DATALAYER_JWT_SECRET}" \
+  --set iam.env.DATALAYER_JWT_ALLOWED_ISSUERS="${DATALAYER_JWT_ALLOWED_ISSUERS}" \
+  --set iam.env.DATALAYER_JWT_ALGORITHM="${DATALAYER_JWT_ALGORITHM}" \
+  --set iam.env.DATALAYER_JWT_DEFAULT_KID_ISSUER="${DATALAYER_JWT_DEFAULT_KID_ISSUER}" \
+  --set iam.env.DATALAYER_JWT_SKIP_3RD_TOKEN_SIGNATURE_VERIFICATION="${DATALAYER_JWT_SKIP_3RD_TOKEN_SIGNATURE_VERIFICATION}" \
+  --set iam.env.DATALAYER_AUTHZ_ENGINE="${DATALAYER_AUTHZ_ENGINE}" \
+  --set iam.env.DATALAYER_CHECKOUT_PROVIDER="${DATALAYER_CHECKOUT_PROVIDER}" \
+  --set iam.env.DATALAYER_SUPPORT_EMAIL="${DATALAYER_SUPPORT_EMAIL}" \
+  --set iam.env.DATALAYER_SMTP_HOST="${DATALAYER_SMTP_HOST}" \
+  --set iam.env.DATALAYER_SMTP_PORT="${DATALAYER_SMTP_PORT}" \
+  --set iam.env.DATALAYER_SMTP_USERNAME="${DATALAYER_SMTP_USERNAME}" \
+  --set iam.env.DATALAYER_SMTP_PASSWORD="${DATALAYER_SMTP_PASSWORD}" \
+  --set iam.env.DATALAYER_GITHUB_CLIENT_ID="${DATALAYER_GITHUB_CLIENT_ID}" \
+  --set iam.env.DATALAYER_GITHUB_CLIENT_SECRET="${DATALAYER_GITHUB_CLIENT_SECRET}" \
+  --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+./generated/services/deploy-datalayer-iam.sh
+```
+  </TabItem>
+</Tabs>
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Datalayer IAM Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=iam
+```
+
+Check the logs of the Datalayer IAM Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=iam -f
+```
+
+Check the availability of the Datalayer IAM Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer IAM Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/iam/version
+open https://${DATALAYER_RUN_HOST}/api/iam/v1/ping
+```
+
+## Tear Down Datalayer IAM
+
+If needed, tear down.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-iam
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-iam
+export NAMESPACE=datalayer-api
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/iam/v1/docs).
+
+## IAM Cases
+
+The following diagrams describe the authentication (Authn) and authorization (Authz) in various cases.
+
+All interactions between JupyterLab and the Datalayer services are over TLS/SSL (HTTP or WebSocket) via the Ingress.
+
+### Authenticate from JupyterLab with Username and Password
+
+```mermaid
+sequenceDiagram title Authenticate from JupyterLab with Username and Password
+    JupyterLab->>IAM: Username / Password
+    activate IAM
+    IAM-->>Database: Check
+    Database-->>IAM: ok / nok
+    break if nok
+      IAM-->>JupyterLab: Return authn error
+    end
+    IAM->>IAM: Create JWT Token
+    deactivate IAM
+    IAM-->>JupyterLab: Datalayer JWT Token
+```
+
+### Authenticate from JupyterLab with a 3rd Party Token
+
+```mermaid
+sequenceDiagram title Authenticate from JupyterLab with a 3rd Party Token
+    JupyterLab->>IAM: 3rd Party Token
+    activate IAM
+    IAM-->>3rd Party IAM: Validate 3rd Party Token
+    3rd Party IAM-->>IAM: ok / nok
+    break if nok
+      IAM-->>JupyterLab: Return authn error
+    end
+    IAM->>Database: Create user based on 3rd Party Token (if needed)
+    IAM->>IAM: Create JWT Token
+    deactivate IAM
+    IAM-->>JupyterLab: Datalayer JWT Token
+```
+
+### Access a Datalayer Service from JupyterLab
+
+```mermaid
+sequenceDiagram title Access a Datalayer Service from JupyterLab
+    JupyterLab->>IAM Middleware: Request with JWT Token (and 3rd Party Token)
+    activate IAM Middleware
+    IAM Middleware->>IAM Middleware: Check JWT validity for Authn
+    break if invalid JWT
+      IAM Middleware-->>JupyterLab: Return authn error
+    end
+    IAM Middleware->>OpenFGA: Check Authz with OpenFGA
+    OpenFGA-->>IAM Middleware: ok / nok
+    break if not authorized
+      IAM Middleware-->>JupyterLab: Return authz error
+    end
+    IAM Middleware->>IAM Middleware: Logging / Tracing
+    IAM Middleware->>Service: Authenticated and Authorized Request
+    break if credits information needed
+      Service-->>Credits: Check Credits (3rd Party Token)
+      Credits->>Credits: Authn (Secret) and Authz (OpenFGA)
+      Credits-->>External Credits: Check Credits (3rd Party Token)
+      External Credits-->>Credits: Credits (3rd Party Token)
+      Credits-->>Service: Credits Response
+    end
+    Service-->>IAM Middleware: Response
+    deactivate IAM Middleware
+    IAM Middleware-->>JupyterLab: Response
+```
+
+### Create a Jupyter Runtime from JupyterLab
+
+```mermaid
+sequenceDiagram title Create a Jupyter Runtime from JupyterLab
+    JupyterLab->>Jupyter Service: Request a Jupyter Runtime
+    activate Jupyter Service
+    Jupyter Service->>Jupyter Service: Check JWT validity for Authn
+    Jupyter Service->>Jupyter Service: Check Authz with OpenFGA
+    Jupyter Service->>Operator: Request a Runtime
+    Operator->>Operator: Authn with Secret Key
+    Operator->>Jupyter Runtime: Create a Runtime Pod and Ingress
+    Operator-->>Jupyter Service: Response (Jupyter Token and URL)
+    Jupyter Service-->>JupyterLab: Response (Jupyter Token and URL)
+```
+
+### Access a Jupyter Runtime from JupyterLab
+
+```mermaid
+sequenceDiagram title Access a Jupyter Runtime from JupyterLab
+    JupyterLab->>Jupyter Runtime: Access a Jupyter Runtime (URL + Token)
+    Jupyter Runtime-->>Jupyter Runtime: Check Jupyter Token
+    break if token invalid
+      Jupyter Runtime-->>JupyterLab: Invalid
+    end
+    Jupyter Runtime-->>Jupyter Runtime: Execute request
+    Jupyter Runtime-->>JupyterLab: Response
+```
+
+### IAM at Ingress Level
+
+In order to use `Datalayer IAM` as a Nginx Ingress middleware checking the user identity and authorization, the Ingress specification must have the following annotation (any service can be protected, aka forcing authentication and passing policies, using the following annotation on the Ingress).
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/auth-url: "http://datalayer-iam-svc.datalayer-api.svc.cluster.local:9700/api/iam/v1/auth"
+    nginx.ingress.kubernetes.io/auth-snippet: |
+      proxy_set_header X-Forwarded-Method $request_method;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Host $host;
+      proxy_set_header X-Forwarded-Uri $scheme://$host$request_uri;
+```

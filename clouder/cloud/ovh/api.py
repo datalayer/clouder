@@ -12,9 +12,27 @@ from ...util.utils import OVH_CONFIG_FILE
 ###
 
 
-ovh_client = ovh.Client(
-  config_file=OVH_CONFIG_FILE
-)
+class _LazyOVHClient:
+    """Lazy OVH client wrapper to avoid import-time config failures.
+
+    CI/test environments may not provide OVH endpoint configuration. Creating
+    the OVH client lazily prevents module import errors during test collection
+    for commands that don't use OVH.
+    """
+
+    def __init__(self):
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            self._client = ovh.Client(config_file=OVH_CONFIG_FILE)
+        return self._client
+
+    def __getattr__(self, name):
+        return getattr(self._get_client(), name)
+
+
+ovh_client = _LazyOVHClient()
 
 
 ###

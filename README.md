@@ -14,7 +14,7 @@ Clouder is a CLI an Python package to interact with cloud services. Devops can m
 - Share the cluster and give controlled access to other users.
 - Take backup and restore for disaster recovery.
 
-It supports alpha features of Kubernetes like [Container checkpointing and restor](https://criu.org/Kubernetes) (CRIU)
+It supports alpha features of Kubernetes like [Container checkpoint and restore](https://criu.org/Kubernetes) (CRIU)
 
 Azure, AWS and OVHcloud are supported for now. Support of other cloud is planned in subsequent releases.
 

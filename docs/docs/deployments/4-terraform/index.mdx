@@ -2,7 +2,7 @@
 title: Deploy with Terraform
 ---
 
-# ☰ 🛫 Deploy with Terraform
+# 🧱 Deploy with Terraform
 
 Use Terraform to provision infrastructure for Clouder Kubeadm deployments with a shared common layer and cloud-provider modules.
 
@@ -21,9 +21,34 @@ For AWS today, Terraform creates:
 
 1. VPC + subnet + security group for Kubeadm nodes.
 2. EC2 instances for 1 master and 3 workers (by default).
-3. IAM role + instance profile for storage/load balancer integrations.
+3. IAM role + instance profile for storage/load balancer, SSM access, and ECR pull integrations.
 4. ECR repositories for Datalayer services.
-5. Helper scripts to run Clouder Kubeadm setup and Plane service deployment.
+5. Optional AWS Client VPN endpoint for secure private operator access.
+6. Helper scripts to run Clouder Kubeadm setup and Plane service deployment.
+
+## Kubeadm mode (not EKS)
+
+This Terraform stack deploys Kubernetes on AWS EC2 using **Clouder + Kubeadm**.
+
+It does **not** create or manage EKS clusters.
+
+Operational guardrails are included in `terraform/Makefile`:
+
+1. `make check-kubeadm-mode` fails if any `aws_eks_*` Terraform resources are found.
+2. `make check-kubeadm-mode` verifies the generated setup template contains `clouder kubeadm setup`.
+
+`plan`, `apply`, `apply-auto`, `ci-plan`, and `ci-apply` all run this check.
+
+## Full AWS setup scope
+
+The Terraform AWS path now supports a complete baseline for day-0 deployment:
+
+1. **IAM**: configurable managed policies on kubeadm node role and instance profile attachment.
+2. **VPC and network**: VPC, internet gateway, route table, subnet tagging for Kubernetes load balancers, and kubeadm security group.
+3. **VPN (optional)**: AWS Client VPN endpoint with certificate authentication, authorization rules, and VPC routes.
+4. **Compute and registry**: kubeadm EC2 nodes and ECR repositories.
+
+Use this as a production blueprint, then tighten CIDRs, IAM policies, and VPN trust chain for your organization.
 
 ## Prerequisites
 
@@ -35,6 +60,233 @@ AWS-specific prerequisites (current):
 
 1. AWS credentials configured (CLI, SSO, or environment variables).
 2. Existing EC2 key pair in the target region.
+3. (Optional for VPN) ACM certificates for Client VPN server cert and client root certificate chain.
+
+### Step 1. Configure AWS credentials
+
+Choose one method.
+
+Method A: AWS SSO (recommended for teams)
+
+```bash
+aws configure sso
+aws sso login
+aws sts get-caller-identity
+
+export AWS_PROFILE=<your-sso-profile>
+export AWS_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+Method B: Access key credentials
+
+```bash
+aws configure
+aws sts get-caller-identity
+
+export AWS_PROFILE=default
+export AWS_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+Method C: Environment variables (CI or ephemeral sessions)
+
+```bash
+export AWS_ACCESS_KEY_ID=<your-access-key-id>
+export AWS_SECRET_ACCESS_KEY=<your-secret-access-key>
+export AWS_SESSION_TOKEN=<optional-session-token>
+export AWS_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-east-1
+aws sts get-caller-identity
+```
+
+### Step 2. Create or import an EC2 key pair
+
+Terraform requires `ec2_key_pair_name` to exist in your target region.
+
+Option A: Create a new key pair in AWS and save private key locally
+
+```bash
+export AWS_REGION=us-east-1
+export KEY_NAME=datalayer-kubeadm
+
+aws ec2 create-key-pair \
+	--region "$AWS_REGION" \
+	--key-name "$KEY_NAME" \
+	--query 'KeyMaterial' \
+	--output text > ~/.ssh/${KEY_NAME}.pem
+
+chmod 600 ~/.ssh/${KEY_NAME}.pem
+```
+
+Option B: Import an existing public key
+
+```bash
+export AWS_REGION=us-east-1
+export KEY_NAME=datalayer-kubeadm
+
+aws ec2 import-key-pair \
+	--region "$AWS_REGION" \
+	--key-name "$KEY_NAME" \
+	--public-key-material fileb://$HOME/.ssh/id_rsa.pub
+```
+
+Validate key pair exists:
+
+```bash
+aws ec2 describe-key-pairs \
+	--region "$AWS_REGION" \
+	--key-names "$KEY_NAME"
+```
+
+Set it in `terraform.tfvars`:
+
+```hcl
+ec2_key_pair_name = "datalayer-kubeadm"
+```
+
+### Step 3. (Optional) Prepare ACM certificates for Client VPN
+
+Only required if `enable_client_vpn = true`.
+
+1. Create/provide a server certificate for the Client VPN endpoint.
+2. Create/provide a client root CA certificate chain for certificate authentication.
+3. Import/request both certificates in AWS ACM in the same region as deployment.
+4. Copy both ARNs and set them in `terraform.tfvars`.
+
+List certificates in ACM:
+
+```bash
+export AWS_REGION=us-east-1
+aws acm list-certificates --region "$AWS_REGION"
+```
+
+Terraform settings:
+
+```hcl
+enable_client_vpn = true
+client_vpn_server_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/server-cert-id"
+client_vpn_client_root_certificate_chain_arn = "arn:aws:acm:us-east-1:123456789012:certificate/client-root-cert-id"
+```
+
+For production, use your organization PKI / ACM Private CA lifecycle and rotation policy.
+
+## Makefile workflow
+
+A dedicated Makefile is available at `terraform/Makefile` to run the full lifecycle.
+
+Common targets:
+
+1. `make help`
+2. `make check-tools`
+3. `make check-aws`
+4. `make check-kubeadm-mode`
+5. `make init`
+6. `make plan`
+7. `make apply-auto`
+8. `make bootstrap`
+9. `make deploy-rollout`
+10. `make destroy`
+11. `make ci-plan`
+12. `make ci-apply APPROVED=true`
+
+Typical end-to-end flow:
+
+```bash
+cd terraform
+make tfvars
+# Edit terraform.tfvars
+make apply-auto
+make bootstrap
+make deploy-rollout
+```
+
+Single-service deployment flow:
+
+```bash
+cd terraform
+make deploy-service SERVICE=datalayer-iam
+```
+
+Combined flow in one command:
+
+```bash
+cd terraform
+make full-deploy
+```
+
+To use a specific profile/region with Make targets:
+
+```bash
+cd terraform
+AWS_PROFILE=datalayer AWS_REGION=us-east-1 make apply-auto
+```
+
+## CI usage (plan artifact + gated apply)
+
+Use CI targets for non-interactive workflows where `plan` and `apply` are separated by an approval step.
+
+Generate plan artifacts in pipeline step 1:
+
+```bash
+cd terraform
+AWS_PROFILE=datalayer AWS_REGION=us-east-1 make ci-plan
+```
+
+This creates:
+
+1. `tfplan` (binary plan artifact)
+2. `tfplan.json` (JSON representation for review tooling)
+
+After manual or policy approval, run gated apply in pipeline step 2:
+
+```bash
+cd terraform
+AWS_PROFILE=datalayer AWS_REGION=us-east-1 make ci-apply APPROVED=true
+```
+
+Notes:
+
+1. `ci-apply` refuses to run unless `APPROVED=true`.
+2. `ci-apply` requires an existing `tfplan` artifact from `ci-plan`.
+3. Store `tfplan` and `tfplan.json` as CI artifacts between stages.
+
+## Configure terraform.tfvars for full AWS setup
+
+At minimum:
+
+```hcl
+project_name       = "datalayer"
+cluster_name       = "datalayer-aws"
+aws_region         = "us-east-1"
+ec2_key_pair_name  = "your-ec2-keypair"
+allowed_ssh_cidrs  = ["x.x.x.x/32"]
+```
+
+Customize IAM policy attachments for kubeadm nodes when needed:
+
+```hcl
+aws_node_iam_managed_policy_arns = [
+	"arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+	"arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess",
+	"arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess",
+	"arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+	"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+]
+```
+
+Enable VPN for private access:
+
+```hcl
+enable_client_vpn = true
+client_vpn_client_cidr = "172.16.0.0/22"
+client_vpn_server_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/server-cert-id"
+client_vpn_client_root_certificate_chain_arn = "arn:aws:acm:us-east-1:123456789012:certificate/client-root-cert-id"
+client_vpn_authorized_cidrs = ["10.0.0.0/16"]
+client_vpn_split_tunnel = true
+client_vpn_transport_protocol = "udp"
+client_vpn_session_timeout_hours = 8
+```
 
 ## Apply Terraform
 
@@ -47,21 +299,37 @@ terraform plan
 terraform apply
 ```
 
+This phase provisions AWS IAM, network, compute, registry, and optional VPN resources, then generates operational helper scripts under `terraform/generated/`.
+
 Outputs include cloud details, Kubeadm node addresses, IAM profile references, registry endpoints, and generated helper file paths.
+
+Inspect key AWS outputs:
+
+```bash
+cd terraform
+terraform output network
+terraform output kubeadm_nodes_iam_role
+terraform output kubeadm_nodes_iam_policies
+terraform output kubeadm_nodes_instance_profile
+```
 
 ## Bootstrap Kubeadm with Clouder
 
 After `terraform apply`, helper files are generated in `terraform/generated/`.
 These are produced by the common helper module and provider-specific templates.
 
+The setup script sources `kubeadm-cluster.env`, sets Clouder context to your AWS account, runs `clouder kubeadm setup`, then fetches kubeconfig with `clouder kubeadm get-config`.
+
 ```bash
 cd terraform
-./generated/clouder-Kubeadm-setup.sh
+./generated/clouder-kubeadm-setup.sh
 export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
 kubectl get nodes -o wide
 ```
 
 ## Deploy all Datalayer services
+
+After Kubeadm bootstrap, deploy Datalayer services with generated Plane scripts.
 
 ```bash
 cd terraform
@@ -78,7 +346,7 @@ cd terraform
 The generated script deploys services in this order:
 
 1. System services: cert-manager, ingress (Traefik), Solr, OTEL, observer, Vault, Kafka, Pulsar, OpenFGA, Datashim, mailer.
-2. Core services: operator, IAM, runtimes, library, spacer, AI agents, functions, scheduler, spider, manager, status.
+2. Core services: IAM, operator, runtimes, library, spacer, AI agents, functions, scheduler, spider, manager, status.
 3. Optional services: shared filesystem and storage operator/cluster.
 
 ## Deploy services individually with Terraform-generated scripts
@@ -91,7 +359,7 @@ Example flow:
 cd terraform
 terraform init
 terraform apply
-./generated/clouder-Kubeadm-setup.sh
+./generated/clouder-kubeadm-setup.sh
 export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
 
 # Deploy selected services only
@@ -111,7 +379,7 @@ You can also deploy platform dependencies independently:
 
 ## Service deployment checklist
 
-After each service deployment script:
+After each service deployment script, validate both Kubernetes readiness and Plane service state:
 
 ```bash
 plane ls
@@ -125,8 +393,8 @@ For API services (IAM, runtimes, library, spacer, AI agents), verify service end
 
 After `terraform apply`, the `generated/` directory should contain:
 
-1. `Kubeadm-cluster.env`
-2. `clouder-Kubeadm-setup.sh`
+1. `kubeadm-cluster.env`
+2. `clouder-kubeadm-setup.sh`
 3. `plane-deploy-all-services.sh`
 4. `plane-deploy-rollout.sh` (staged rollout wrapper)
 5. `services/deploy-<service>.sh` helper scripts used by Terraform tabs in `/services/*` pages.
@@ -202,14 +470,48 @@ Then push images to repository URLs listed in `terraform output ecr_repositories
 This stack automatically attaches an IAM instance profile to Kubeadm EC2 nodes.
 The role includes AWS-managed `AmazonEBSCSIDriverPolicy` and `ElasticLoadBalancingFullAccess`
 so Clouder can bootstrap EBS CSI and AWS Load Balancer Controller using instance-profile authentication by default.
+Additional defaults include `AmazonSSMManagedInstanceCore` and `AmazonEC2ContainerRegistryReadOnly`.
 
 Verify after apply:
 
 ```bash
 cd terraform
-terraform output Kubeadm_nodes_iam_role
-terraform output Kubeadm_nodes_instance_profile
+terraform output kubeadm_nodes_iam_role
+terraform output kubeadm_nodes_iam_policies
+terraform output kubeadm_nodes_instance_profile
 ```
+
+## VPC and network verification
+
+```bash
+cd terraform
+terraform output network
+```
+
+The `network` output includes:
+
+1. VPC and internet gateway IDs.
+2. Public subnet and route table IDs.
+3. Kubeadm security group ID and direct-access CIDRs.
+4. Client VPN status and endpoint fields when enabled.
+
+## Client VPN operations (optional)
+
+When `enable_client_vpn=true`, Terraform creates:
+
+1. Client VPN endpoint.
+2. Network association to the kubeadm subnet.
+3. Authorization rules and routes to your authorized CIDRs.
+4. Additional kubeadm security-group rules for SSH, Kubernetes API, and NodePort access from VPN clients.
+
+Validate VPN outputs:
+
+```bash
+cd terraform
+terraform output network
+```
+
+Use the `client_vpn_endpoint_id` from output to export/download a client configuration in AWS and distribute it according to your internal access policy.
 
 ## Destroy
 

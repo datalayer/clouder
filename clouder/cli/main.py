@@ -20,7 +20,7 @@ from .aws_cmd import aws_app
 
 app = typer.Typer(
     name="clouder",
-    help="Clouder - Cloud-agnostic Kubernetes cluster management with CRIU support.",
+    help="Clouder - Cloud-agnostic Kubernetes cluster management.",
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
@@ -56,7 +56,7 @@ def main(
         is_eager=True,
     ),
 ):
-    """Clouder - Cloud-agnostic Kubernetes cluster management with CRIU support."""
+    """Clouder - Cloud-agnostic Kubernetes cluster management."""
     pass
 
 
@@ -65,6 +65,26 @@ def server():
     """Start the Clouder Jupyter server extension."""
     from ..serverapplication import main as server_main
     server_main()
+
+
+@app.command("about")
+def about():
+    """Show Clouder banner and project links."""
+    typer.secho(
+        """┏┓┓     ┓    
+┃ ┃┏┓┓┏┏┫┏┓┏┓
+┗┛┗┗┛┗┻┗┻┗ ┛ """,
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(
+        """
+Copyright (c) Datalayer, Inc. https://datalayer.ai
+
+☰ ☁️  Clouder - Create, manage and share Kubernetes clusters.
+
+Documentation: https://clouder.sh
+Source code: https://github.com/datalayer/clouder"""
+    )
 
 
 # Register the kubectl Click command directly on Typer's Click group.

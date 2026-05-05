@@ -17,3 +17,8 @@ output "instance_profile_arn" {
   description = "Instance profile ARN attached to kubeadm EC2 nodes."
   value       = aws_iam_instance_profile.kubeadm_nodes.arn
 }
+
+output "attached_policy_arns" {
+  description = "Managed policy ARNs attached to kubeadm EC2 role."
+  value       = sort([for attachment in aws_iam_role_policy_attachment.node_managed_policies : attachment.policy_arn])
+}

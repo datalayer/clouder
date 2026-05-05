@@ -3,9 +3,13 @@ sidebar_position: 1
 slug: /
 ---
 
-# Clouder
+# ☁️ Clouder
+
+:::info
 
 Clouder is the infrastructure and operations layer for running Datalayer services on Kubernetes.
+
+:::
 
 It helps platform teams provision clusters, bootstrap core cloud integrations, and deploy services with repeatable CLI and Terraform workflows.
 
@@ -28,32 +32,4 @@ Start here based on your goal:
 - Deploy and operate services: [Services](/services/)
 - Run day-to-day commands: [CLI Reference](/cli/)
 
-If you are new, follow the Setup guide in order, then use Services and CLI as your operational playbook.
-
-
-
-## Install
-
-```bash
-pip install clouder
-```
-Clouder is released in [PyPI](https://pypi.org/project/clouder).
-
-{/*
-## Develop
-
-```bash
-git clone https://github.com/datalayer/clouder && \
-  cd clouder && \
-  pip install -e .
-```
-
-```bash
-pip install -e .[test]
-jupyter labextension develop . --overwrite
-jupyter labextension list
-jupyter server extension list
-# open http://localhost:8888/lab?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
-npm jupyterlab
-```
-*/}
+If you are new, follow the [Cluster](/cluster/) guide in order, then use [Services](/services/) and [CLI Reference](/cli/) as your operational playbook.

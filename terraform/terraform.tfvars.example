@@ -9,6 +9,15 @@ allowed_ssh_cidrs = [
   "0.0.0.0/0"
 ]
 
+# Optional custom managed policies for kubeadm EC2 nodes.
+aws_node_iam_managed_policy_arns = [
+  "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+  "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess",
+  "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess",
+  "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+  "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+]
+
 # Must exist in AWS in selected region.
 ec2_key_pair_name = "your-ec2-keypair"
 
@@ -22,3 +31,14 @@ admin_user = "ubuntu"
 
 # Optional AMI override
 # ami_id = "ami-xxxxxxxx"
+
+# Optional AWS Client VPN (recommended for private operator access)
+# enable_client_vpn = true
+# client_vpn_client_cidr = "172.16.0.0/22"
+# client_vpn_server_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/server-cert-id"
+# client_vpn_client_root_certificate_chain_arn = "arn:aws:acm:us-east-1:123456789012:certificate/client-root-cert-id"
+# client_vpn_authorized_cidrs = ["10.0.0.0/16"]
+# client_vpn_split_tunnel = true
+# client_vpn_transport_protocol = "udp"
+# client_vpn_session_timeout_hours = 8
+# client_vpn_dns_servers = ["10.0.0.2"]
