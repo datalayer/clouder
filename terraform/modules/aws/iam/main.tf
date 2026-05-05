@@ -14,19 +14,10 @@ resource "aws_iam_role" "kubeadm_nodes" {
   assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
 }
 
-resource "aws_iam_role_policy_attachment" "ebs_csi" {
+resource "aws_iam_role_policy_attachment" "node_managed_policies" {
+  for_each   = toset(var.node_managed_policy_arns)
   role       = aws_iam_role.kubeadm_nodes.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "elb_full_access" {
-  role       = aws_iam_role.kubeadm_nodes.name
-  policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
-}
-
-resource "aws_iam_role_policy_attachment" "ec2_read_only" {
-  role       = aws_iam_role.kubeadm_nodes.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess"
+  policy_arn = each.value
 }
 
 resource "aws_iam_instance_profile" "kubeadm_nodes" {

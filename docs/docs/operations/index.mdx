@@ -6,28 +6,32 @@ import DocCardList from '@theme/DocCardList';
 
 # Operations
 
-## SLA
+The Operations section is the day-2 runbook for platform operators running Datalayer on Kubernetes.
 
-The Service Level Agreement (SLA) depends on how the Platform Operator manages node pools.
+It maps directly to the operation domains in this folder:
 
-## Status Page
+1. [Management](/operations/management/): manage Jupyter CRDs (pools, environments, contents, users).
+2. [Observability](/operations/observability/): OTEL-first telemetry operations, health checks, and troubleshooting.
+3. [Scaling](/operations/scaling/): adjust node pools and runtime capacity for traffic and cost targets.
+4. [Availability](/operations/availability/): keep runtime access resilient and monitor platform status.
+5. [Continuity](/operations/continuity/): backup and disaster recovery procedures.
+6. [Upgrades](/operations/upgrades/): staged rollout strategy for controlled version changes.
+7. [Security](/operations/security/): platform security posture and trust-center guidance.
 
-The availability of the online Datalayer services can be viewed on this [Status page](https://status.datalayer.run).
+## Recommended Operations Sequence
 
-## Availability
+For a new production environment, use this order:
 
-The [availability](/operations/availability/) depends on how the Platform Operator manages node pools.
+1. Start with [Management](/operations/management/) to validate CRDs and runtime control objects.
+2. Enable [Observability](/operations/observability/) and baseline service health.
+3. Tune [Scaling](/operations/scaling/) for expected workloads.
+4. Review [Availability](/operations/availability/) behavior for runtime continuity.
+5. Implement [Continuity](/operations/continuity/) backups and recovery drills.
+6. Execute [Upgrades](/operations/upgrades/) as staged rollouts.
+7. Apply [Security](/operations/security/) controls and governance checks.
 
-The Platform Operator is responsible to provision the hardware resources (CPU/GPU and memory) to serve new Runtimes.
+The availability of online Datalayer services can be monitored on the public [Status page](https://status.datalayer.run).
 
-## Performance
-
-The response time of Datalayer services needs to be [monitored](/operations/observability/) to ensure they respond fast enough.
-
-Any significant slowdown or unexpected behavior can [be reported](/professional-services/support) to Datalayer.
-
-## Support
-
-We offer professional support agreements with different SLA options for issue handling. [Contact us](/professional-services/support) to learn more.
+If you observe slowdown, incidents, or unexpected behavior, [contact support](/professional-services/support/).
 
 <DocCardList />

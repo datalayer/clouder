@@ -87,6 +87,92 @@ variable "ami_id" {
   default     = null
 }
 
+variable "aws_node_iam_managed_policy_arns" {
+  description = "AWS managed policy ARNs attached to kubeadm node IAM role."
+  type        = list(string)
+  default = [
+    "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+    "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess",
+    "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess",
+    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  ]
+}
+
+variable "enable_client_vpn" {
+  description = "Enable AWS Client VPN endpoint for secure operator access to kubeadm VPC resources."
+  type        = bool
+  default     = false
+}
+
+variable "client_vpn_client_cidr" {
+  description = "CIDR assigned to VPN clients (must not overlap with VPC CIDR)."
+  type        = string
+  default     = "172.16.0.0/22"
+}
+
+variable "client_vpn_server_certificate_arn" {
+  description = "ACM server certificate ARN for AWS Client VPN endpoint. Required when enable_client_vpn is true."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = !var.enable_client_vpn || var.client_vpn_server_certificate_arn != null
+    error_message = "client_vpn_server_certificate_arn is required when enable_client_vpn is true."
+  }
+}
+
+variable "client_vpn_client_root_certificate_chain_arn" {
+  description = "ACM client root certificate chain ARN for certificate-authenticated AWS Client VPN. Required when enable_client_vpn is true."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = !var.enable_client_vpn || var.client_vpn_client_root_certificate_chain_arn != null
+    error_message = "client_vpn_client_root_certificate_chain_arn is required when enable_client_vpn is true."
+  }
+}
+
+variable "client_vpn_authorized_cidrs" {
+  description = "CIDRs reachable through Client VPN authorization and route rules. If empty, defaults to vpc_cidr."
+  type        = list(string)
+  default     = []
+}
+
+variable "client_vpn_split_tunnel" {
+  description = "Whether Client VPN should use split tunnel mode."
+  type        = bool
+  default     = true
+}
+
+variable "client_vpn_transport_protocol" {
+  description = "Transport protocol for Client VPN endpoint."
+  type        = string
+  default     = "udp"
+
+  validation {
+    condition     = contains(["udp", "tcp"], var.client_vpn_transport_protocol)
+    error_message = "client_vpn_transport_protocol must be either 'udp' or 'tcp'."
+  }
+}
+
+variable "client_vpn_session_timeout_hours" {
+  description = "Client VPN session timeout in hours."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = contains([8, 10, 12, 24], var.client_vpn_session_timeout_hours)
+    error_message = "client_vpn_session_timeout_hours must be one of: 8, 10, 12, 24."
+  }
+}
+
+variable "client_vpn_dns_servers" {
+  description = "Optional DNS servers for Client VPN clients."
+  type        = list(string)
+  default     = []
+}
+
 variable "datalayer_ecr_repositories" {
   description = "ECR repositories to create for Datalayer service images."
   type        = list(string)

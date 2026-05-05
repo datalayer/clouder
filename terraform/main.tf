@@ -11,19 +11,29 @@ locals {
 module "aws_network" {
   source = "./modules/aws/network"
 
-  project_name       = var.project_name
-  cluster_name       = var.cluster_name
-  vpc_cidr           = var.vpc_cidr
-  subnet_cidr        = var.subnet_cidr
-  availability_zone  = var.availability_zone
-  allowed_ssh_cidrs  = var.allowed_ssh_cidrs
+  project_name                                  = var.project_name
+  cluster_name                                  = var.cluster_name
+  vpc_cidr                                      = var.vpc_cidr
+  subnet_cidr                                   = var.subnet_cidr
+  availability_zone                             = var.availability_zone
+  allowed_ssh_cidrs                             = var.allowed_ssh_cidrs
+  enable_client_vpn                             = var.enable_client_vpn
+  client_vpn_client_cidr                        = var.client_vpn_client_cidr
+  client_vpn_server_certificate_arn             = var.client_vpn_server_certificate_arn
+  client_vpn_client_root_certificate_chain_arn  = var.client_vpn_client_root_certificate_chain_arn
+  client_vpn_authorized_cidrs                   = var.client_vpn_authorized_cidrs
+  client_vpn_split_tunnel                       = var.client_vpn_split_tunnel
+  client_vpn_transport_protocol                 = var.client_vpn_transport_protocol
+  client_vpn_session_timeout_hours              = var.client_vpn_session_timeout_hours
+  client_vpn_dns_servers                        = var.client_vpn_dns_servers
 }
 
 module "aws_iam" {
   source = "./modules/aws/iam"
 
-  project_name = var.project_name
-  cluster_name = var.cluster_name
+  project_name              = var.project_name
+  cluster_name              = var.cluster_name
+  node_managed_policy_arns  = var.aws_node_iam_managed_policy_arns
 }
 
 module "aws_compute" {

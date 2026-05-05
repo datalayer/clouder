@@ -17,5 +17,5 @@ echo -e $GREEN$BOLD"""┏┓┓     ┓
 ┃ ┃┏┓┓┏┏┫┏┓┏┓
 ┗┛┗┗┛┗┻┗┻┗ ┛ 
 
-Copyright (c) Datalayer, Inc. https://datalayer.io"""
+Copyright (c) Datalayer, Inc. https://datalayer.ai"""
 echo -e $NOBOLD$NOCOLOR

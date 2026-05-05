@@ -40,7 +40,7 @@ def register(kubeadm_app: typer.Typer):
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         k8s_version: str = typer.Option(K8S_VERSION, "--k8s-version", help="Kubernetes version to install."),
     ):
-        """Set up a kubeadm cluster with CRIU support on previously created VMs.
+        """Set up a kubeadm cluster on previously created VMs.
 
         Steps: install prerequisites → kubeadm init (master) → install CNI →
         kubeadm join (workers) → enable CRIU feature gates (all nodes).

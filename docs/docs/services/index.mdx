@@ -6,9 +6,49 @@ import DocCardList from '@theme/DocCardList';
 
 # Services
 
-You are now ready to deploy the services one by one with Plane as described in the following sections.
+This section introduces the Datalayer services you deploy on top of your Kubernetes cluster.
 
-:::tip Terraform-first workflow (AWS)
+Use it as your service map before running Plane deployment commands.
+
+Services are grouped in three layers:
+
+1. System services: cluster foundations such as ingress, certificates, storage and observability.
+2. Core services: IAM, operator, runtimes, library, spacer, AI agents, functions, scheduler, spider, manager, status.
+3. Optional and addons: extra capabilities you enable depending on your use case.
+
+## Recommended First Deployment Order
+
+1. System Layer First:
+	- [Cert Manager](/services/system/cert-manager/)
+	- [Ingress](/services/system/ingress/)
+	- [Solr](/services/system/solr/)
+	- [OTEL](/services/system/otel/)
+2. Core Platform Layer:
+	- [Datalayer IAM](/services/iam/)
+	- [Datalayer Operator](/services/operator/)
+	- [Datalayer Runtimes](/services/runtimes/)
+	- [Datalayer Spacer](/services/spacer/)
+	- [Datalayer Library](/services/library/)
+3. Optional Services and Addons:
+	- [Addons](/services/addons/)
+
+## Minimum Service Set
+
+For a base deployment, start with:
+
+1. [Cert Manager](/services/system/cert-manager/)
+2. [Ingress](/services/system/ingress/)
+3. [Solr](/services/system/solr/)
+5. [Datalayer IAM](/services/iam/)
+4. [Datalayer Operator](/services/operator/)
+6. [Datalayer Runtimes](/services/runtimes/)
+7. [Datalayer AI Agents](/services/ai-agents/)
+
+Each service page below documents purpose, deployment details, and operational checks.
+
+## Terraform-First Workflow (AWS)
+
+:::tip Terraform-First Workflow (AWS)
 
 Before deploying services with Plane, provision the infrastructure and Kubeadm cluster:
 
@@ -16,7 +56,7 @@ Before deploying services with Plane, provision the infrastructure and Kubeadm c
 cd terraform
 terraform init
 terraform apply
-./generated/clouder-Kubeadm-setup.sh
+./generated/clouder-kubeadm-setup.sh
 export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
 kubectl get nodes -o wide
 ```
@@ -26,19 +66,6 @@ Then deploy all services in one pass:
 ```bash
 ./generated/plane-deploy-all-services.sh
 ```
-
-:::
-
-:::note
-
-This is the minimum set of Services to serve a base Jupyter Remote Runtime deployment.
-
-- [Cert Manager](/services/system/cert-manager/)
-- [Solr](/services/system/solr/)
-- [Ingress](/services/system/ingress/)
-- [Datalayer Operator](/services/operator/)
-- [Datalayer IAM](/services/iam/)
-- [Datalayer Runtimes](/services/runtimes/)
 
 :::
 

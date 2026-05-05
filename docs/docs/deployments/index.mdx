@@ -6,6 +6,31 @@ import DocCardList from '@theme/DocCardList';
 
 # ☰ Deployments
 
-You need to define your configuration and choose the technical option to deploy Datalayer services on Kubernetes.
+Use this section to choose how you deploy Datalayer services on Kubernetes.
+
+The deployment documentation is organized in five parts:
+
+1. **Configuration**: required environment variables and runtime settings shared by all deployment methods.
+2. **Plane**: direct service lifecycle commands (`plane up`, `plane down`) for day-0 and day-2 operations.
+3. **Helm**: chart-based deployment path when you want raw Helm workflows.
+4. **Terraform**: infrastructure + kubeadm bootstrap + generated service rollout scripts (AWS currently).
+5. **GitHub Actions**: CI/CD workflow built on Terraform artifacts and generated rollout scripts.
+
+## Which Deployment Path to Choose
+
+1. Choose [Configuration](/deployments/configuration/) first.
+2. Choose [Terraform](/deployments/terraform/) if you want infrastructure provisioning and repeatable bootstrap automation.
+3. Choose [Plane](/deployments/plane/) if your cluster is already provisioned and you want fast service operations.
+4. Choose [Helm](/deployments/helm/) if your platform team standardizes on Helm-only workflows.
+5. Choose [GitHub Actions](/cluster/deployments/github-actions/) for CI pipelines with plan/apply gates and staged rollout.
+
+## Recommended Order for First Deployment
+
+1. Complete [Configuration](/deployments/configuration/).
+2. Provision and bootstrap with [Terraform](/deployments/terraform/).
+3. Deploy services using [Plane](/deployments/plane/) rollout scripts or service-by-service commands.
+4. Add [GitHub Actions](/cluster/deployments/github-actions/) for production CI/CD automation.
+
+For a service-by-service deployment map, continue with [Services](/services/).
 
 <DocCardList />

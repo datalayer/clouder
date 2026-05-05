@@ -14,16 +14,18 @@ purpose, we provide the user with an option to access a persistent storage on th
 
 ## Under the Hood
 
-Technically we are using a [Ceph filesystem](https://ceph.com) as it is a reliable and trusted storage technology for clouds used by
-many. You will find more information about the Ceph configuration [there](/services/system/shared-filesystem/).
+User persistent storage is provided through the Shared File System layer.
 
-If you have configured and deployed a Ceph storage, users will have the option to mount their persistent storage in remote
-kernels. If they do so, the spawning of the remote runtime will be slow as instead of assigning an existing warmed-up pod to
-the user. The operator will create a new pod with a custom volume mount pointing to the user home folder on the Ceph filesystem
-(using a PVC with a `subPath` option).
+The current primary deployment path is NFS-based shared storage, with Ceph available as an alternative backend for environments that require it.
+
+You can find storage provider configuration and deployment details in [Shared File System](/services/system/shared-filesystem/).
+
+When a user enables persistent storage in a remote runtime, the scheduler may create a dedicated pod instead of reusing an already warmed-up pod.
+
+That pod mounts the user home folder through a PVC (using `subPath`) backed by the configured shared filesystem provider.
 
 :::note
 
-The Remote Runtime Kinux user is receiving read-write access to the user platform folder through a `fsGroup` rule.
+The Remote Runtime Linux user is receiving read-write access to the user platform folder through a `fsGroup` rule.
 
 :::

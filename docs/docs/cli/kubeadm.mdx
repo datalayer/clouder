@@ -5,7 +5,7 @@ sidebar_position: 8
 
 # clouder kubeadm
 
-Provision, set up, and manage Kubeadm Kubernetes clusters with CRIU support. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
+Provision, set up, and manage Kubeadm Kubernetes clusters. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
 
 ## Overview
 
@@ -97,7 +97,7 @@ All VMs share the same VNet, subnet, and NSG — they can communicate with each 
 
 ### `clouder kubeadm setup`
 
-Set up a Kubeadm cluster with CRIU support on previously created VMs. This is the main automation command — it SSHes into each VM and runs all setup steps.
+Set up a Kubeadm cluster on previously created VMs. This is the main automation command — it SSHes into each VM and runs all setup steps.
 
 ```bash
 clouder kubeadm setup <name> [OPTIONS]
@@ -559,7 +559,7 @@ clouder kubeadm upgrade-kubelet my-cluster --key my-cluster-key
 
 ### Create a Cluster
 
-Three commands are needed to go from zero to a running Kubernetes cluster with CRIU support:
+Three commands are needed to go from zero to a running Kubernetes cluster:
 
 ```bash
 # 1. Create the VMs (1 master + 3 workers on Azure)
