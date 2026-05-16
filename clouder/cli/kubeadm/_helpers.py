@@ -583,7 +583,7 @@ metadata:
 provisioner: file.csi.azure.com
 allowVolumeExpansion: true
 parameters:
-  shareName: shared-storage
+  shareName: datalayer-shared-filesystem
   skuName: Premium_LRS
   protocol: nfs
   subscriptionID: {subscription_id}

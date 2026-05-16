@@ -48,7 +48,7 @@ metadata:
 provisioner: file.csi.azure.com
 allowVolumeExpansion: true
 parameters:
-  shareName: shared-storage
+  shareName: datalayer-shared-filesystem
   skuName: Premium_LRS
   protocol: nfs
   # Required on non-AKS clusters (Kubeadm, etc.):
