@@ -86,9 +86,9 @@ You can check the Azure NFS Filesystem with the following command.
 ```bash
 kubectl get pvc -n datalayer-runtimes
 # NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-# storage-users-pvc   Bound    pvc-916cfe94-f0dd-49d8-92c5-7b7ebef43160   100Gi      RWX            azure-nfs      <unset>                 70s
+# shared-fs-pvc       Bound    pvc-916cfe94-f0dd-49d8-92c5-7b7ebef43160   100Gi      RWX            azure-nfs      <unset>                 70s
 kubectl get pv | grep datalayer-runtimes
-# pvc-b6a66bd4-39db-4649-9bf7-a71203a8e52d   100Gi          RWX            Delete           Bound      datalayer-runtimes/storage-users-pvc                                             azure-nfs      <uns
+# pvc-b6a66bd4-39db-4649-9bf7-a71203a8e52d   100Gi          RWX            Delete           Bound      datalayer-runtimes/shared-fs-pvc       azure-nfs
 ```
 
 A `shared-fs-prepare` Pod has been launched and is responsible to create the storage initial folders. The Ceph storage is mounted on `/mnt/sharedfs`.
