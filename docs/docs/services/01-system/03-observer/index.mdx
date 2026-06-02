@@ -165,11 +165,11 @@ The other metadata normalized (in Loki, Tempo and Prometheus) are:
 
 For the Runtimes, the following metadata are also added:
 
-- `datalayer.pool.name`: Kubernetes label `jupyterpool.datalayer.io/name`
-- `datalayer.pool.status`: Kubernetes label `jupyterpool.datalayer.io/pod-status`
-- `datalayer.pool.user`: Kubernetes label `jupyterpool.datalayer.io/user-uid`
-- `datalayer.pool.type`: Kubernetes label `jupyterpool.datalayer.io/kernel-type`
-- `datalayer.pool.reservation`: Kubernetes label `jupyterpool.datalayer.io/reservation-id`
+- `datalayer.pool.name`: Kubernetes label `runtime-pools.datalayer.io/name`
+- `datalayer.pool.status`: Kubernetes label `runtime-pools.datalayer.io/pod-status`
+- `datalayer.pool.user`: Kubernetes label `runtime-pools.datalayer.io/user-uid`
+- `datalayer.pool.type`: Kubernetes label `runtime-pools.datalayer.io/runtime-type`
+- `datalayer.pool.reservation`: Kubernetes label `runtime-pools.datalayer.io/reservation-id`
 
 ## Prometheus
 
@@ -337,7 +337,7 @@ spec:
     - datalayer-runtimes
   selector:
     matchLabels:
-      jupyterpool.datalayer.io/pod-status: available
+      runtime-pools.datalayer.io/pod-status: available
 EOF
 kubectl get podmonitor pod-monitor-jupyter-available -n datalayer-observer
 kubectl delete podmonitor pod-monitor-jupyter-available -n datalayer-observer
@@ -362,7 +362,7 @@ spec:
     - datalayer-runtimes
   selector:
     matchLabels:
-      jupyterpool.datalayer.io/pod-status: assigned
+      runtime-pools.datalayer.io/pod-status: assigned
 EOF
 kubectl get podmonitor pod-monitor-jupyter-assigned -n datalayer-observer
 kubectl delete podmonitor pod-monitor-jupyter-assigned -n datalayer-observer

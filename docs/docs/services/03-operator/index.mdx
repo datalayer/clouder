@@ -17,7 +17,7 @@ import { Label, Stack } from '@primer/react-brand';
 
 - Manage the defined 🛣️ Routes to secure and direct the incoming request to the correct service or pod.
 - Manage the defined 🐋 Docker Images building and publication in the Docker registry.
-- Manage the defined 💼 Jupyter Contents, 🌳 Jupyter Environments and 🎱 Jupyterpools.
+- Manage the defined 💼 Runtime Contents, 🌳 Runtime Environments and 🎱 Runtime Pools.
 
 Please note that the [Jupyter Service](/services/runtimes/) is responsible to deliver the ⚪ Runtimes to the user, so it is not the duty of the Datalayer Operator to serve Runtimes.
 
@@ -106,18 +106,18 @@ helm ls -A
 Check the availability of the Datalayer CRDs.
 
 ```bash
-kubectl get crd jupyter-contents.datalayer.io
-kubectl explain jupyter-contents.spec
+kubectl get crd runtime-contents.datalayer.io
+kubectl explain runtime-contents.spec
 ```
 
 ```bash
-kubectl get crd jupyter-environments.datalayer.io
-kubectl explain jupyter-environments.spec
+kubectl get crd runtime-environments.datalayer.io
+kubectl explain runtime-environments.spec
 ```
 
 ```bash
-kubectl get crd jupyterpools.datalayer.io
-kubectl explain jupyterpools.spec
+kubectl get crd runtime-pools.datalayer.io
+kubectl explain runtime-pools.spec
 ```
 
 Check the availability of the Datalayer Operator Pods.

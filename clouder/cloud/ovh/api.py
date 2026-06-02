@@ -211,7 +211,7 @@ template = {
         "annotations": {},
         "finalizers": [],
         "labels": {
-            "role.datalayer.io/jupyter": "true",
+            "role.datalayer.io/runtime": "true",
             "node.datalayer.io/xpu": "cpu",
         }
     },

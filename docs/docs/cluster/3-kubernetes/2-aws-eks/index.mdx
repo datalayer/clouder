@@ -283,7 +283,7 @@ managedNodeGroups:
 #    privateNetworking: false
   - name: jupyter-medium-cpu
     labels:
-      role.datalayer.io/jupyter: "true"
+      role.datalayer.io/runtime: "true"
       node.datalayer.io/variant: "medium"
       node.datalayer.io/xpu: "cpu"
     instanceType: m5.xlarge
