@@ -294,6 +294,65 @@ clouder azure vm-delete my-vm --resource-group my-rg --force
 
 ---
 
+### `clouder azure helm-values`
+
+Generate a JSON values file containing all Azure credentials required by the `datalayer-operator` Helm chart:
+
+- `operator.cloudCredentials.azure.tenantId`
+- `operator.cloudCredentials.azure.clientId`
+- `operator.cloudCredentials.azure.clientSecret`
+- `operator.cloudCredentials.azure.subscriptionId`
+- `operator.cloudCredentials.azure.resourceGroup`
+
+```bash
+# Generate from configured Azure + kubeadm cluster metadata
+clouder azure helm-values --cluster r1 -o azure-operator-values.json
+
+# Print JSON to stdout
+clouder azure helm-values --cluster r1 --output -
+
+# Disable service principal auto-creation (fail if client credentials are missing)
+clouder azure helm-values --cluster r1 --no-create-sp
+
+# Fully explicit mode
+clouder azure helm-values \
+    --tenant-id <TENANT_ID> \
+    --client-id <CLIENT_ID> \
+    --client-secret <CLIENT_SECRET> \
+    --subscription-id <SUBSCRIPTION_ID> \
+    --resource-group <RESOURCE_GROUP> \
+    -o azure-operator-values.json
+```
+
+Default output behavior:
+
+- If `--cluster` is set (or inferred from current kube context), output defaults to `~/.clouder/<cluster>/azure-operator-values.json`.
+- If no cluster can be resolved, output defaults to `./azure-operator-values.json`.
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cluster` | | Kubeadm cluster name (reads `~/.clouder/clusters/<name>.json` for subscription/resource group) |
+| `--output` | `-o` | Output JSON file path (`-` prints to stdout) |
+| `--tenant-id` | | Override tenant ID |
+| `--client-id` | | Override client ID |
+| `--client-secret` | | Override client secret |
+| `--subscription-id` | | Override subscription ID |
+| `--resource-group` | `-g` | Override resource group |
+| `--create-sp / --no-create-sp` | | Auto-create scoped Azure service principal if client credentials are missing (default: `--create-sp`) |
+
+Output file permissions are set to `600` because it contains secrets.
+
+Use the generated file with Helm:
+
+```bash
+helm upgrade --install datalayer-operator \
+    ./etc/helm/charts/datalayer-operator \
+    --namespace datalayer-runtimes \
+    --values azure-operator-values.json
+```
+
+---
+
 ## Example: Full Azure VM Workflow
 
 ```bash

@@ -728,6 +728,31 @@ The CSI driver requires an Azure service principal with `Contributor` access to 
 2. Otherwise, auto-create a new SP (`clouder-<name>-csi`) scoped to the resource group via `az ad sp create-for-rbac`.
 3. Skip the step with a warning if credentials cannot be obtained.
 
+**Generate operator Helm values JSON (recommended):**
+
+Use the Azure CLI helper to generate a Helm-ready JSON file containing all required Azure fields for:
+
+- `operator.cloudCredentials.azure.tenantId`
+- `operator.cloudCredentials.azure.clientId`
+- `operator.cloudCredentials.azure.clientSecret`
+- `operator.cloudCredentials.azure.subscriptionId`
+- `operator.cloudCredentials.azure.resourceGroup`
+
+```bash
+clouder azure helm-values --cluster my-cluster -o azure-operator-values.json
+```
+
+If `--output` is omitted, the file is created at `~/.clouder/<cluster>/azure-operator-values.json`, which is the default path consumed by `plane/datalayer_plane/sbin/up.sh` for `datalayer_operator`.
+
+Then pass it to Helm:
+
+```bash
+helm upgrade --install datalayer-operator \
+  ./etc/helm/charts/datalayer-operator \
+  --namespace datalayer-runtimes \
+  --values azure-operator-values.json
+```
+
 **Manual installation** (if Step 6 was skipped):
 
 ```bash

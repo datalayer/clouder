@@ -1,5 +1,7 @@
 """Clouder CLI - Azure cloud commands with interactive prompts."""
 
+import json
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -15,6 +17,22 @@ from ..cloud.azure.config import (
 )
 
 azure_app = typer.Typer(no_args_is_help=True)
+
+
+def _load_cluster_metadata(cluster_name: str) -> dict:
+    """Load kubeadm cluster metadata from ~/.clouder/clusters/<name>.json."""
+    from ..util.utils import CLOUDER_CONFIG_FOLDER
+
+    metadata_path = CLOUDER_CONFIG_FOLDER / "clusters" / f"{cluster_name}.json"
+    if not metadata_path.exists():
+        raise typer.BadParameter(
+            f"Cluster metadata not found: {metadata_path}. "
+            "Run `clouder kubeadm vm-create`/`setup` first or pass --resource-group explicitly."
+        )
+    try:
+        return json.loads(metadata_path.read_text())
+    except Exception as exc:
+        raise typer.BadParameter(f"Could not read cluster metadata from {metadata_path}: {exc}") from exc
 
 
 def _ensure_azure_configured() -> str:
@@ -471,3 +489,178 @@ def azure_resource_groups():
         table.add_row(rg["name"], rg["location"], rg["provisioning_state"] or "", tags_str)
     print(table)
     print(f"\n[dim]Total: {len(rgs)} resource groups[/dim]")
+
+
+@azure_app.command("helm-values")
+def azure_helm_values(
+    cluster: Optional[str] = typer.Option(
+        None,
+        "--cluster",
+        help="Kubeadm cluster name to read subscription/resource-group defaults from ~/.clouder/clusters/<name>.json.",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output JSON file path. Defaults to ~/.clouder/<cluster>/azure-operator-values.json when cluster is known. Use '-' to print JSON to stdout.",
+    ),
+    tenant_id: Optional[str] = typer.Option(None, "--tenant-id", help="Override Azure tenant ID."),
+    client_id: Optional[str] = typer.Option(None, "--client-id", help="Override Azure client ID."),
+    client_secret: Optional[str] = typer.Option(None, "--client-secret", help="Override Azure client secret."),
+    subscription_id: Optional[str] = typer.Option(
+        None,
+        "--subscription-id",
+        help="Override Azure subscription ID.",
+    ),
+    resource_group: Optional[str] = typer.Option(
+        None,
+        "--resource-group",
+        "-g",
+        help="Override Azure resource group.",
+    ),
+    create_sp: bool = typer.Option(
+        True,
+        "--create-sp/--no-create-sp",
+        help="Create a scoped service principal if client credentials are missing.",
+    ),
+):
+    """Generate Helm-ready Azure cloud credentials JSON for datalayer-operator.
+
+    Output schema:
+    {
+      "operator": {
+        "cloudCredentials": {
+          "azure": {
+            "tenantId": "...",
+            "clientId": "...",
+            "clientSecret": "...",
+            "subscriptionId": "...",
+            "resourceGroup": "..."
+          }
+        }
+      }
+    }
+    """
+    config = load_azure_config()
+    cluster_meta: dict = {}
+    cluster_name = cluster
+
+    if not cluster_name:
+        # Try to infer cluster name from the current kube context.
+        import subprocess
+
+        result = subprocess.run(
+            ["kubectl", "config", "current-context"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            inferred_cluster = result.stdout.strip()
+            try:
+                _load_cluster_metadata(inferred_cluster)
+                cluster_name = inferred_cluster
+            except typer.BadParameter:
+                # Keep cluster_name unset if context does not map to clouder kubeadm metadata.
+                pass
+
+    if cluster_name:
+        cluster_meta = _load_cluster_metadata(cluster_name)
+        if cluster_meta.get("cloud") and cluster_meta.get("cloud") != "azure":
+            raise typer.BadParameter(
+                f"Cluster '{cluster_name}' is configured for cloud={cluster_meta.get('cloud')}, expected azure."
+            )
+
+    resolved_subscription_id = (
+        subscription_id
+        or cluster_meta.get("subscription_id")
+        or config.get("subscription_id")
+        or get_azure_subscription_id()
+    )
+    resolved_resource_group = resource_group or cluster_meta.get("resource_group")
+    resolved_tenant_id = tenant_id or config.get("tenant_id")
+    resolved_client_id = client_id or config.get("client_id")
+    resolved_client_secret = client_secret or config.get("client_secret")
+
+    if not resolved_tenant_id:
+        # Fallback to current Azure CLI account tenant id.
+        import subprocess
+
+        result = subprocess.run(
+            ["az", "account", "show", "--query", "tenantId", "-o", "tsv"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            resolved_tenant_id = result.stdout.strip()
+
+    if create_sp and (not resolved_client_id or not resolved_client_secret):
+        if not resolved_subscription_id or not resolved_resource_group:
+            raise typer.BadParameter(
+                "Cannot create service principal without subscription/resource group. "
+                "Pass --cluster or set --subscription-id and --resource-group."
+            )
+        from .kubeadm._helpers import _get_or_create_azure_sp
+
+        sp_tenant, sp_client_id, sp_client_secret = _get_or_create_azure_sp(
+            resolved_subscription_id,
+            resolved_resource_group,
+            cluster_name or "clouder-operator",
+        )
+        resolved_tenant_id = resolved_tenant_id or sp_tenant
+        resolved_client_id = resolved_client_id or sp_client_id
+        resolved_client_secret = resolved_client_secret or sp_client_secret
+
+    missing = []
+    if not resolved_tenant_id:
+        missing.append("tenant_id")
+    if not resolved_client_id:
+        missing.append("client_id")
+    if not resolved_client_secret:
+        missing.append("client_secret")
+    if not resolved_subscription_id:
+        missing.append("subscription_id")
+    if not resolved_resource_group:
+        missing.append("resource_group")
+    if missing:
+        raise typer.BadParameter(
+            "Missing Azure values: " + ", ".join(missing) + ". "
+            "Use --cluster, --resource-group, --subscription-id, or run `clouder azure configure`."
+        )
+
+    values = {
+        "operator": {
+            "cloudCredentials": {
+                "azure": {
+                    "tenantId": resolved_tenant_id,
+                    "clientId": resolved_client_id,
+                    "clientSecret": resolved_client_secret,
+                    "subscriptionId": resolved_subscription_id,
+                    "resourceGroup": resolved_resource_group,
+                }
+            }
+        }
+    }
+
+    payload = json.dumps(values, indent=2)
+    if output == "-":
+        typer.echo(payload)
+        return
+
+    if output:
+        out_path = Path(output).expanduser()
+    else:
+        if cluster_name:
+            out_path = Path.home() / ".clouder" / cluster_name / "azure-operator-values.json"
+        else:
+            out_path = Path("azure-operator-values.json")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(payload + "\n")
+    out_path.chmod(0o600)
+    print(Panel(
+        "[green]Helm values JSON created.[/green]\n\n"
+        f"  File: {out_path}\n"
+        "  Mode: 600\n"
+        "  Path for helm: --values <file>.json",
+        title="Azure Helm Values",
+    ))

@@ -90,6 +90,68 @@ Kubernetes Secret referenced by the Operator Deployment.
   `operator.cloudCredentials.enabled=true`, set `operator.cloudCredentials.create=false`,
   and point `operator.cloudCredentials.secretName` to your existing Secret.
 
+### Recommended Azure Flow (Clouder Kubeadm)
+
+For clusters created with `clouder kubeadm`, the recommended flow is to generate
+a cluster-scoped Helm values JSON and let Plane use it automatically.
+
+1. Ensure Azure is configured in Clouder.
+
+```bash
+clouder azure configure
+```
+
+2. Generate operator cloud credentials JSON for your cluster.
+
+```bash
+clouder azure helm-values --cluster r1
+```
+
+By default this creates:
+
+```text
+~/.clouder/r1/azure-operator-values.json
+```
+
+3. Deploy the operator.
+
+```bash
+plane up datalayer-operator
+```
+
+`plane/datalayer_plane/sbin/up.sh` now checks the current kube context and, when
+present, automatically applies:
+
+```text
+~/.clouder/<current-context>/azure-operator-values.json
+```
+
+4. Optional: override the file path explicitly.
+
+```bash
+export DATALAYER_OPERATOR_AZURE_VALUES_FILE=/path/to/azure-operator-values.json
+plane up datalayer-operator
+```
+
+5. Optional: deploy with Helm directly.
+
+```bash
+helm upgrade \
+  --install datalayer-operator \
+  oci://${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts/operator \
+  --namespace datalayer-runtimes \
+  --create-namespace \
+  --values ~/.clouder/r1/azure-operator-values.json
+```
+
+The generated JSON includes:
+
+- `operator.cloudCredentials.azure.tenantId`
+- `operator.cloudCredentials.azure.clientId`
+- `operator.cloudCredentials.azure.clientSecret`
+- `operator.cloudCredentials.azure.subscriptionId`
+- `operator.cloudCredentials.azure.resourceGroup`
+
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
