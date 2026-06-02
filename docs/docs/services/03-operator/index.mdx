@@ -43,9 +43,17 @@ helm upgrade \
   --set operator.image="${DATALAYER_DOCKER_REGISTRY}/operator:0.1.1" \
   --set operator.certificateIssuer="letsencrypt" \
   --set operator.crds="true" \
-  --set operator.env.AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
-  --set operator.env.AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
-  --set operator.env.AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}" \
+  --set operator.cloudCredentials.enabled="true" \
+  --set operator.cloudCredentials.create="true" \
+  --set operator.cloudCredentials.secretName="${RELEASE}-cloud-credentials" \
+  --set operator.cloudCredentials.aws.accessKeyId="${AWS_ACCESS_KEY_ID}" \
+  --set operator.cloudCredentials.aws.secretAccessKey="${AWS_SECRET_ACCESS_KEY}" \
+  --set operator.cloudCredentials.aws.defaultRegion="${AWS_DEFAULT_REGION}" \
+  --set operator.cloudCredentials.azure.tenantId="${AZURE_TENANT_ID}" \
+  --set operator.cloudCredentials.azure.clientId="${AZURE_CLIENT_ID}" \
+  --set operator.cloudCredentials.azure.clientSecret="${AZURE_CLIENT_SECRET}" \
+  --set operator.cloudCredentials.azure.subscriptionId="${AZURE_SUBSCRIPTION_ID}" \
+  --set operator.cloudCredentials.azure.resourceGroup="${AZURE_RESOURCE_GROUP}" \
   --set operator.env.DATALAYER_DOCKER_REGISTRY="${DATALAYER_DOCKER_REGISTRY}" \
   --set operator.env.DATALAYER_RUN_HOST="${DATALAYER_RUN_HOST}" \
   --set operator.env.DATALAYER_OPERATOR_API_KEY="${DATALAYER_OPERATOR_API_KEY}" \
@@ -68,6 +76,19 @@ export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
 ```
   </TabItem>
 </Tabs>
+
+## Cloud Credentials (AWS/Azure)
+
+For Operator scaling/executor workflows, credentials are consumed through a
+Kubernetes Secret referenced by the Operator Deployment.
+
+- `plane up datalayer-operator` configures Helm values to create and mount
+  `${RELEASE}-cloud-credentials`.
+- `plane down datalayer-operator` removes the release and the generated
+  `${RELEASE}-cloud-credentials` Secret.
+- If you manage credentials outside Plane, keep
+  `operator.cloudCredentials.enabled=true`, set `operator.cloudCredentials.create=false`,
+  and point `operator.cloudCredentials.secretName` to your existing Secret.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>

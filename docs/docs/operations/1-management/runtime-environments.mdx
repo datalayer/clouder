@@ -4,27 +4,27 @@ sidebar_position: 2
 
 import ModalImage from "react-modal-image";
 
-# Jupyter Environments
+# Runtime Environments
 
-## Jupyter Environments Specification
+## Runtime Environments Specification
 
-Jupyter Environments define:
+Runtime Environments define:
 
 - The available libraries which are available in a Docker Image. The Docker Image can be compared to a [Conda Environment](#conda2docker).
-- The mounted [Jupyter Contents](./jupyter-contents).
+- The mounted [Runtime Contents](./runtime-contents).
 - Some Environment Variables.
 - The default number of CPU/GPU and memory resources.
 - A template for the Runtime given-name.
 - Snippets.
 - Links to examples.
 
-The complete specification [is available here](https://github.com/datalayer/helm-charts/blob/main/charts/datalayer-operator/templates/jupyter-environment.yaml) and the following sections show simple examples.
+The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-environment.yaml) and the following sections show simple examples.
 
 ## Manage the Environments
 
 ```bash
-kubectl get jupyter-environments -A
-kubectl get jupyter-environments -o yaml -A
+kubectl get runtime-environments.datalayer.io -A
+kubectl get runtime-environments.datalayer.io -o yaml -A
 ```
 
 ## Runtime Launcher
@@ -39,11 +39,11 @@ The information provided in the specification is used when by the Runtime Launch
 
 ## Platform and User Environments
 
-The Platform Administrator is responsible to provision the Platform Environments.
+The Platform Administrator is responsible for provisioning the Platform Environments.
 
 :::note
 
-The Users will be able to create their own Jupyter Environments.
+Users can create their own Runtime Environments.
 
 :::
 
@@ -55,18 +55,18 @@ As the scanning is done at the Docker level, it covers all Linux libraries as th
 
 ## Conda2Docker
 
-The `Jupyter Environments` can be seen as en extension in the Cloud-era of the well-known [Conda Environments](https://docs.conda.io/projects/conda).
+`Runtime Environments` can be seen as an extension, in the cloud era, of well-known [Conda Environments](https://docs.conda.io/projects/conda).
 
 Actually, Conda Environments are more similar to a Docker Image and we are working on `Conda2Docker`, a solution to automatically create a Docker Image from a Conda Environment.
 
-With Jupyter Environments, Datalayer allows to specify on top of Conda Environments some Contents, some Environment Variables, Snippets, Examples, the CPU/GPU and memory resources, the name of the Runtime as other more cloud-native features.
+With Runtime Environments, Datalayer allows you to specify, on top of Conda Environments, Contents, Environment Variables, Snippets, Examples, CPU/GPU and memory resources, the Runtime naming template, and other cloud-native features.
 
 ## Simple Environment Example
 
 ```bash
 cat <<EOF | kubectl apply -f -
 apiVersion: datalayer.io/v1
-kind: JupyterEnvironment
+kind: RuntimeEnvironment
 metadata:
   name: python-simple-env
   namespace: datalayer-runtimes
@@ -98,7 +98,7 @@ EOF
 ```bash
 cat <<EOF | kubectl apply -f -
 apiVersion: datalayer.io/v1
-kind: JupyterEnvironment
+kind: RuntimeEnvironment
 metadata:
   name: xarray-env
   namespace: datalayer-runtimes

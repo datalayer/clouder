@@ -3,6 +3,13 @@
 The deployments relies on environment variables read from your shell. 
 This table details those environment variables by alphabetical order.
 
+For autoscaling/cluster actuation, the Operator consumes cloud credentials from
+the Operator release values. With Plane deployment (`plane up datalayer-operator`),
+the credentials are now injected through an Operator Helm-managed Secret
+(`datalayer-operator-cloud-credentials`) and consumed by the Operator Pod.
+When you run `plane down datalayer-operator`, Helm removes that Secret with the
+release resources.
+
 <table>
 <tr><th>Variable</th><th>Description</th></tr>
 
@@ -25,6 +32,36 @@ This table details those environment variables by alphabetical order.
 <tr>
   <td>AWS_SECRET_ACCESS_KEY</td>
   <td>Set the secret key that gives access to the S3 bucket for the backups.</td>
+</tr>
+
+<tr>
+  <td>AZURE_TENANT_ID</td>
+  <td>Azure tenant identifier used by Operator cloud actuation and cloud APIs.</td>
+</tr>
+<tr>
+  <td>AZURE_CLIENT_ID</td>
+  <td>Azure application/service principal client identifier for Operator cloud actuation.</td>
+</tr>
+<tr>
+  <td>AZURE_CLIENT_SECRET</td>
+  <td>Azure application/service principal secret for Operator cloud actuation.</td>
+</tr>
+<tr>
+  <td>AZURE_SUBSCRIPTION_ID</td>
+  <td>Azure subscription identifier targeted by Operator scaling actions.</td>
+</tr>
+<tr>
+  <td>AZURE_RESOURCE_GROUP</td>
+  <td>Azure resource group name where scaling resources are provisioned/managed.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_CLOUD_PROVIDER</td>
+  <td>Cloud provider used by the Operator scaling executor (`aws` or `azure`).</td>
+</tr>
+<tr>
+  <td>DATALAYER_CLOUDER_URL</td>
+  <td>Base URL for Clouder API when Operator executes scaling through API mode.</td>
 </tr>
 
 <tr>

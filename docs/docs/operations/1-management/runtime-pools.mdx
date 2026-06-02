@@ -1,0 +1,65 @@
+---
+sidebar_position: 3
+---
+
+import ModalImage from "react-modal-image";
+
+# Runtime Pools
+
+## Runtime Pool Specification
+
+Runtime Pools maintain a pool of Runtimes ready to be assigned to users. The size is configurable per pool.
+
+When assigned to a user, Runtimes are injected with the [User Secrets](/architecture/injection/).
+
+Your cluster needs to be provisioned to support the `size` of the defined pools.
+
+The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-pool.yaml) and the following sections show simple examples.
+
+## Manage the Runtime Pools
+
+```bash
+kubectl get runtime-pools.datalayer.io -A
+kubectl get runtime-pools.datalayer.io -o yaml -A
+```
+
+## Relation with Runtime Environments
+
+If a Runtime Pool defines some `resources`, they override the defaults set in [Runtime Environments](./runtime-environments).
+
+## Runtime Pool Example
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: RuntimePool
+metadata:
+  name: python-simple-pool
+  namespace: datalayer-runtimes
+  labels:
+    project.datalayer.io/name: dev
+spec:
+  environment: python-simple-env
+  size: 3
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: role.datalayer.io/jupyter
+            operator: In
+            values:
+            - "true"
+          - key: node.datalayer.io/variant
+            operator: In
+            values:
+            - medium
+          - key: node.datalayer.io/xpu
+            operator: In
+            values:
+            - cpu
+  burningRate: 0.01
+  cull:
+    seconds: 999999
+EOF
+```

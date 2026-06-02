@@ -2,23 +2,23 @@
 sidebar_position: 1
 ---
 
-# Jupyter Contents
+# Runtime Contents
 
-## Jupyter Contents Specification
+## Runtime Contents Specification
 
-You can create on your content definitions ready to be used in [Jupyter Environments](./jupyter-environments).
+You can create content definitions ready to be used in [Runtime Environments](./runtime-environments).
 
 AWS S3 Buckets and Git Repositories contents are supported for now.
 
 The content specifications often rely on secrets the cluster manager will need to create.
 
-The complete specification [is available here](https://github.com/datalayer/helm-charts/blob/main/charts/datalayer-operator/templates/jupyter-content.yaml) and the following sections show simple examples.
+The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-content.yaml) and the following sections show simple examples.
 
 ## Manage the Contents
 
 ```bash
-kubectl get jupyter-contents -A
-kubectl get jupyter-contents -o yaml -A
+kubectl get runtime-contents.datalayer.io -A
+kubectl get runtime-contents.datalayer.io -o yaml -A
 ```
 
 ## AWS S3 Example
@@ -32,7 +32,7 @@ In this example, the authentication must be stored in the `s3-secret` secret pro
 ```bash
 cat <<EOF | kubectl apply -f -
 apiVersion: datalayer.io/v1
-kind: JupyterContent
+kind: RuntimeContent
 metadata:
   name: s3-satellite-sentinels-images-content
   namespace: datalayer-runtimes
@@ -46,8 +46,8 @@ EOF
 ```
 
 ```bash
-kubectl get jupyter-contents -A
-kubectl get jupyter-contents -o yaml -A
+kubectl get runtime-contents.datalayer.io -A
+kubectl get runtime-contents.datalayer.io -o yaml -A
 ```
 
 ## Git Repository Example
@@ -57,7 +57,7 @@ In this example, the Git repository must be public.
 ```bash
 cat <<EOF | kubectl apply -f -
 apiVersion: datalayer.io/v1
-kind: JupyterContent
+kind: RuntimeContent
 metadata:
   name: jakevdp-sklearn-tutorial-content
   namespace: datalayer-runtimes
@@ -80,7 +80,7 @@ ACCOUNT_ID=<YOUR_ACCOUNT_ID>
 # Create a new project (project id must be <=30 characters)
 # RAND=$RANDOM
 RAND=78027
-PROJECT_ID="jupyterpool-$RAND"
+PROJECT_ID="runtimepool-$RAND"
 # Create a GCloud Project
 gcloud projects create $PROJECT_ID --enable-cloud-apis # [--organization $ORGANIZATION_ID]
 gcloud config set project $PROJECT_ID
@@ -97,7 +97,7 @@ SERVICE_ACCOUNT="${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 gcloud iam service-accounts create $SERVICE_ACCOUNT_NAME --project $PROJECT_ID --display-name "Google Cloud Bucket Example"
 # Assign GCloud Roles to your service account.
 gcloud projects add-iam-policy-binding $PROJECT_ID --member "serviceAccount:$SERVICE_ACCOUNT" --role="roles/storage.admin"
-open https://console.cloud.google.com/iam-admin/serviceaccounts?project=jupyterpool-78027
+open https://console.cloud.google.com/iam-admin/serviceaccounts?project=runtimepool-78027
 # Teardonwn the project
 gcloud projects delete $PROJECT_ID
 ```
