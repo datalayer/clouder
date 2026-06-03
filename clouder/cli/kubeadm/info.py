@@ -74,6 +74,7 @@ def register(kubeadm_app: typer.Typer):
             f"  clouder kubeadm get-config {name}",
             f"  clouder kubeadm enable-ingress-traefik {name} ",
             f"  clouder kubeadm smoke-test {name} ",
+            "",
             "  plane k8s-label-nodes",
             "  plane k8s-create-namespaces",
             "  plane reg-creds-create",
@@ -82,7 +83,8 @@ def register(kubeadm_app: typer.Typer):
             "  plane create-cert-issuer",
             "",
             "Full services documentation:",
+            "",
             "  [link=https://clouder.sh/services]https://clouder.sh/services[/link]",
         ]
 
-        print(Panel("\n".join(plane_lines), title="[bold magenta]Next Steps — Plane[/bold magenta]"))
+        print(Panel("\n".join(plane_lines), title="[bold magenta]Next Steps[/bold magenta]"))

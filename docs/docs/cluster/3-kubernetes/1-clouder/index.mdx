@@ -15,7 +15,7 @@ This design document describes how Clouder orchestrates Kubeadm across Azure (an
 ┌─────────────────────────────────────────────────────────┐
 │                    Clouder CLI                          │
 │                                                         │
-│  clouder k8s create <cluster-name> --provider azure     │
+│  clouder kubernetes create <cluster-name> --provider azure     │
 └───────────────────────┬─────────────────────────────────┘
                         │
            ┌────────────▼────────────┐
@@ -438,10 +438,10 @@ See the [Kubeadm CLI reference](/cli/kubeadm) for details on manual installation
 
 ```bash
 # Interactive mode - prompts for all settings
-clouder k8s create my-cluster
+clouder kubernetes create my-cluster
 
 # Full specification
-clouder k8s create my-cluster \
+clouder kubernetes create my-cluster \
     --provider azure \
     --region eastus \
     --control-plane-size Standard_B4ms \
@@ -453,24 +453,24 @@ clouder k8s create my-cluster \
 ```
 
 :::note
-CRIU support is now built into `clouder kubeadm setup` by default. The `--enable-criu` flag above is for the future `clouder k8s create` managed interface.
+CRIU support is now built into `clouder kubeadm setup` by default. The `--enable-criu` flag above is for the future `clouder kubernetes create` managed interface.
 :::
 
 ### Get Kubeconfig
 
 ```bash
 # Download kubeconfig for the cluster
-clouder k8s kubeconfig my-cluster
+clouder kubernetes kubeconfig my-cluster
 
 # Set as current context
-clouder k8s use my-cluster
+clouder kubernetes use my-cluster
 ```
 
 ### Add Worker Nodes
 
 ```bash
 # Add a GPU worker node pool
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     gpu-workers \
     --flavor Standard_NC6s_v3 \
     --min 0 --desired 1 --max 5 \
@@ -481,13 +481,13 @@ clouder k8s create-nodepool my-cluster \
 
 ```bash
 # List clusters
-clouder k8s ls
+clouder kubernetes ls
 
 # Scale workers
-clouder k8s update-nodepool my-cluster workers --desired 5
+clouder kubernetes update-nodepool my-cluster workers --desired 5
 
 # Delete cluster (removes all VMs and resources)
-clouder k8s delete my-cluster
+clouder kubernetes delete my-cluster
 ```
 
 ## References

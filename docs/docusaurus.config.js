@@ -42,6 +42,12 @@ module.exports = {
         },
         {
           type: 'doc',
+          docId: 'cli/index',
+          position: 'left',
+          label: 'CLI',
+        },
+        {
+          type: 'doc',
           docId: 'cluster/index',
           position: 'left',
           label: 'Cluster',
@@ -84,15 +90,9 @@ module.exports = {
         },
         {
           type: 'doc',
-          docId: 'cli/index',
+          docId: 'support/index',
           position: 'left',
-          label: 'CLI',
-        },
-        {
-          type: 'doc',
-          docId: 'professional-services/index',
-          position: 'left',
-          label: 'Professional Services',
+          label: 'Support',
         },
         {
           type: 'doc',
