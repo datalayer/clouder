@@ -253,7 +253,7 @@ clouder kubeadm info my-cluster
 ### `clouder kubeadm scale`
 
 Scale the number of worker nodes in an existing Kubeadm cluster. Compares the desired worker count with the current count, then:
-- **Scale up**: creates new VMs, installs prerequisites, joins them to the cluster.
+- **Scale up**: creates new VMs, installs prerequisites, upgrades kubelet/kubeadm/kubectl on each new worker, then joins workers to the cluster.
 - **Scale down**: removes nodes one by one using a least-loaded-first workflow with explicit completion waits.
 
 **Scale-down workflow (per node):**

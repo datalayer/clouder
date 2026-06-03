@@ -12,7 +12,7 @@ from ...util.utils import CLOUDER_KUBEADM_FOLDER, kubeadm_kubeconfig_path, kubea
 def register(kubeadm_app: typer.Typer):
     """Register the list command on the given Typer app."""
 
-    @kubeadm_app.command("list")
+    @kubeadm_app.command("ls")
     def kubeadm_list():
         """List locally known kubeadm clusters from ~/.clouder/kubeadm/."""
         if not CLOUDER_KUBEADM_FOLDER.exists():

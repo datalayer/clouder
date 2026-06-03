@@ -4,15 +4,19 @@ import json
 import time
 
 import typer
+from kubernetes import client as k8s_client
+from kubernetes import config as k8s_config
+from kubernetes.client.exceptions import ApiException
 from rich import print
 from rich.panel import Panel
 from rich.prompt import Confirm
 
 from ..ctx import get_current_context
-from ...util.utils import SSH_FOLDER
+from ...util.utils import SSH_FOLDER, kubeadm_kubeconfig_path
 
 from ._helpers import (
     _SCRIPT_PREREQS,
+    _SCRIPT_UPGRADE_KUBELET,
     _SCRIPT_WORKER_FEATURE_GATE,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
@@ -52,7 +56,37 @@ def _resolve_node_labels(raw_labels: list[str] | None) -> list[str]:
     return labels
 
 
-def _wait_for_node_ready(master_ip: str, ssh_user: str, key_path: str, node_name: str, timeout_seconds: int = 300) -> bool:
+def _build_k8s_api(cluster_name: str) -> k8s_client.CoreV1Api | None:
+    """Build Kubernetes CoreV1 API client from cluster kubeconfig if available."""
+    kubeconfig_path = kubeadm_kubeconfig_path(cluster_name)
+    if not kubeconfig_path.exists():
+        return None
+    try:
+        k8s_config.load_kube_config(config_file=str(kubeconfig_path))
+        return k8s_client.CoreV1Api()
+    except Exception:
+        return None
+
+
+def _wait_for_node_ready_api(core_v1: k8s_client.CoreV1Api, node_name: str, timeout_seconds: int = 300) -> bool:
+    """Wait until a Kubernetes node is registered and Ready via the API."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            node = core_v1.read_node(node_name)
+            for condition in node.status.conditions or []:
+                if condition.type == "Ready" and condition.status == "True":
+                    return True
+        except ApiException as exc:
+            if exc.status != 404:
+                pass
+        except Exception:
+            pass
+        time.sleep(5)
+    return False
+
+
+def _wait_for_node_ready_ssh(master_ip: str, ssh_user: str, key_path: str, node_name: str, timeout_seconds: int = 300) -> bool:
     """Wait until the Kubernetes node is registered and Ready."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -73,7 +107,18 @@ def _wait_for_node_ready(master_ip: str, ssh_user: str, key_path: str, node_name
     return False
 
 
-def _apply_node_labels(master_ip: str, ssh_user: str, key_path: str, node_name: str, labels: list[str]) -> None:
+def _apply_node_labels_api(core_v1: k8s_client.CoreV1Api, node_name: str, labels: list[str]) -> None:
+    """Apply labels to a Kubernetes node using the Kubernetes API."""
+    patch_labels: dict[str, str] = {}
+    for label in labels:
+        key, value = label.split("=", 1)
+        patch_labels[key] = value
+    if not patch_labels:
+        return
+    core_v1.patch_node(node_name, {"metadata": {"labels": patch_labels}})
+
+
+def _apply_node_labels_ssh(master_ip: str, ssh_user: str, key_path: str, node_name: str, labels: list[str]) -> None:
     """Apply labels to a Kubernetes node using kubectl on the master."""
     for label in labels:
         _ssh_cmd(
@@ -236,7 +281,18 @@ def _scale_up(
     key_path, user, metadata, node_labels,
 ):
     """Add new worker nodes to the cluster."""
-    from ...cloud.azure.api import create_azure_vm
+    from ...cloud.azure.api import create_azure_vm, run_azure_vm_shell_script
+
+    core_v1 = _build_k8s_api(cluster_name)
+    if core_v1 is None:
+        typer.echo(
+            (
+                "Kubeconfig is required for API-based kubeadm scaling validation. "
+                "Run 'clouder kubeadm get-config <cluster>' first."
+            ),
+            err=True,
+        )
+        raise typer.Exit(1)
 
     current_count = len(current_workers)
     existing_numbers = []
@@ -278,57 +334,112 @@ def _scale_up(
         print(f"  [green]{vm_name} created - IP: {result.get('public_ip', 'N/A')}[/green]")
         new_workers.append({"name": vm_name, "ip": result.get("public_ip"), "resource_group": resource_group})
 
-    # --- Step 2: Install prerequisites on new workers ---
-    print(f"\n[bold]Step 2/4: Installing prerequisites on new workers...[/bold]")
+    # --- Step 2: Install prerequisites on new workers via Azure RunCommand ---
+    print(f"\n[bold]Step 2/4: Installing prerequisites on new workers (cloud API)...[/bold]")
     for worker in new_workers:
         print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
-        rc = _ssh_cmd_stream(worker["ip"], user, key_path, _SCRIPT_PREREQS)
-        if rc != 0:
+        result = run_azure_vm_shell_script(
+            resource_group=resource_group,
+            vm_name=worker["name"],
+            script=_SCRIPT_PREREQS,
+            subscription_id=context_id,
+        )
+        stderr = (result.get("stderr") or "").strip()
+        if stderr:
             print(f"  [red]Failed on {worker['name']}[/red]")
+            if stderr:
+                print(f"  [dim]{stderr[-400:]}[/dim]")
             raise typer.Exit(1)
         print(f"  [green]{worker['name']} done.[/green]")
 
-    # --- Step 3: Get fresh join command from master ---
-    print(f"\n[bold]Step 3/4: Getting join command from master...[/bold]")
-    result = _ssh_cmd(master["ip"], user, key_path,
-                      "sudo kubeadm token create --print-join-command", check=False)
-    if result.returncode != 0:
-        typer.echo(result.stderr)
-        print("[red]Failed to create join token on master.[/red]")
-        raise typer.Exit(1)
+    # --- Step 3: Upgrade kubelet/kubeadm/kubectl on new workers before join ---
+    print(f"\n[bold]Step 3/5: Upgrading kubelet/kubeadm/kubectl on new workers (cloud API)...[/bold]")
+    for worker in new_workers:
+        print(f"  [cyan]{worker['name']}[/cyan] upgrading kubelet stack...")
+        upgrade_result = run_azure_vm_shell_script(
+            resource_group=resource_group,
+            vm_name=worker["name"],
+            script=_SCRIPT_UPGRADE_KUBELET,
+            subscription_id=context_id,
+        )
+        upgrade_stderr = (upgrade_result.get("stderr") or "").strip()
+        if upgrade_stderr:
+            print(f"  [red]Kubelet upgrade failed on {worker['name']}[/red]")
+            print(f"  [dim]{upgrade_stderr[-400:]}[/dim]")
+            raise typer.Exit(1)
+        print(f"  [green]{worker['name']} kubelet stack upgraded.[/green]")
 
-    join_command = result.stdout.strip()
+    # --- Step 4: Get fresh join command from master via Azure RunCommand ---
+    print(f"\n[bold]Step 4/5: Getting join command from master (cloud API)...[/bold]")
+    join_result = run_azure_vm_shell_script(
+        resource_group=resource_group,
+        vm_name=master["name"],
+        script="sudo kubeadm token create --print-join-command",
+        subscription_id=context_id,
+    )
+    join_stdout = (join_result.get("stdout") or "").strip()
+    join_stderr = (join_result.get("stderr") or "").strip()
+    join_command = ""
+    for line in join_stdout.splitlines():
+        candidate = line.strip()
+        if "kubeadm join" in candidate:
+            join_command = candidate
+            break
+
+    if not join_command and "kubeadm join" in join_stdout:
+        join_command = join_stdout
+
     if not join_command or "kubeadm join" not in join_command:
         print("[red]Could not get a valid join command from master.[/red]")
-        typer.echo(f"Output: {result.stdout}")
+        if join_stderr:
+            typer.echo(f"stderr: {join_stderr}")
+        typer.echo(f"stdout: {join_stdout}")
         raise typer.Exit(1)
     print(f"  [dim]Join command: {join_command}[/dim]")
 
-    # --- Step 4: Join new workers + enable feature gates + label when Ready ---
-    print(f"\n[bold]Step 4/4: Joining new workers, enabling feature gates, and applying labels...[/bold]")
+    # --- Step 5: Join new workers + enable feature gates + label when Ready ---
+    print(
+        "\n[bold]Step 5/5: Joining new workers, enabling feature gates, and applying labels (cloud API + k8s API)...[/bold]"
+    )
     for worker in new_workers:
         print(f"  [cyan]{worker['name']}[/cyan] joining...")
-        rc = _ssh_cmd_stream(worker["ip"], user, key_path, f"sudo {join_command}")
-        if rc != 0:
+        join_worker_result = run_azure_vm_shell_script(
+            resource_group=resource_group,
+            vm_name=worker["name"],
+            script=f"sudo {join_command}",
+            subscription_id=context_id,
+        )
+        join_worker_stderr = (join_worker_result.get("stderr") or "").strip()
+        if join_worker_stderr:
             print(f"  [red]Join failed on {worker['name']}[/red]")
+            print(f"  [dim]{join_worker_stderr[-400:]}[/dim]")
             raise typer.Exit(1)
         print(f"  [green]{worker['name']} joined.[/green]")
 
         print(f"  [cyan]{worker['name']}[/cyan] enabling feature gates...")
-        rc = _ssh_cmd_stream(worker["ip"], user, key_path, _SCRIPT_WORKER_FEATURE_GATE)
-        if rc != 0:
+        feature_result = run_azure_vm_shell_script(
+            resource_group=resource_group,
+            vm_name=worker["name"],
+            script=_SCRIPT_WORKER_FEATURE_GATE,
+            subscription_id=context_id,
+        )
+        feature_stderr = (feature_result.get("stderr") or "").strip()
+        if feature_stderr:
             print(f"  [yellow]Feature gate setup failed on {worker['name']} (non-fatal)[/yellow]")
+            print(f"  [dim]{feature_stderr[-300:]}[/dim]")
         else:
             print(f"  [green]{worker['name']} feature gates enabled.[/green]")
 
-        print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready...")
-        if not _wait_for_node_ready(master["ip"], user, key_path, worker["name"]):
+        print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready via Kubernetes API...")
+        ready = _wait_for_node_ready_api(core_v1, worker["name"])
+
+        if not ready:
             print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
             raise typer.Exit(1)
         print(f"  [green]{worker['name']} is Ready.[/green]")
 
         print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
-        _apply_node_labels(master["ip"], user, key_path, worker["name"], node_labels)
+        _apply_node_labels_api(core_v1, worker["name"], node_labels)
         print(f"  [green]{worker['name']} labels applied.[/green]")
 
     # --- Update metadata ---

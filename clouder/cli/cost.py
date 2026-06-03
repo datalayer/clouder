@@ -26,7 +26,7 @@ def _fallback_node_types(cloud: str) -> list[NodeType]:
     ]
 
 
-@cost_app.command("list")
+@cost_app.command("ls")
 def list_costs(
     cloud: str = typer.Option("azure", help="Cloud provider (azure|aws)."),
     region: str = typer.Option("westeurope", help="Cloud region."),

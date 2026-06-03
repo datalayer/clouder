@@ -369,6 +369,46 @@ def create_azure_vm(
     }
 
 
+def run_azure_vm_shell_script(
+    resource_group: str,
+    vm_name: str,
+    script: str,
+    *,
+    subscription_id: Optional[str] = None,
+) -> dict:
+    """Execute a shell script on an Azure VM via RunCommand API.
+
+    Returns a dict with ``stdout``, ``stderr`` and ``raw`` fields.
+    """
+
+    compute_client = _get_compute_client(subscription_id)
+    poller = compute_client.virtual_machines.begin_run_command(
+        resource_group,
+        vm_name,
+        {
+            "command_id": "RunShellScript",
+            "script": [script],
+        },
+    )
+    result = _wait_poller(poller, f"Running command on VM {vm_name}")
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    for item in getattr(result, "value", []) or []:
+        code = str(getattr(item, "code", "") or "")
+        message = str(getattr(item, "message", "") or "")
+        if "/stderr" in code.lower():
+            stderr_chunks.append(message)
+        else:
+            stdout_chunks.append(message)
+
+    return {
+        "stdout": "\n".join(chunk for chunk in stdout_chunks if chunk).strip(),
+        "stderr": "\n".join(chunk for chunk in stderr_chunks if chunk).strip(),
+        "raw": result,
+    }
+
+
 def delete_azure_vm(resource_group: str, vm_name: str,
                      subscription_id: Optional[str] = None,
                      cleanup_resources: bool = True):

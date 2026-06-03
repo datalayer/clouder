@@ -478,6 +478,36 @@ echo 'kernel.io_uring_disabled = 2' | sudo tee /etc/sysctl.d/99-disable-io-uring
 echo "io_uring disabled for unprivileged processes."
 """
 
+_SCRIPT_UPGRADE_KUBELET = f"""
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+echo "=== Upgrading kubelet / kubeadm / kubectl to v{K8S_VERSION}.x ==="
+
+# --- Update the Kubernetes apt repo to the target version ---
+sudo mkdir -p /etc/apt/keyrings
+sudo rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v{K8S_VERSION}/deb/Release.key | \
+    sudo gpg --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg 2>/dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{K8S_VERSION}/deb/ /' | \
+    sudo tee /etc/apt/sources.list.d/kubernetes.list > /dev/null
+sudo apt-get update -qq
+
+# --- Unhold, upgrade, re-hold ---
+sudo apt-mark unhold kubelet kubeadm kubectl 2>/dev/null || true
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kubelet kubeadm kubectl > /dev/null
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# --- Restart kubelet ---
+sudo systemctl daemon-reload
+sudo systemctl restart kubelet
+
+echo "kubelet version: $(kubelet --version 2>&1)"
+echo "kubeadm version: $(kubeadm version -o short 2>&1)"
+echo "kubectl version: $(kubectl version --client -o yaml 2>&1 | head -3)"
+echo "=== Upgrade complete ==="
+"""
+
 # ---------------------------------------------------------------------------
 # Azure Disk CSI driver helpers
 # ---------------------------------------------------------------------------
