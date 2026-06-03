@@ -19,7 +19,7 @@ cat <<'EOM'
 Setup complete.
 
 Export kubeconfig:
-  export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-${cluster_name}
+  export KUBECONFIG=~/.clouder/kubeadm//kubeconfig
 
 Validate:
   kubectl get nodes -o wide

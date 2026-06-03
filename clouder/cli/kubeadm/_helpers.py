@@ -8,7 +8,7 @@ from rich import print
 from rich.prompt import Prompt
 
 from ..ctx import get_current_context, get_default_ssh_key
-from ...util.utils import CLOUDER_CLUSTERS_FOLDER, CLOUDER_KUBECONFIGS_FOLDER, SSH_FOLDER
+from ...util.utils import kubeadm_metadata_path, SSH_FOLDER
 
 # Kubernetes version to install
 K8S_VERSION = "1.32"
@@ -158,22 +158,22 @@ def _resolve_ssh_key_for_cluster(cluster_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cluster metadata persistence (~/.clouder/clusters/<name>.json)
+# Cluster metadata persistence (~/.clouder/kubeadm/<name>/kubeadm.json)
 # ---------------------------------------------------------------------------
 
 def _cluster_metadata_path(cluster_name: str):
     """Return the path to the cluster metadata JSON file."""
-    return CLOUDER_CLUSTERS_FOLDER / f"{cluster_name}.json"
+    return kubeadm_metadata_path(cluster_name)
 
 
 def _save_cluster_metadata(cluster_name: str, metadata: dict):
     """Save cluster metadata to disk."""
     from datetime import datetime, timezone
-    CLOUDER_CLUSTERS_FOLDER.mkdir(parents=True, exist_ok=True)
+    path = _cluster_metadata_path(cluster_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
     if "created_at" not in metadata:
         metadata["created_at"] = metadata["updated_at"]
-    path = _cluster_metadata_path(cluster_name)
     path.write_text(json.dumps(metadata, indent=2))
     path.chmod(0o600)
     print(f"[dim]Cluster metadata saved to {path}[/dim]")
@@ -503,12 +503,30 @@ def _get_or_create_azure_sp(subscription_id: str, resource_group: str, cluster_n
     if not tenant_id:
         return None, None, None
 
+    sp_name = f"clouder-{cluster_name}-csi"
+
+    # If an SP with the expected name already exists, do not recreate it.
+    existing_sp = subprocess.run(
+        [
+            "az", "ad", "sp", "list",
+            "--display-name", sp_name,
+            "--query", "[0].appId",
+            "-o", "tsv",
+        ],
+        capture_output=True, text=True,
+    )
+    if existing_sp.returncode == 0 and existing_sp.stdout.strip():
+        print(
+            f"[dim]Reusing existing Azure service principal '{sp_name}' (scoped to {resource_group}); no recreation performed.[/dim]"
+        )
+        return tenant_id, existing_sp.stdout.strip(), None
+
     # Create a new service principal scoped to the cluster resource group.
-    print(f"  [dim]Creating Azure service principal for disk provisioning (scoped to {resource_group})...[/dim]")
+    print(f"[dim]Creating Azure service principal for disk provisioning (scoped to {resource_group})...[/dim]")
     result = subprocess.run(
         [
             "az", "ad", "sp", "create-for-rbac",
-            "--name", f"clouder-{cluster_name}-csi",
+            "--name", sp_name,
             "--role", "Contributor",
             "--scopes", f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}",
             "-o", "json",
@@ -516,7 +534,7 @@ def _get_or_create_azure_sp(subscription_id: str, resource_group: str, cluster_n
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print(f"  [red]Failed to create service principal: {result.stderr.strip()}[/red]")
+        print(f"[red]Failed to create service principal: {result.stderr.strip()}[/red]")
         return tenant_id, None, None
 
     sp_data = json.loads(result.stdout)

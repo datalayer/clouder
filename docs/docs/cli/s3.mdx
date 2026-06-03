@@ -1,11 +1,13 @@
 ---
 title: clouder s3
-sidebar_position: 7
+sidebar_position: 13
 ---
 
 # clouder s3
 
 Manage S3-compatible storage buckets. Used for checkpoint storage, data persistence, and cluster state.
+
+Currently supported for OVH S3 endpoints. Azure Blob is not handled by this command group.
 
 ## Commands
 
@@ -46,7 +48,6 @@ S3 buckets are used as checkpoint storage for CRIU snapshots. See the [CRIU docu
 ```bash
 # Create a bucket for checkpoints
 clouder s3 create my-cluster-checkpoints
-
-# Use it for CRIU storage
-clouder criu configure --storage s3://my-cluster-checkpoints/checkpoints/
 ```
+
+`clouder criu` provides checkpoint lifecycle commands (`checkpoint`, `restore`, `ls`, `inspect`, `delete`) and visibility/configuration helpers (`status`, `checkpoints`, `storage`, `storage-set`).

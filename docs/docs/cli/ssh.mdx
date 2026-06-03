@@ -1,6 +1,6 @@
 ---
 title: clouder ssh
-sidebar_position: 7
+sidebar_position: 15
 ---
 
 # clouder ssh
@@ -23,8 +23,8 @@ clouder ssh connect <vm-name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--user` | `-u` | SSH username (default: `azureuser` for Azure, `ubuntu` for OVH) |
-| `--key` | `-i` | SSH key name from `~/.ssh/` (overrides auto-detection) |
+| `--user` | `-u` | SSH username (default: `azureuser` for Azure, `ubuntu` for OVH and AWS) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
 | `--port` | `-p` | SSH port (default: `22`) |
 
 **How it works:**
@@ -32,6 +32,7 @@ clouder ssh connect <vm-name> [OPTIONS]
 1. Looks up the VM by name in the current cloud context.
 2. Resolves the public IP address:
    - **Azure**: Traverses VM → NIC → Public IP chain.
+   - **AWS**: Uses the EC2 instance public IP.
    - **OVH**: Reads from the VM's `ipAddresses` field.
 3. Auto-detects the SSH key:
    - First checks for `~/.ssh/<vm-name>-key` (generated during `clouder vm create`).

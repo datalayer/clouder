@@ -71,7 +71,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-operator.sh
 ```
   </TabItem>
@@ -110,7 +110,7 @@ clouder azure helm-values --cluster r1
 By default this creates:
 
 ```text
-~/.clouder/r1/azure-operator-values.json
+~/.clouder/kubeadm/r1/datalayer-operator-azure.json
 ```
 
 3. Deploy the operator.
@@ -123,13 +123,13 @@ plane up datalayer-operator
 present, automatically applies:
 
 ```text
-~/.clouder/<current-context>/azure-operator-values.json
+~/.clouder/kubeadm/<current-context>/datalayer-operator-azure.json
 ```
 
 4. Optional: override the file path explicitly.
 
 ```bash
-export DATALAYER_OPERATOR_AZURE_VALUES_FILE=/path/to/azure-operator-values.json
+export DATALAYER_OPERATOR_AZURE_VALUES_FILE=/path/to/datalayer-operator-azure.json
 plane up datalayer-operator
 ```
 
@@ -141,7 +141,7 @@ helm upgrade \
   oci://${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts/operator \
   --namespace datalayer-runtimes \
   --create-namespace \
-  --values ~/.clouder/r1/azure-operator-values.json
+  --values ~/.clouder/kubeadm/r1/datalayer-operator-azure.json
 ```
 
 The generated JSON includes:

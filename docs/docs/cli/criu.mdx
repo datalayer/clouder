@@ -1,0 +1,147 @@
+---
+title: clouder criu
+sidebar_position: 6
+---
+
+# clouder criu
+
+CRIU checkpoint operations, visibility, and storage configuration helpers.
+
+Runtime checkpoint lifecycle commands (`checkpoint`, `restore`, `ls`, `inspect`, `delete`) call the runtimes API.
+
+Set these environment variables (or pass `--run-url` / `--api-key`):
+
+```bash
+export DATALAYER_RUN_URL=https://prod1.datalayer.run
+export DATALAYER_API_KEY=<your-api-key>
+```
+
+Tab completion notes:
+
+- `--cluster` suggestions come from `~/.clouder/kubeadm/*/kubeadm.json`
+- `--key` suggestions come from local private keys in `~/.ssh/`
+
+## Commands
+
+### `clouder criu checkpoint`
+
+Create a checkpoint for a runtime pod.
+
+```bash
+clouder criu checkpoint my-runtime --checkpoint-mode criu
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--checkpoint-mode` | | `criu` or `light` |
+| `--agent-spec-id` | | Optional agent spec id |
+| `--name` | | Optional checkpoint display name |
+| `--description` | | Optional checkpoint description |
+| `--run-url` | | Datalayer run URL |
+| `--api-key` | | Datalayer API key |
+
+### `clouder criu restore`
+
+Restore a runtime from a checkpoint.
+
+```bash
+# Restore latest paused checkpoint for runtime
+clouder criu restore my-runtime
+
+# Restore a specific checkpoint
+clouder criu restore my-runtime --checkpoint-id 01J...
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--checkpoint-id` | | Specific checkpoint ID (optional) |
+| `--run-url` | | Datalayer run URL |
+| `--api-key` | | Datalayer API key |
+
+### `clouder criu ls`
+
+List checkpoints.
+
+```bash
+# All checkpoints for current user
+clouder criu ls
+
+# Filter by runtime
+clouder criu ls --runtime my-runtime
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--runtime` | | Filter by runtime pod name |
+| `--run-url` | | Datalayer run URL |
+| `--api-key` | | Datalayer API key |
+
+### `clouder criu inspect`
+
+Inspect one checkpoint record.
+
+```bash
+clouder criu inspect my-runtime 01J...
+```
+
+### `clouder criu delete`
+
+Delete one checkpoint record.
+
+```bash
+clouder criu delete my-runtime 01J...
+```
+
+### `clouder criu status`
+
+Show CRIU readiness on all nodes of a deployment:
+
+- CRIU version
+- `criu check` status
+- containerd version
+- kubelet `ContainerCheckpoint` feature gate state
+
+```bash
+clouder criu status --cluster r1
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cluster` | | Kubeadm deployment name (defaults to current kube context) |
+| `--admin-user` | `-u` | SSH username used to inspect nodes |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+
+### `clouder criu checkpoints`
+
+List checkpoint archives currently present under `/var/lib/kubelet/checkpoints` on each node.
+
+```bash
+clouder criu checkpoints --cluster r1
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cluster` | | Kubeadm deployment name (defaults to current kube context) |
+| `--admin-user` | `-u` | SSH username used to inspect nodes |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+
+### `clouder criu storage`
+
+Show the default checkpoint storage configured in deployment metadata.
+
+```bash
+clouder criu storage --cluster r1
+```
+
+### `clouder criu storage-set`
+
+Persist a default checkpoint storage URI in deployment metadata.
+
+```bash
+clouder criu storage-set --cluster r1 --storage s3://my-bucket/checkpoints/
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cluster` | | Kubeadm deployment name (defaults to current kube context) |
+| `--storage` | | Storage URI (for example `s3://bucket/checkpoints/`) |

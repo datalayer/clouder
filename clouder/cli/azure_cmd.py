@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 
+from ._completions import deployment_name_completion
 from ..cloud.azure.config import (
     load_azure_config,
     save_azure_config,
@@ -20,10 +21,10 @@ azure_app = typer.Typer(no_args_is_help=True)
 
 
 def _load_cluster_metadata(cluster_name: str) -> dict:
-    """Load kubeadm cluster metadata from ~/.clouder/clusters/<name>.json."""
-    from ..util.utils import CLOUDER_CONFIG_FOLDER
+    """Load kubeadm cluster metadata from ~/.clouder/kubeadm/<name>/kubeadm.json."""
+    from ..util.utils import kubeadm_metadata_path
 
-    metadata_path = CLOUDER_CONFIG_FOLDER / "clusters" / f"{cluster_name}.json"
+    metadata_path = kubeadm_metadata_path(cluster_name)
     if not metadata_path.exists():
         raise typer.BadParameter(
             f"Cluster metadata not found: {metadata_path}. "
@@ -496,13 +497,14 @@ def azure_helm_values(
     cluster: Optional[str] = typer.Option(
         None,
         "--cluster",
-        help="Kubeadm cluster name to read subscription/resource-group defaults from ~/.clouder/clusters/<name>.json.",
+        help="Kubeadm cluster name to read subscription/resource-group defaults from ~/.clouder/kubeadm/<name>/kubeadm.json.",
+        autocompletion=deployment_name_completion,
     ),
     output: Optional[str] = typer.Option(
         None,
         "--output",
         "-o",
-        help="Output JSON file path. Defaults to ~/.clouder/<cluster>/azure-operator-values.json when cluster is known. Use '-' to print JSON to stdout.",
+        help="Output JSON file path. Defaults to ~/.clouder/kubeadm/<cluster>/datalayer-operator-azure.json when cluster is known. Use '-' to print JSON to stdout.",
     ),
     tenant_id: Optional[str] = typer.Option(None, "--tenant-id", help="Override Azure tenant ID."),
     client_id: Optional[str] = typer.Option(None, "--client-id", help="Override Azure client ID."),
@@ -522,6 +524,11 @@ def azure_helm_values(
         True,
         "--create-sp/--no-create-sp",
         help="Create a scoped service principal if client credentials are missing.",
+    ),
+    reuse_sp_only: bool = typer.Option(
+        False,
+        "--reuse-sp-only",
+        help="Reuse existing SP credentials only; never create a new service principal.",
     ),
 ):
     """Generate Helm-ready Azure cloud credentials JSON for datalayer-operator.
@@ -580,6 +587,10 @@ def azure_helm_values(
     resolved_tenant_id = tenant_id or config.get("tenant_id")
     resolved_client_id = client_id or config.get("client_id")
     resolved_client_secret = client_secret or config.get("client_secret")
+    had_existing_sp_credentials = bool(resolved_client_id and resolved_client_secret)
+
+    if reuse_sp_only:
+        create_sp = False
 
     if not resolved_tenant_id:
         # Fallback to current Azure CLI account tenant id.
@@ -610,6 +621,19 @@ def azure_helm_values(
         resolved_client_id = resolved_client_id or sp_client_id
         resolved_client_secret = resolved_client_secret or sp_client_secret
 
+        # Persist generated credentials so subsequent `helm-values` calls reuse
+        # the same service principal instead of creating a new one each time.
+        if sp_client_id and sp_client_secret and not (config.get("client_id") and config.get("client_secret")):
+            updated_config = dict(config)
+            updated_config["tenant_id"] = resolved_tenant_id or updated_config.get("tenant_id", "")
+            updated_config["subscription_id"] = resolved_subscription_id or updated_config.get("subscription_id", "")
+            updated_config["client_id"] = resolved_client_id
+            updated_config["client_secret"] = resolved_client_secret
+            save_azure_config(updated_config)
+            print("[dim]Stored Azure service principal credentials in ~/.clouder/clouds/azure/azure.yaml for reuse.[/dim]")
+    elif create_sp and had_existing_sp_credentials:
+        print("[dim]Azure service principal already exists in config; reusing existing credentials (no creation).[/dim]")
+
     missing = []
     if not resolved_tenant_id:
         missing.append("tenant_id")
@@ -622,6 +646,11 @@ def azure_helm_values(
     if not resolved_resource_group:
         missing.append("resource_group")
     if missing:
+        if reuse_sp_only and ("client_id" in missing or "client_secret" in missing):
+            raise typer.BadParameter(
+                "Missing Azure SP credentials (client_id/client_secret) while --reuse-sp-only is set. "
+                "Provide existing credentials via --client-id/--client-secret or run `clouder azure configure`."
+            )
         raise typer.BadParameter(
             "Missing Azure values: " + ", ".join(missing) + ". "
             "Use --cluster, --resource-group, --subscription-id, or run `clouder azure configure`."
@@ -650,9 +679,12 @@ def azure_helm_values(
         out_path = Path(output).expanduser()
     else:
         if cluster_name:
-            out_path = Path.home() / ".clouder" / cluster_name / "azure-operator-values.json"
+            from ..util.utils import kubeadm_azure_operator_values_path
+
+            out_path = kubeadm_azure_operator_values_path(cluster_name)
         else:
-            out_path = Path("azure-operator-values.json")
+            default_dir = Path.home() / ".clouder" / "kubeadm"
+            out_path = default_dir / "datalayer-operator-azure.json"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(payload + "\n")

@@ -1,11 +1,13 @@
 """Clouder CLI - kubeadm vm-terminate command."""
 
+import shutil
+
 import typer
 from rich import print
 from rich.prompt import Confirm
 
 from ..ctx import get_current_context
-from ...util.utils import CLOUDER_KUBECONFIGS_FOLDER
+from ...util.utils import kubeadm_cluster_folder
 
 from ._helpers import (
     _delete_cluster_metadata,
@@ -82,10 +84,10 @@ def register(kubeadm_app: typer.Typer):
                 except Exception as e:
                     print(f"  [yellow]Could not fully delete networking resources: {e}[/yellow]")
 
-            kubeconfig_path = CLOUDER_KUBECONFIGS_FOLDER / f"kubeconfig-{name}"
-            if kubeconfig_path.exists():
-                kubeconfig_path.unlink()
-                typer.echo(f"  Removed kubeconfig: {kubeconfig_path}")
+            cluster_folder = kubeadm_cluster_folder(name)
+            if cluster_folder.exists():
+                shutil.rmtree(cluster_folder)
+                typer.echo(f"  Removed local kubeadm files: {cluster_folder}")
 
             _delete_cluster_metadata(name)
             print(f"\n[green]Cluster '{name}' terminated.[/green]")
@@ -180,10 +182,10 @@ def register(kubeadm_app: typer.Typer):
                 print(f"  [red]Failed to delete resource group {rg}: {e}[/red]")
 
         # Remove kubeconfig if it exists
-        kubeconfig_path = CLOUDER_KUBECONFIGS_FOLDER / f"kubeconfig-{name}"
-        if kubeconfig_path.exists():
-            kubeconfig_path.unlink()
-            typer.echo(f"  Removed kubeconfig: {kubeconfig_path}")
+        cluster_folder = kubeadm_cluster_folder(name)
+        if cluster_folder.exists():
+            shutil.rmtree(cluster_folder)
+            typer.echo(f"  Removed local kubeadm files: {cluster_folder}")
 
         # Remove cluster metadata if it exists
         _delete_cluster_metadata(name)

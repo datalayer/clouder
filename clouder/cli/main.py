@@ -18,6 +18,8 @@ from .helm import helm_command
 from .azure_cmd import azure_app
 from .aws_cmd import aws_app
 from .cost import cost_app
+from .criu import criu_app
+from .completion import completion_app
 
 app = typer.Typer(
     name="clouder",
@@ -38,7 +40,9 @@ app.add_typer(ssh_app, name="ssh", help="SSH into a virtual machine.")
 app.add_typer(kubeadm_app, name="kubeadm", help="Provision and setup kubeadm Kubernetes clusters.")
 app.add_typer(azure_app, name="azure", help="Azure cloud operations.")
 app.add_typer(aws_app, name="aws", help="AWS cloud operations.")
+app.add_typer(criu_app, name="criu", help="CRIU checkpoint visibility and configuration.")
 app.add_typer(cost_app, name="cost", help="Pricing and cost helpers.")
+app.add_typer(completion_app, name="completion", help="Manage shell autocompletion setup.")
 
 
 def version_callback(value: bool):

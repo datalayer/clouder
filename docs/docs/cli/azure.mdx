@@ -1,6 +1,6 @@
 ---
 title: clouder azure
-sidebar_position: 2
+sidebar_position: 3
 ---
 
 # clouder azure
@@ -25,7 +25,7 @@ The interactive flow:
 1. Clouder asks if you want to use `az login` credentials
 2. Fetches available subscriptions from your Azure account
 3. Displays a table and lets you select one
-4. Saves the subscription ID and tenant ID to `~/.clouder/azure/azure.yaml`
+4. Saves the subscription ID and tenant ID to `~/.clouder/clouds/azure/azure.yaml`
 
 ### Method 2: Service Principal (recommended for production/CI)
 
@@ -86,7 +86,7 @@ clouder azure configure \
 | `--client-secret` | | Azure client secret |
 | `--interactive / --no-interactive` | | Enable/disable interactive prompts (default: interactive) |
 
-Configuration is stored in `~/.clouder/azure/azure.yaml` with `chmod 600`.
+Configuration is stored in `~/.clouder/clouds/azure/azure.yaml` with `chmod 600`.
 
 ---
 
@@ -306,13 +306,16 @@ Generate a JSON values file containing all Azure credentials required by the `da
 
 ```bash
 # Generate from configured Azure + kubeadm cluster metadata
-clouder azure helm-values --cluster r1 -o azure-operator-values.json
+clouder azure helm-values --cluster r1 -o datalayer-operator-azure.json
 
 # Print JSON to stdout
 clouder azure helm-values --cluster r1 --output -
 
 # Disable service principal auto-creation (fail if client credentials are missing)
 clouder azure helm-values --cluster r1 --no-create-sp
+
+# Strict reuse mode (never creates an SP; fails if credentials are missing)
+clouder azure helm-values --cluster r1 --reuse-sp-only
 
 # Fully explicit mode
 clouder azure helm-values \
@@ -321,17 +324,17 @@ clouder azure helm-values \
     --client-secret <CLIENT_SECRET> \
     --subscription-id <SUBSCRIPTION_ID> \
     --resource-group <RESOURCE_GROUP> \
-    -o azure-operator-values.json
+    -o datalayer-operator-azure.json
 ```
 
 Default output behavior:
 
-- If `--cluster` is set (or inferred from current kube context), output defaults to `~/.clouder/<cluster>/azure-operator-values.json`.
-- If no cluster can be resolved, output defaults to `./azure-operator-values.json`.
+- If `--cluster` is set (or inferred from current kube context), output defaults to `~/.clouder/kubeadm/<cluster>/datalayer-operator-azure.json`.
+- If no cluster can be resolved, output defaults to `~/.clouder/kubeadm/datalayer-operator-azure.json`.
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--cluster` | | Kubeadm cluster name (reads `~/.clouder/clusters/<name>.json` for subscription/resource group) |
+| `--cluster` | | Kubeadm cluster name (reads `~/.clouder/kubeadm/<name>/kubeadm.json` for subscription/resource group) |
 | `--output` | `-o` | Output JSON file path (`-` prints to stdout) |
 | `--tenant-id` | | Override tenant ID |
 | `--client-id` | | Override client ID |
@@ -339,6 +342,7 @@ Default output behavior:
 | `--subscription-id` | | Override subscription ID |
 | `--resource-group` | `-g` | Override resource group |
 | `--create-sp / --no-create-sp` | | Auto-create scoped Azure service principal if client credentials are missing (default: `--create-sp`) |
+| `--reuse-sp-only` | | Strict mode: reuse existing credentials only and never create a service principal |
 
 Output file permissions are set to `600` because it contains secrets.
 
@@ -348,7 +352,7 @@ Use the generated file with Helm:
 helm upgrade --install datalayer-operator \
     ./etc/helm/charts/datalayer-operator \
     --namespace datalayer-runtimes \
-    --values azure-operator-values.json
+    --values datalayer-operator-azure.json
 ```
 
 ---

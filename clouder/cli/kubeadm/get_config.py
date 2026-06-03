@@ -5,7 +5,13 @@ import re
 import typer
 from rich import print
 
-from ...util.utils import CLOUDER_KUBECONFIGS_FOLDER, SSH_FOLDER
+from ...util.utils import (
+    ensure_kubeadm_cluster_folder,
+    kubeadm_kubeconfig_path,
+    kubeadm_kubelet_client_cert_path,
+    kubeadm_kubelet_client_key_path,
+    SSH_FOLDER,
+)
 
 from ._helpers import (
     _resolve_cluster_vms,
@@ -23,7 +29,7 @@ def register(kubeadm_app: typer.Typer):
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the master VM."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
-        """Fetch the kubeconfig from the master and save to ~/.clouder/kubeconfigs/kubeconfig-<NAME>."""
+        """Fetch kubeconfig from the master and save to ~/.clouder/kubeadm/<NAME>/kubeconfig."""
         cluster = _resolve_cluster_vms(name)
         master = cluster["master"]
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
@@ -44,8 +50,8 @@ def register(kubeadm_app: typer.Typer):
             kubeconfig_content,
         )
 
-        CLOUDER_KUBECONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
-        kubeconfig_path = CLOUDER_KUBECONFIGS_FOLDER / f"kubeconfig-{name}"
+        ensure_kubeadm_cluster_folder(name)
+        kubeconfig_path = kubeadm_kubeconfig_path(name)
         kubeconfig_path.write_text(kubeconfig_content)
         kubeconfig_path.chmod(0o600)
 
@@ -54,13 +60,12 @@ def register(kubeadm_app: typer.Typer):
         # -----------------------------------------------------------------
         # Fetch kubelet client certificates (for CRIU checkpoint API)
         # -----------------------------------------------------------------
-        certs_dir = CLOUDER_KUBECONFIGS_FOLDER / name
-        certs_dir.mkdir(parents=True, exist_ok=True)
+        ensure_kubeadm_cluster_folder(name)
 
         cert_remote = "/etc/kubernetes/pki/apiserver-kubelet-client.crt"
         key_remote = "/etc/kubernetes/pki/apiserver-kubelet-client.key"
-        cert_local = certs_dir / "apiserver-kubelet-client.crt"
-        key_local = certs_dir / "apiserver-kubelet-client.key"
+        cert_local = kubeadm_kubelet_client_cert_path(name)
+        key_local = kubeadm_kubelet_client_key_path(name)
 
         typer.echo(f"Fetching kubelet client certificates from {master['name']}...")
 

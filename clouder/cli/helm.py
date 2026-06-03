@@ -5,7 +5,7 @@ import sys
 
 import click
 
-from ..util.utils import CLOUDER_KUBECONFIGS_FOLDER
+from ..util.utils import kubeadm_kubeconfig_path
 
 
 @click.command(
@@ -19,7 +19,7 @@ def helm_command(ctx, name):
 
     Example: clouder helm my-cluster list -A
     """
-    kubeconfig_path = CLOUDER_KUBECONFIGS_FOLDER / f"kubeconfig-{name}"
+    kubeconfig_path = kubeadm_kubeconfig_path(name)
     if not kubeconfig_path.exists():
         click.echo(
             f"Kubeconfig not found: {kubeconfig_path}\n"

@@ -48,6 +48,12 @@ module.exports = {
         },
         {
           type: 'doc',
+          docId: 'deployments/index',
+          position: 'left',
+          label: 'Deployments',
+        },
+        {
+          type: 'doc',
           docId: 'services/index',
           position: 'left',
           label: 'Services',
@@ -60,9 +66,9 @@ module.exports = {
         },
         {
           type: 'doc',
-          docId: 'deployments/index',
+          docId: 'management/index',
           position: 'left',
-          label: 'Deployments',
+          label: 'Management',
         },
         {
           type: 'doc',

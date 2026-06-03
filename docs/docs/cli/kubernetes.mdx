@@ -1,6 +1,6 @@
 ---
 title: clouder k8s
-sidebar_position: 4
+sidebar_position: 11
 ---
 
 # clouder k8s
@@ -27,7 +27,7 @@ clouder k8s create <name>
 clouder k8s create my-cluster
 ```
 
-This provisions the necessary VMs and bootstraps a Kubernetes cluster using Kubeadm. See the [Kubeadm documentation](/cli/kubeadm) for details on the bootstrap process.
+This creates an OVH Managed Kubernetes cluster in the active OVH project context.
 
 ---
 
@@ -150,8 +150,8 @@ clouder k8s update-nodepool <cluster_name> <nodepool_name> [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--min` | `0` | Minimum nodes |
-| `--desired` | `0` | Desired nodes |
+| `--min` | `3` | Minimum nodes |
+| `--desired` | `3` | Desired nodes |
 | `--max` | `10` | Maximum nodes |
 
 **Examples:**
@@ -171,6 +171,9 @@ clouder k8s update-nodepool my-cluster \
 ## Example: Full Cluster Workflow
 
 ```bash
+# Requires OVH context
+clouder ctx set ovh <project-id>
+
 # 1. Create the cluster
 clouder k8s create my-cluster
 

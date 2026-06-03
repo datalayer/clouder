@@ -1,6 +1,6 @@
 ---
 title: clouder kubeadm
-sidebar_position: 8
+sidebar_position: 9
 ---
 
 # clouder kubeadm
@@ -16,7 +16,7 @@ clouder kubeadm vm-create --workers 1 k1
 # Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
 clouder kubeadm setup k1
 
-# Fetch the kubeconfig to ~/.clouder/kubeconfig-k1
+# Fetch the kubeconfig to ~/.clouder/kubeadm/k1/kubeconfig
 clouder kubeadm get-config k1
 
 # Verify
@@ -158,23 +158,23 @@ clouder kubeadm get-config <name> [OPTIONS]
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
-The kubeconfig is saved to `~/.clouder/kubeconfigs/kubeconfig-<name>` with `600` permissions. The internal API server IP is automatically replaced with the master's public IP for remote access.
+The kubeconfig is saved to `~/.clouder/kubeadm/<name>/kubeconfig` with `600` permissions. The internal API server IP is automatically replaced with the master's public IP for remote access.
 
-Additionally, the kubelet client certificates (`apiserver-kubelet-client.crt` and `.key`) are fetched from the master and saved to `~/.clouder/kubeconfigs/<name>/`. These are needed for CRIU checkpoint API calls via the kubelet.
+Additionally, the kubelet client certificates (`apiserver-kubelet-client.crt` and `.key`) are fetched from the master and saved to `~/.clouder/kubeadm/<name>/`. These are needed for CRIU checkpoint API calls via the kubelet.
 
 **Example:**
 
 ```bash
 clouder kubeadm get-config my-cluster
 # Output:
-#   Kubeconfig saved to ~/.clouder/kubeconfigs/kubeconfig-my-cluster
-#   Kubelet client cert saved to ~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.crt
-#   Kubelet client key saved to ~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.key
+#   Kubeconfig saved to ~/.clouder/kubeadm/my-cluster/kubeconfig
+#   Kubelet client cert saved to ~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.crt
+#   Kubelet client key saved to ~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.key
 #
 #   Usage:
-#     export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-my-cluster
-#     export KUBELET_CLIENT_CERT=~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.crt
-#     export KUBELET_CLIENT_KEY=~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.key
+#     export KUBECONFIG=~/.clouder/kubeadm/my-cluster/kubeconfig
+#     export KUBELET_CLIENT_CERT=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.crt
+#     export KUBELET_CLIENT_KEY=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.key
 #     kubectl get nodes
 ```
 
@@ -263,7 +263,7 @@ clouder kubeadm vm-terminate <name> [OPTIONS]
 | 7 | VNet | `<name>-vnet` (includes subnet) |
 | 8 | Resource Group | Only if `--delete-rg` is specified |
 
-The local kubeconfig (`~/.clouder/kubeconfigs/kubeconfig-<name>`) is also removed if it exists.
+The local kubeconfig (`~/.clouder/kubeadm/<name>/kubeconfig`) is also removed if it exists.
 
 **Example:**
 
@@ -574,7 +574,7 @@ clouder kubeadm get-config my-cluster
 
 `vm-create` provisions 4 VMs (Standard_B4ms, 100 GB OS disks) in Azure with a VNet, subnet, and NSG.
 `setup` installs containerd 2.x, CRIU, buildah, Kubeadm/kubelet/kubectl, initializes the control plane with Flannel CNI, joins workers, enables the `ContainerCheckpoint` feature gate on every node, and installs the Azure Disk CSI and Azure File CSI drivers for dynamic persistent volume provisioning.
-`get-config` downloads the kubeconfig to `~/.clouder/kubeconfigs/kubeconfig-my-cluster`.
+`get-config` downloads the kubeconfig to `~/.clouder/kubeadm/my-cluster/kubeconfig`.
 
 ### Use the Cluster
 
@@ -627,7 +627,7 @@ clouder kubectl <name> <kubectl-args...>
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeconfigs/`) |
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
 | `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
 
 **Example:**
@@ -641,7 +641,7 @@ clouder kubectl my-cluster logs my-pod
 
 This is equivalent to running:
 ```bash
-kubectl --kubeconfig=~/.clouder/kubeconfigs/kubeconfig-my-cluster get nodes
+kubectl --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig get nodes
 ```
 
 ---
@@ -656,7 +656,7 @@ clouder helm <name> <helm-args...>
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeconfigs/`) |
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
 | `helm-args` | Any helm arguments (e.g. `list -A`, `install ...`) |
 
 **Example:**
@@ -670,7 +670,7 @@ clouder helm my-cluster uninstall my-release
 
 This is equivalent to running:
 ```bash
-helm --kubeconfig=~/.clouder/kubeconfigs/kubeconfig-my-cluster list -A
+helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
 ```
 
 ---
@@ -739,10 +739,10 @@ Use the Azure CLI helper to generate a Helm-ready JSON file containing all requi
 - `operator.cloudCredentials.azure.resourceGroup`
 
 ```bash
-clouder azure helm-values --cluster my-cluster -o azure-operator-values.json
+clouder azure helm-values --cluster my-cluster -o datalayer-operator-azure.json
 ```
 
-If `--output` is omitted, the file is created at `~/.clouder/<cluster>/azure-operator-values.json`, which is the default path consumed by `plane/datalayer_plane/sbin/up.sh` for `datalayer_operator`.
+If `--output` is omitted, the file is created at `~/.clouder/kubeadm/<cluster>/datalayer-operator-azure.json`, which is the default path consumed by `plane/datalayer_plane/sbin/up.sh` for `datalayer_operator`.
 
 Then pass it to Helm:
 
@@ -750,7 +750,7 @@ Then pass it to Helm:
 helm upgrade --install datalayer-operator \
   ./etc/helm/charts/datalayer-operator \
   --namespace datalayer-runtimes \
-  --values azure-operator-values.json
+  --values datalayer-operator-azure.json
 ```
 
 **Manual installation** (if Step 6 was skipped):
