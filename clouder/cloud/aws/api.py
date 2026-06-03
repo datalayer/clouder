@@ -8,6 +8,8 @@ from typing import Optional
 
 import boto3
 
+from ...util.wait import wait_with_spinner
+
 
 def _session(region: Optional[str] = None):
     """Create a boto3 session using current env/profile config."""
@@ -189,7 +191,10 @@ def create_aws_vm(
 
     instance_id = response["Instances"][0]["InstanceId"]
     waiter = ec2.get_waiter("instance_running")
-    waiter.wait(InstanceIds=[instance_id])
+    wait_with_spinner(
+        lambda: waiter.wait(InstanceIds=[instance_id]),
+        f"Waiting for EC2 instance {vm_name} to be running",
+    )
 
     desc = ec2.describe_instances(InstanceIds=[instance_id])
     inst = desc["Reservations"][0]["Instances"][0]

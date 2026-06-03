@@ -8,6 +8,7 @@ from rich.prompt import Confirm
 
 from ..ctx import get_current_context
 from ...util.utils import kubeadm_cluster_folder
+from ...util.wait import wait_with_spinner
 
 from ._helpers import (
     _delete_cluster_metadata,
@@ -176,7 +177,10 @@ def register(kubeadm_app: typer.Typer):
                 from ...cloud.azure.api import _get_resource_client
                 resource_client = _get_resource_client(context_id)
                 poller = resource_client.resource_groups.begin_delete(rg)
-                poller.result()
+                wait_with_spinner(
+                    lambda: poller.result(),
+                    f"Deleting resource group {rg}",
+                )
                 print(f"  [green]Deleted: {rg}[/green]")
             except Exception as e:
                 print(f"  [red]Failed to delete resource group {rg}: {e}[/red]")

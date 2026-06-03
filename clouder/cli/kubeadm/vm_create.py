@@ -10,6 +10,7 @@ from rich.table import Table
 
 from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
+from ...util.wait import wait_with_spinner
 
 from ._helpers import _save_cluster_metadata
 
@@ -203,7 +204,10 @@ def _create_kubeadm_azure(
             "subnets": [{"name": subnet_name, "address_prefix": "10.0.0.0/24"}],
         },
     )
-    vnet = vnet_poller.result()
+    vnet = wait_with_spinner(
+        lambda: vnet_poller.result(),
+        f"Creating shared virtual network {vnet_name}",
+    )
     subnet_id = vnet.subnets[0].id
     typer.echo(f"  VNet created: {vnet_name}, Subnet: {subnet_name}")
 
@@ -285,7 +289,10 @@ def _create_kubeadm_azure(
             ],
         },
     )
-    nsg = nsg_poller.result()
+    nsg = wait_with_spinner(
+        lambda: nsg_poller.result(),
+        f"Creating shared network security group {nsg_name}",
+    )
     nsg_id = nsg.id
     typer.echo(f"  NSG created with SSH, K8s API (6443), Kubelet (10250), NodePort (30000-32767), HTTP (80), HTTPS (443) rules")
 

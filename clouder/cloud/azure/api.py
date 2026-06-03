@@ -3,6 +3,12 @@
 from typing import Optional
 
 from .config import get_azure_credential, get_azure_subscription_id
+from ...util.wait import wait_with_spinner
+
+
+def _wait_poller(poller, description: str):
+    """Wait on Azure SDK pollers with delayed spinner + elapsed time."""
+    return wait_with_spinner(lambda: poller.result(), description)
 
 
 def _get_subscription_client():
@@ -239,7 +245,7 @@ def create_azure_vm(
                 "subnets": [{"name": subnet_name, "address_prefix": "10.0.0.0/24"}],
             },
         )
-        vnet = vnet_poller.result()
+        vnet = _wait_poller(vnet_poller, f"Creating virtual network {vnet_name}")
         subnet_id = vnet.subnets[0].id
 
     # 2. Create or reuse NSG with SSH rule
@@ -265,7 +271,7 @@ def create_azure_vm(
                 ],
             },
         )
-        nsg = nsg_poller.result()
+        nsg = _wait_poller(nsg_poller, f"Creating network security group {nsg_name}")
         nsg_id = nsg.id
 
     # 3. Create Public IP
@@ -279,7 +285,7 @@ def create_azure_vm(
             "public_ip_allocation_method": "Static",
         },
     )
-    public_ip = ip_poller.result()
+    public_ip = _wait_poller(ip_poller, f"Creating public IP {ip_name}")
 
     # 4. Create NIC with NSG
     nic_name = f"{vm_name}-nic"
@@ -299,7 +305,7 @@ def create_azure_vm(
             ],
         },
     )
-    nic = nic_poller.result()
+    nic = _wait_poller(nic_poller, f"Creating network interface {nic_name}")
 
     # 4. Build VM parameters
     vm_params = {
@@ -351,7 +357,7 @@ def create_azure_vm(
     vm_poller = compute_client.virtual_machines.begin_create_or_update(
         resource_group, vm_name, vm_params,
     )
-    vm = vm_poller.result()
+    vm = _wait_poller(vm_poller, f"Creating Azure VM {vm_name}")
 
     return {
         "name": vm.name,
@@ -386,7 +392,7 @@ def delete_azure_vm(resource_group: str, vm_name: str,
     # Delete the VM first (releases disk attachments)
     client = _get_compute_client(subscription_id)
     poller = client.virtual_machines.begin_delete(resource_group, vm_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting Azure VM {vm_name}")
 
     # Clean up associated resources
     if resources:
@@ -395,28 +401,28 @@ def delete_azure_vm(resource_group: str, vm_name: str,
         for nic_name in resources.get("nic_names", []):
             try:
                 p = network_client.network_interfaces.begin_delete(resource_group, nic_name)
-                p.result()
+                _wait_poller(p, f"Deleting network interface {nic_name}")
             except Exception:
                 pass
         # Delete public IPs
         for ip_name in resources.get("ip_names", []):
             try:
                 p = network_client.public_ip_addresses.begin_delete(resource_group, ip_name)
-                p.result()
+                _wait_poller(p, f"Deleting public IP {ip_name}")
             except Exception:
                 pass
         # Delete OS disk
         if resources.get("os_disk_name"):
             try:
                 p = client.disks.begin_delete(resource_group, resources["os_disk_name"])
-                p.result()
+                _wait_poller(p, f"Deleting OS disk {resources['os_disk_name']}")
             except Exception:
                 pass
         # Delete data disks
         for disk_name in resources.get("data_disk_names", []):
             try:
                 p = client.disks.begin_delete(resource_group, disk_name)
-                p.result()
+                _wait_poller(p, f"Deleting data disk {disk_name}")
             except Exception:
                 pass
 
@@ -493,7 +499,7 @@ def delete_azure_nic(resource_group: str, nic_name: str,
     """Delete a network interface."""
     client = _get_network_client(subscription_id)
     poller = client.network_interfaces.begin_delete(resource_group, nic_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting network interface {nic_name}")
 
 
 def delete_azure_public_ip(resource_group: str, ip_name: str,
@@ -501,7 +507,7 @@ def delete_azure_public_ip(resource_group: str, ip_name: str,
     """Delete a public IP address."""
     client = _get_network_client(subscription_id)
     poller = client.public_ip_addresses.begin_delete(resource_group, ip_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting public IP {ip_name}")
 
 
 def delete_azure_disk(resource_group: str, disk_name: str,
@@ -509,7 +515,7 @@ def delete_azure_disk(resource_group: str, disk_name: str,
     """Delete a managed disk."""
     client = _get_compute_client(subscription_id)
     poller = client.disks.begin_delete(resource_group, disk_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting disk {disk_name}")
 
 
 def delete_azure_nsg(resource_group: str, nsg_name: str,
@@ -517,7 +523,7 @@ def delete_azure_nsg(resource_group: str, nsg_name: str,
     """Delete a network security group."""
     client = _get_network_client(subscription_id)
     poller = client.network_security_groups.begin_delete(resource_group, nsg_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting network security group {nsg_name}")
 
 
 def delete_azure_vnet(resource_group: str, vnet_name: str,
@@ -525,7 +531,7 @@ def delete_azure_vnet(resource_group: str, vnet_name: str,
     """Delete a virtual network (and all its subnets)."""
     client = _get_network_client(subscription_id)
     poller = client.virtual_networks.begin_delete(resource_group, vnet_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting virtual network {vnet_name}")
 
 
 # --- Load Balancer ---
@@ -556,7 +562,7 @@ def create_azure_load_balancer(
             "public_ip_allocation_method": "Static",
         },
     )
-    public_ip = ip_poller.result()
+    public_ip = _wait_poller(ip_poller, f"Creating load balancer IP {public_ip_name}")
 
     # Build LB parameters
     frontend_id = (
@@ -646,7 +652,7 @@ def create_azure_load_balancer(
     lb_poller = network_client.load_balancers.begin_create_or_update(
         resource_group, lb_name, lb_params,
     )
-    lb = lb_poller.result()
+    lb = _wait_poller(lb_poller, f"Creating load balancer {lb_name}")
 
     # Extract backend pool ID from created LB
     backend_pool_id = None
@@ -705,7 +711,7 @@ def add_nic_to_lb_backend_pool(
     poller = network_client.network_interfaces.begin_create_or_update(
         resource_group, nic_name, nic_params,
     )
-    poller.result()
+    _wait_poller(poller, f"Updating network interface {nic_name}")
 
 
 def delete_azure_load_balancer(resource_group: str, lb_name: str,
@@ -713,4 +719,4 @@ def delete_azure_load_balancer(resource_group: str, lb_name: str,
     """Delete a load balancer."""
     client = _get_network_client(subscription_id)
     poller = client.load_balancers.begin_delete(resource_group, lb_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting load balancer {lb_name}")

@@ -4,6 +4,7 @@ import typer
 from rich import print
 from rich.panel import Panel
 from rich.prompt import Confirm
+from ...util.wait import wait_with_spinner
 
 from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
@@ -188,7 +189,10 @@ def register(kubeadm_app: typer.Typer):
                 "public_ip_allocation_method": "Static",
             },
         )
-        public_ip = ip_poller.result()
+        public_ip = wait_with_spinner(
+            lambda: ip_poller.result(),
+            f"Creating load balancer public IP {lb_ip_name}",
+        )
 
         sub_id = context_id
         frontend_name = "lb-frontend"
@@ -261,7 +265,10 @@ def register(kubeadm_app: typer.Typer):
         }
 
         lb_poller = network_client.load_balancers.begin_create_or_update(rg, lb_name, lb_params)
-        lb = lb_poller.result()
+        lb = wait_with_spinner(
+            lambda: lb_poller.result(),
+            f"Creating load balancer {lb_name}",
+        )
 
         backend_pool_id = None
         for pool in (lb.backend_address_pools or []):
