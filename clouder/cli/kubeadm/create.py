@@ -1,10 +1,9 @@
-"""Clouder CLI - kubeadm vm-create command."""
+"""Clouder CLI - kubeadm create command."""
 
 import subprocess
 
 import typer
 from rich import print
-from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
@@ -16,10 +15,10 @@ from ._helpers import _save_cluster_metadata
 
 
 def register(kubeadm_app: typer.Typer):
-    """Register the vm-create command on the given Typer app."""
+    """Register the create command on the given Typer app."""
 
-    @kubeadm_app.command("vm-create")
-    def kubeadm_vm_create(
+    @kubeadm_app.command("create")
+    def kubeadm_create(
         name: str = typer.Argument(..., help="Cluster name (used as prefix for VMs)."),
         workers: int = typer.Option(3, "--workers", "-w", help="Number of worker nodes."),
         region: str = typer.Option(None, "--region", "-r", help="Cloud region (e.g. eastus, us-east-1)."),

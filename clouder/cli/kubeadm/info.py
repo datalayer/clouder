@@ -68,7 +68,7 @@ def register(kubeadm_app: typer.Typer):
             f"  Ingress (nginx):   clouder kubeadm enable-ingress-nginx {name}",
             f"  Ingress (traefik): clouder kubeadm enable-ingress-traefik {name}",
             f"  Smoke test:        clouder kubeadm smoke-test {name}",
-            f"  Terminate:         clouder kubeadm vm-terminate {name}",
+            f"  Terminate:         clouder kubeadm terminate {name}",
         ]
 
         print(Panel("\n".join(cmd_lines), title="[bold bright_blue]Cluster Commands[/bold bright_blue]"))

@@ -36,7 +36,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("setup")
     def kubeadm_setup(
-        name: str | None = typer.Argument(None, help="Cluster name (must match vm-create name). If omitted, uses default kubeadm cluster."),
+        name: str | None = typer.Argument(None, help="Cluster name (must match create name). If omitted, uses default kubeadm cluster."),
         user: str = typer.Option("ubuntu", "--admin-user", "-u", help="SSH username on the VMs (ubuntu for AWS, azureuser for Azure)."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         k8s_version: str = typer.Option(K8S_VERSION, "--k8s-version", help="Kubernetes version to install."),

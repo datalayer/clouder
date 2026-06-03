@@ -7,13 +7,13 @@ sidebar_position: 9
 
 Provision, set up, and manage Kubeadm Kubernetes clusters. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
 
-Alias: `clouder k` (for example, `clouder k list`, `clouder k vm-create my-cluster`).
+Alias: `clouder k` (for example, `clouder k list`, `clouder k create my-cluster`).
 
 ## Overview
 
 ```bash
 # Create the VMs (1 master + 1 worker)
-clouder kubeadm vm-create --workers 1 r1
+clouder kubeadm create --workers 1 r1
 
 # List locally known kubeadm clusters
 clouder kubeadm list
@@ -42,7 +42,7 @@ clouder kubeadm upgrade-kubelet r1
 clouder kubeadm disable-ingress-traefik r1
 
 # Tear down the cluster and delete all cloud resources
-clouder kubeadm vm-terminate r1
+clouder kubeadm terminate r1
 ```
 
 ## Commands
@@ -85,12 +85,12 @@ clouder kubeadm scale --workers 5
 
 ---
 
-### `clouder kubeadm vm-create`
+### `clouder kubeadm create`
 
 Create VMs for a Kubeadm cluster: 1 master + N worker nodes on the same subnet.
 
 ```bash
-clouder kubeadm vm-create <name> [OPTIONS]
+clouder kubeadm create <name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -148,7 +148,7 @@ clouder kubeadm setup <name> [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (must match the `vm-create` name) |
+| `name` (required) | Cluster name (must match the `create` name) |
 
 | Option | Short | Description |
 |--------|-------|-------------|
@@ -287,12 +287,12 @@ clouder kubeadm scale my-cluster --workers 1 --force
 
 ---
 
-### `clouder kubeadm vm-terminate`
+### `clouder kubeadm terminate`
 
 Terminate all VMs and networking for a Kubeadm cluster. Deletes VMs, NICs, public IPs, OS disks, NSG, and VNet.
 
 ```bash
-clouder kubeadm vm-terminate <name> [OPTIONS]
+clouder kubeadm terminate <name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -323,13 +323,13 @@ The local kubeconfig (`~/.clouder/kubeadm/<name>/kubeconfig`) is also removed if
 
 ```bash
 # Interactive confirmation
-clouder kubeadm vm-terminate my-cluster
+clouder kubeadm terminate my-cluster
 
 # Force delete without confirmation
-clouder kubeadm vm-terminate my-cluster --force
+clouder kubeadm terminate my-cluster --force
 
 # Also delete the resource group
-clouder kubeadm vm-terminate my-cluster --force --delete-rg
+clouder kubeadm terminate my-cluster --force --delete-rg
 ```
 
 ---
@@ -574,7 +574,7 @@ clouder kubeadm upgrade-kubelet <name> [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (must match the `vm-create` name) |
+| `name` (required) | Cluster name (must match the `create` name) |
 
 | Option | Short | Description |
 |--------|-------|-------------|
@@ -629,7 +629,7 @@ Three commands are needed to go from zero to a running Kubernetes cluster:
 
 ```bash
 # 1. Create the VMs (1 master + 3 workers on Azure)
-clouder kubeadm vm-create my-cluster
+clouder kubeadm create my-cluster
 
 # 2. Set up Kubernetes on all nodes
 clouder kubeadm setup my-cluster
@@ -638,7 +638,7 @@ clouder kubeadm setup my-cluster
 clouder kubeadm get-config my-cluster
 ```
 
-`vm-create` provisions 4 VMs (Standard_B4ms, 100 GB OS disks) in Azure with a VNet, subnet, and NSG.
+`create` provisions 4 VMs (Standard_B4ms, 100 GB OS disks) in Azure with a VNet, subnet, and NSG.
 `setup` installs containerd 2.x, CRIU, buildah, Kubeadm/kubelet/kubectl, initializes the control plane with Flannel CNI, joins workers, enables the `ContainerCheckpoint` feature gate on every node, and installs the Azure Disk CSI and Azure File CSI drivers for dynamic persistent volume provisioning.
 `get-config` downloads the kubeconfig to `~/.clouder/kubeadm/my-cluster/kubeconfig`.
 
@@ -678,7 +678,7 @@ clouder kubeadm smoke-test my-cluster
 clouder kubeadm disable-ingress-nginx my-cluster
 
 # Delete all VMs and Azure resources
-clouder kubeadm vm-terminate my-cluster
+clouder kubeadm terminate my-cluster
 ```
 
 ---
@@ -769,8 +769,8 @@ CRIU checkpoint requires **containerd 2.0+**. The Ubuntu apt `containerd` packag
 
 If your cluster was created with an older version of Clouder (containerd 1.7.x), you must recreate it:
 ```bash
-clouder kubeadm vm-terminate my-cluster
-clouder kubeadm vm-create my-cluster
+clouder kubeadm terminate my-cluster
+clouder kubeadm create my-cluster
 clouder kubeadm setup my-cluster
 ```
 An in-place upgrade from containerd 1.7 to 2.x is not supported.

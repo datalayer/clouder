@@ -58,7 +58,7 @@ A Clouder-managed cluster consists of:
 
 ## Cloud Provider Setup
 
-Use one of the sections below before running `clouder kubeadm vm-create`.
+Use one of the sections below before running `clouder kubeadm create`.
 
 ### Azure
 
@@ -121,7 +121,7 @@ clouder ctx init
 clouder ctx set azure <SUBSCRIPTION_ID>
 
 # Create VM set (1 master + 3 workers by default)
-clouder kubeadm vm-create my-cluster --region eastus --workers 3
+clouder kubeadm create my-cluster --region eastus --workers 3
 
 # Setup Kubernetes + CRIU + Azure storage
 clouder kubeadm setup my-cluster
@@ -197,7 +197,7 @@ clouder ctx init
 clouder ctx set aws <AWS_ACCOUNT_ID>
 
 # Create VM set (1 master + 3 workers by default)
-clouder kubeadm vm-create my-cluster --region us-east-1 --workers 3
+clouder kubeadm create my-cluster --region us-east-1 --workers 3
 
 # Setup Kubernetes + CRIU + AWS storage/LB integration
 clouder kubeadm setup my-cluster
@@ -210,7 +210,7 @@ clouder kubeadm get-config my-cluster
 
 - `Unable to locate credentials`: run `aws configure` or `aws sso login`.
 - `AuthFailure` or `UnauthorizedOperation`: verify IAM permissions and region.
-- No EC2 key pair found: create/import one in the selected region before `vm-create`.
+- No EC2 key pair found: create/import one in the selected region before `create`.
 
 ## CLI Quick Start
 
@@ -268,11 +268,11 @@ Clouder provisions VMs using the selected cloud provider context. For a cluster,
 ```bash
 # Azure example
 clouder ctx set azure <SUBSCRIPTION_ID>
-clouder kubeadm vm-create my-cluster --region eastus --workers 2
+clouder kubeadm create my-cluster --region eastus --workers 2
 
 # AWS example
 clouder ctx set aws <AWS_ACCOUNT_ID>
-clouder kubeadm vm-create my-cluster --region us-east-1 --workers 2
+clouder kubeadm create my-cluster --region us-east-1 --workers 2
 ```
 
 This will:

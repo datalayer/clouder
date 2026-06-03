@@ -1,4 +1,4 @@
-"""Clouder CLI - kubeadm vm-terminate command."""
+"""Clouder CLI - kubeadm terminate command."""
 
 import shutil
 
@@ -19,10 +19,10 @@ from ._helpers import (
 
 
 def register(kubeadm_app: typer.Typer):
-    """Register the vm-terminate command on the given Typer app."""
+    """Register the terminate command on the given Typer app."""
 
-    @kubeadm_app.command("vm-terminate")
-    def kubeadm_vm_terminate(
+    @kubeadm_app.command("terminate")
+    def kubeadm_terminate(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
         delete_rg: bool = typer.Option(False, "--delete-rg", help="Also delete the resource group."),

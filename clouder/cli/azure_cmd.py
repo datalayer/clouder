@@ -28,7 +28,7 @@ def _load_cluster_metadata(cluster_name: str) -> dict:
     if not metadata_path.exists():
         raise typer.BadParameter(
             f"Cluster metadata not found: {metadata_path}. "
-            "Run `clouder kubeadm vm-create`/`setup` first or pass --resource-group explicitly."
+            "Run `clouder kubeadm create`/`setup` first or pass --resource-group explicitly."
         )
     try:
         return json.loads(metadata_path.read_text())

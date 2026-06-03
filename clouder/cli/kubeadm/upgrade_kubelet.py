@@ -63,7 +63,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("upgrade-kubelet", help="Upgrade kubelet, kubeadm, and kubectl on all nodes to the target K8s version.")
     def kubeadm_upgrade_kubelet(
-        name: str | None = typer.Argument(None, help="Cluster name (must match vm-create name). If omitted, uses default kubeadm cluster."),
+        name: str | None = typer.Argument(None, help="Cluster name (must match create name). If omitted, uses default kubeadm cluster."),
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):

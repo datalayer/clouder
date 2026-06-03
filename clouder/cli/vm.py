@@ -96,7 +96,7 @@ def _create_aws_vm(name: str, region: str | None, vm_size: str | None):
     # Networking: default VPC + first subnet
     vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}]).get("Vpcs", [])
     if not vpcs:
-        typer.echo("No default VPC found. Use kubeadm vm-create for managed network provisioning.", err=True)
+        typer.echo("No default VPC found. Use kubeadm create for managed network provisioning.", err=True)
         raise typer.Exit(1)
     vpc_id = vpcs[0]["VpcId"]
     subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get("Subnets", [])
