@@ -90,7 +90,7 @@ def register(kubeadm_app: typer.Typer):
         print(Panel(
             f"[bold]Cluster:[/bold]        {name}\n"
             f"[bold]Target K8s:[/bold]     v{K8S_VERSION}\n"
-            f"[bold]Master:[/bold]         {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold]         {master['name']} ({master['ip']})\n"
             f"[bold]Workers:[/bold]        {', '.join(w['name'] for w in workers)}\n"
             f"[bold]Key:[/bold]            {key_path}",
             title="Kubelet Upgrade",

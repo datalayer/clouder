@@ -113,7 +113,7 @@ def register(kubeadm_app: typer.Typer):
 
         print(Panel(
             f"[bold]Cluster:[/bold]  {name}\n"
-            f"[bold]Master:[/bold]   {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold]   {master['name']} ({master['ip']})\n"
             f"[bold]Workers:[/bold]  {', '.join(w['name'] for w in workers)}\n"
             f"[bold]RG:[/bold]       {rg}\n\n"
             f"This will:\n"

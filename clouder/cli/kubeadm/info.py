@@ -37,7 +37,13 @@ def register(kubeadm_app: typer.Typer):
             status_lines.append(f"[yellow]Cluster '{name}' — setup may not be complete.[/yellow]")
 
         status_lines.append("")
-        status_lines.append(f"  [bold]Master:[/bold]   {master['name']} ({master['ip']})")
+        status_lines.append("  [bold bright_cyan]Total masters:[/bold bright_cyan] [bold bright_cyan]1[/bold bright_cyan]")
+        status_lines.append(
+            f"  [bold bright_green]Total workers:[/bold bright_green] "
+            f"[bold bright_green]{len(workers)}[/bold bright_green]"
+        )
+        status_lines.append("")
+        status_lines.append(f"  [bold]Masters:[/bold]   {master['name']} ({master['ip']})")
         if workers:
             status_lines.append(f"  [bold]Workers:[/bold]  {', '.join(w['name'] + ' (' + w['ip'] + ')' for w in workers)}")
         else:

@@ -1,5 +1,8 @@
 """Clouder CLI - kubeadm scale command."""
 
+import json
+import time
+
 import typer
 from rich import print
 from rich.panel import Panel
@@ -37,7 +40,8 @@ def register(kubeadm_app: typer.Typer):
 
         Compares the desired worker count with the current count, then:
         - Scale up: creates new VMs, installs prerequisites, joins them to the cluster.
-        - Scale down: drains and deletes the highest-numbered worker nodes.
+                - Scale down: iteratively removes the least-loaded worker with explicit
+                    cordon, pod deletion, and node/VM deletion completion waits.
         """
         if workers < 0:
             typer.echo("Worker count must be >= 0.", err=True)
@@ -106,7 +110,7 @@ def register(kubeadm_app: typer.Typer):
         # --- Show plan ---
         print(Panel(
             f"[bold]Cluster:[/bold]    {name}\n"
-            f"[bold]Master:[/bold]     {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold]     {master['name']} ({master['ip']})\n"
             f"[bold]Current workers:[/bold] {current_count}\n"
             f"[bold]Desired workers:[/bold] {workers}\n"
             f"[bold]Action:[/bold]     Scale {direction} by {diff} node(s)\n"
@@ -286,8 +290,8 @@ def _scale_down(
     cluster_name, context_id, master, current_workers, new_count,
     resource_group, key_path, user, metadata,
 ):
-    """Remove worker nodes from the cluster (highest-numbered first)."""
-    from ...cloud.azure.api import delete_azure_vm
+    """Remove worker nodes from the cluster (least running pods first, one by one)."""
+    from ...cloud.azure.api import delete_azure_vm, list_azure_vms
 
     current_count = len(current_workers)
     nodes_to_remove = current_count - new_count
@@ -296,39 +300,209 @@ def _scale_down(
         parts = w["name"].rsplit("-", 1)
         return int(parts[-1]) if parts[-1].isdigit() else 0
 
-    sorted_workers = sorted(current_workers, key=_worker_number, reverse=True)
-    victims = sorted_workers[:nodes_to_remove]
-
-    print(f"\n[bold]Removing {nodes_to_remove} worker(s): {', '.join(v['name'] for v in victims)}[/bold]")
-
-    # --- Step 1: Drain and remove nodes from Kubernetes ---
-    print(f"\n[bold]Step 1/2: Draining and removing nodes from Kubernetes...[/bold]")
-    for victim in victims:
-        k8s_node_name = victim["name"]
-        print(f"  [cyan]Draining {k8s_node_name}...[/cyan]")
-        _ssh_cmd_stream(
-            master["ip"], user, key_path,
-            f"kubectl drain {k8s_node_name} --ignore-daemonsets --delete-emptydir-data --force --timeout=120s 2>&1 || true",
+    def _running_pod_counts(node_names: list[str]) -> dict[str, int]:
+        """Return running pod counts per node using kubectl on the master."""
+        cmd = (
+            "kubectl get pods -A --field-selector=status.phase=Running "
+            "-o custom-columns=NODE:.spec.nodeName --no-headers 2>/dev/null || true"
         )
-        print(f"  [cyan]Removing {k8s_node_name} from cluster...[/cyan]")
+        result = _ssh_cmd(master["ip"], user, key_path, cmd, check=False)
+        counts = {node: 0 for node in node_names}
+        for line in result.stdout.strip().splitlines():
+            node = line.strip()
+            if node in counts:
+                counts[node] += 1
+        return counts
+
+    remaining_workers = list(current_workers)
+    removed_workers = []
+
+    print(f"\n[bold]Scale-down plan: remove {nodes_to_remove} worker node(s), one by one.[/bold]")
+
+    for iteration in range(1, nodes_to_remove + 1):
+        candidate_names = [w["name"] for w in remaining_workers]
+        pod_counts = _running_pod_counts(candidate_names)
+
+        victims_sorted = sorted(
+            remaining_workers,
+            key=lambda w: (pod_counts.get(w["name"], 0), -_worker_number(w)),
+        )
+        victim = victims_sorted[0]
+        k8s_node_name = victim["name"]
+        running_pods = pod_counts.get(k8s_node_name, 0)
+
+        print(f"\n[bold]Node removal {iteration}/{nodes_to_remove}[/bold]")
+        print("  Candidate running pod counts:")
+        for w in sorted(remaining_workers, key=lambda x: _worker_number(x)):
+            print(f"    - {w['name']}: {pod_counts.get(w['name'], 0)} pod(s)")
+        print(
+            f"  [cyan]Selected node:[/cyan] {k8s_node_name} "
+            f"([cyan]{running_pods}[/cyan] running pod(s), least-loaded priority)"
+        )
+
+        # --- Step 1: Mark unschedulable ---
+        print(f"\n  [bold]Step 1/4:[/bold] Mark node as unschedulable ({k8s_node_name})")
+        cordon_result = _ssh_cmd(
+            master["ip"], user, key_path,
+            f"kubectl cordon {k8s_node_name}",
+            check=False,
+        )
+        if cordon_result.returncode != 0 and "already cordoned" not in (cordon_result.stdout + cordon_result.stderr):
+            print(f"  [red]Failed to cordon {k8s_node_name}.[/red]")
+            if cordon_result.stderr.strip():
+                print(f"  [dim]{cordon_result.stderr.strip()}[/dim]")
+            raise typer.Exit(1)
+
+        cordoned = False
+        for _ in range(24):
+            status = _ssh_cmd(
+                master["ip"], user, key_path,
+                f"kubectl get node {k8s_node_name} -o jsonpath='{{.spec.unschedulable}}' 2>/dev/null || true",
+                check=False,
+            ).stdout.strip().lower()
+            if status == "true":
+                cordoned = True
+                break
+            time.sleep(2)
+        if not cordoned:
+            print(f"  [red]Node {k8s_node_name} did not become unschedulable in time.[/red]")
+            raise typer.Exit(1)
+        print(f"  [green]{k8s_node_name} is unschedulable.[/green]")
+
+        # --- Step 2: Delete all pods on the node ---
+        print(f"\n  [bold]Step 2/4:[/bold] Delete all pods from {k8s_node_name}")
+        _ssh_cmd(
+            master["ip"], user, key_path,
+            (
+                f"kubectl delete pod -A --field-selector spec.nodeName={k8s_node_name} "
+                "--ignore-not-found=true --grace-period=30 --force"
+            ),
+            check=False,
+        )
+
+        # --- Step 3: Wait until evictable pods are gone, then remove K8s node object ---
+        print(f"\n  [bold]Step 3/4:[/bold] Wait for pod termination and remove Kubernetes node object")
+        pods_gone = False
+        for poll in range(1, 61):
+            pods_result = _ssh_cmd(
+                master["ip"], user, key_path,
+                (
+                    f"kubectl get pods -A --field-selector spec.nodeName={k8s_node_name},"
+                    "status.phase!=Succeeded,status.phase!=Failed -o json 2>/dev/null || true"
+                ),
+                check=False,
+            )
+            remaining = -1
+            try:
+                pods_json = pods_result.stdout.strip()
+                if pods_json:
+                    items = json.loads(pods_json).get("items", [])
+                    daemonset_pods = []
+                    other_pods = []
+                    for pod in items:
+                        owners = pod.get("metadata", {}).get("ownerReferences", [])
+                        owner_kind = owners[0].get("kind") if owners else ""
+                        ns = pod.get("metadata", {}).get("namespace", "")
+                        pod_name = pod.get("metadata", {}).get("name", "")
+                        if owner_kind == "DaemonSet":
+                            daemonset_pods.append(f"{ns}/{pod_name}")
+                        else:
+                            other_pods.append(f"{ns}/{pod_name}")
+                    remaining = len(items)
+                    evictable_remaining = len(other_pods)
+                else:
+                    daemonset_pods = []
+                    other_pods = []
+                    evictable_remaining = 0
+            except Exception:
+                remaining = -1
+                daemonset_pods = []
+                other_pods = []
+                evictable_remaining = -1
+
+            if evictable_remaining == 0:
+                pods_gone = True
+                if daemonset_pods:
+                    print(
+                        f"  [yellow]Only DaemonSet-managed pods remain on {k8s_node_name} "
+                        "(expected). Proceeding to node deletion.[/yellow]"
+                    )
+                    for ds_pod in daemonset_pods:
+                        print(f"    [dim]- {ds_pod}[/dim]")
+                else:
+                    print(f"  [green]All pods terminated on {k8s_node_name}.[/green]")
+                break
+            if evictable_remaining >= 0:
+                print(
+                    f"  Waiting for evictable pods to terminate on {k8s_node_name}: "
+                    f"{evictable_remaining} remaining"
+                    f" ({len(daemonset_pods)} DaemonSet pod(s) ignored)..."
+                )
+                for pod_ref in other_pods[:5]:
+                    print(f"    [dim]- {pod_ref}[/dim]")
+            else:
+                print("  Waiting for pod status to stabilize...")
+            time.sleep(5)
+
+        if not pods_gone:
+            print(f"  [red]Timed out waiting for evictable pods to terminate on {k8s_node_name}.[/red]")
+            raise typer.Exit(1)
+
+        # Request node object deletion before VM shutdown; kubelet may recreate
+        # it until the VM is actually terminated, so final wait happens after VM deletion.
         _ssh_cmd(
             master["ip"], user, key_path,
             f"kubectl delete node {k8s_node_name} --ignore-not-found=true",
             check=False,
         )
-        print(f"  [green]{k8s_node_name} drained and removed.[/green]")
 
-    # --- Step 2: Delete Azure resources (VM + disks, NICs, IPs) ---
-    print(f"\n[bold]Step 2/2: Deleting Azure resources...[/bold]")
-    rg = resource_group
-    for victim in victims:
-        vm_name = victim["name"]
-        typer.echo(f"  Deleting VM: {vm_name} (with disks, NIC, IP)...")
+        # --- Step 4: Delete VM and wait for Azure completion ---
+        print(f"\n  [bold]Step 4/4:[/bold] Delete virtual machine node {k8s_node_name}")
         try:
-            delete_azure_vm(rg, vm_name, subscription_id=context_id)
-            print(f"  [green]VM deleted: {vm_name} + associated resources[/green]")
+            delete_azure_vm(resource_group, k8s_node_name, subscription_id=context_id)
         except Exception as e:
-            print(f"  [red]Failed to delete VM {vm_name}: {e}[/red]")
+            print(f"  [red]Failed to delete VM {k8s_node_name}: {e}[/red]")
+            raise typer.Exit(1)
+
+        vm_deleted = False
+        for _ in range(24):
+            vm_names = {
+                vm["name"]
+                for vm in list_azure_vms(resource_group=resource_group, subscription_id=context_id)
+            }
+            if k8s_node_name not in vm_names:
+                vm_deleted = True
+                break
+            time.sleep(5)
+        if not vm_deleted:
+            print(f"  [red]Timed out waiting for Azure VM deletion: {k8s_node_name}[/red]")
+            raise typer.Exit(1)
+
+        print(f"  [green]VM fully deleted: {k8s_node_name}[/green]")
+
+        node_deleted = False
+        for _ in range(36):
+            exists = _ssh_cmd(
+                master["ip"], user, key_path,
+                f"kubectl get node {k8s_node_name} -o name 2>/dev/null || true",
+                check=False,
+            ).stdout.strip()
+            if not exists:
+                node_deleted = True
+                break
+            time.sleep(5)
+        if not node_deleted:
+            print(
+                f"  [yellow]Kubernetes node object still present after VM deletion: {k8s_node_name}. "
+                "It should be cleaned up shortly by the control plane.[/yellow]"
+            )
+        else:
+            print(f"  [green]Kubernetes node removed: {k8s_node_name}[/green]")
+
+        removed_workers.append(victim)
+        remaining_workers = [w for w in remaining_workers if w["name"] != k8s_node_name]
+
+    victims = removed_workers
 
     # --- Update metadata ---
     victim_names = {v["name"] for v in victims}

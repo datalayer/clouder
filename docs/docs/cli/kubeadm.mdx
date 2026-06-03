@@ -13,36 +13,36 @@ Alias: `clouder k` (for example, `clouder k list`, `clouder k vm-create my-clust
 
 ```bash
 # Create the VMs (1 master + 1 worker)
-clouder kubeadm vm-create --workers 1 k1
+clouder kubeadm vm-create --workers 1 r1
 
 # List locally known kubeadm clusters
 clouder kubeadm list
 
 # Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
-clouder kubeadm setup k1
+clouder kubeadm setup r1
 
-# Fetch the kubeconfig to ~/.clouder/kubeadm/k1/kubeconfig
-clouder kubeadm get-config k1
+# Fetch the kubeconfig to ~/.clouder/kubeadm/r1/kubeconfig
+clouder kubeadm get-config r1
 
 # Verify
-clouder kubectl k1 get nodes
-clouder kubectl k1 get pods -A
+clouder kubectl r1 get nodes
+clouder kubectl r1 get pods -A
 
 # Enable ingress with Traefik controller and cloud-specific load balancer setup
-clouder kubeadm enable-ingress-traefik k1
-clouder helm k1 ls -A
+clouder kubeadm enable-ingress-traefik r1
+clouder helm r1 ls -A
 
 # Run the smoke test (Ingress + CRIU validation)
-clouder kubeadm smoke-test k1
+clouder kubeadm smoke-test r1
 
 # Upgrade kubelet/Kubeadm/kubectl on all nodes (e.g. after bumping K8S_VERSION)
-clouder kubeadm upgrade-kubelet k1
+clouder kubeadm upgrade-kubelet r1
 
 # Disable ingress
-clouder kubeadm disable-ingress-traefik k1
+clouder kubeadm disable-ingress-traefik r1
 
 # Tear down the cluster and delete all cloud resources
-clouder kubeadm vm-terminate k1
+clouder kubeadm vm-terminate r1
 ```
 
 ## Commands
@@ -247,7 +247,18 @@ clouder kubeadm info my-cluster
 
 Scale the number of worker nodes in an existing Kubeadm cluster. Compares the desired worker count with the current count, then:
 - **Scale up**: creates new VMs, installs prerequisites, joins them to the cluster.
-- **Scale down**: drains and deletes the highest-numbered worker nodes.
+- **Scale down**: removes nodes one by one using a least-loaded-first workflow with explicit completion waits.
+
+**Scale-down workflow (per node):**
+
+1. Identify the worker node with the fewest running pods (least-loaded priority).
+2. Mark that node unschedulable (`kubectl cordon`) and wait until the node is cordoned.
+3. Delete all evictable pods on that node (non-DaemonSet) and wait until they are fully terminated.
+4. Remove the Kubernetes node object, then delete the Azure VM and wait until deletion is complete.
+
+DaemonSet-managed pods are expected to remain on a cordoned node during this phase and are ignored by the completion wait.
+
+This sequence is repeated iteratively until the desired worker count is reached, with clear logs printed for every step.
 
 ```bash
 clouder kubeadm scale <name> [OPTIONS]

@@ -172,7 +172,7 @@ def _create_kubeadm_azure(
     typer.echo(f"  OS Disk:        {os_disk_size_gb} GB")
     typer.echo(f"  Admin User:     {admin_username}")
     typer.echo(f"  SSH Key:        {ssh_key_name or 'None'}")
-    typer.echo(f"  Master:         {master_name} ({master_size})")
+    typer.echo(f"  Masters:         {master_name} ({master_size})")
     for wn in worker_names:
         typer.echo(f"  Worker:         {wn} ({node_size})")
 
@@ -423,7 +423,7 @@ def _create_kubeadm_aws(
     typer.echo(f"  Subnet CIDR:    {subnet_cidr}")
     typer.echo(f"  Admin User:     {admin_username}")
     typer.echo(f"  EC2 Key Pair:   {ssh_key_name}")
-    typer.echo(f"  Master:         {master_name} ({master_size})")
+    typer.echo(f"  Masters:         {master_name} ({master_size})")
     for wn in worker_names:
         typer.echo(f"  Worker:         {wn} ({node_size})")
 
