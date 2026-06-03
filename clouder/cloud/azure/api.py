@@ -409,6 +409,48 @@ def run_azure_vm_shell_script(
     }
 
 
+def get_kubeadm_join_command(
+    resource_group: str,
+    master_vm_name: str,
+    *,
+    subscription_id: Optional[str] = None,
+) -> str:
+    """Get a kubeadm join command from the control-plane VM via Azure RunCommand.
+
+    Raises ``ValueError`` when a valid join command cannot be resolved.
+    """
+
+    result = run_azure_vm_shell_script(
+        resource_group=resource_group,
+        vm_name=master_vm_name,
+        script="sudo kubeadm token create --print-join-command",
+        subscription_id=subscription_id,
+    )
+    stdout = str(result.get("stdout") or "").strip()
+    stderr = str(result.get("stderr") or "").strip()
+
+    join_command = ""
+    for line in stdout.splitlines():
+        candidate = line.strip()
+        if "kubeadm join" in candidate:
+            join_command = candidate
+            break
+
+    if not join_command and "kubeadm join" in stdout:
+        normalized = " ".join(stdout.split())
+        marker = normalized.find("kubeadm join")
+        if marker >= 0:
+            join_command = normalized[marker:].strip()
+
+    if not join_command or "kubeadm join" not in join_command:
+        raise ValueError(
+            "invalid_kubeadm_join_command;"
+            f"stdout={stdout[-400:]};stderr={stderr[-400:]}"
+        )
+
+    return " ".join(join_command.split())
+
+
 def delete_azure_vm(resource_group: str, vm_name: str,
                      subscription_id: Optional[str] = None,
                      cleanup_resources: bool = True):

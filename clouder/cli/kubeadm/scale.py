@@ -68,6 +68,23 @@ def _build_k8s_api(cluster_name: str) -> k8s_client.CoreV1Api | None:
         return None
 
 
+def _registered_worker_names(core_v1: k8s_client.CoreV1Api | None, cluster_name: str) -> set[str]:
+    """Return worker node names currently visible in Kubernetes for the cluster."""
+    if core_v1 is None:
+        return set()
+    try:
+        nodes = core_v1.list_node().items
+    except Exception:
+        return set()
+    prefix = f"{cluster_name}-node-"
+    names: set[str] = set()
+    for node in nodes:
+        node_name = str(getattr(getattr(node, "metadata", None), "name", "") or "")
+        if node_name.startswith(prefix):
+            names.add(node_name)
+    return names
+
+
 def _wait_for_node_ready_api(core_v1: k8s_client.CoreV1Api, node_name: str, timeout_seconds: int = 300) -> bool:
     """Wait until a Kubernetes node is registered and Ready via the API."""
     deadline = time.time() + timeout_seconds
@@ -175,7 +192,14 @@ def register(kubeadm_app: typer.Typer):
 
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
-        if workers == current_count:
+        core_v1 = _build_k8s_api(name)
+        registered_workers = _registered_worker_names(core_v1, name)
+        registered_count = len(registered_workers)
+        workers_to_reconcile = [
+            worker for worker in current_workers if worker["name"] not in registered_workers
+        ]
+
+        if workers == current_count and not workers_to_reconcile:
             print(f"Cluster '{name}' already has {current_count} worker(s). Nothing to do.")
             raise typer.Exit(0)
 
@@ -217,18 +241,50 @@ def register(kubeadm_app: typer.Typer):
             subnet_id = master_nic.ip_configurations[0].subnet.id
             nsg_id = master_nic.network_security_group.id if master_nic.network_security_group else None
 
-        direction = "up" if workers > current_count else "down"
-        diff = abs(workers - current_count)
+        if workers > current_count:
+            direction = "up"
+            diff = abs(workers - current_count)
+            action_label = f"Scale up by {diff} node(s)"
+        elif workers < current_count:
+            direction = "down"
+            diff = abs(workers - current_count)
+            action_label = f"Scale down by {diff} node(s)"
+        else:
+            direction = "up"
+            diff = len(workers_to_reconcile)
+            action_label = f"Reconcile {diff} unregistered worker(s)"
+
+        if workers_to_reconcile:
+            action_label = (
+                f"{action_label} + reconcile {len(workers_to_reconcile)} unregistered worker(s)"
+                if "reconcile" not in action_label.lower()
+                else action_label
+            )
+
+        if workers_to_reconcile:
+            reconcile_names = ", ".join(worker["name"] for worker in workers_to_reconcile)
+        else:
+            reconcile_names = "-"
 
         # --- Show plan ---
+        plan_items = [
+            ("Cluster", str(name)),
+            ("Masters", f"{master['name']} ({master['ip']})"),
+            ("Current workers (VM)", str(current_count)),
+            ("Current workers (K8s)", str(registered_count)),
+            ("Desired workers", str(workers)),
+            ("Action", str(action_label)),
+            ("To reconcile", str(reconcile_names)),
+            ("Node size", str(node_size)),
+            ("Region", str(region)),
+        ]
+        label_width = max(len(label) for label, _ in plan_items)
+        plan_lines = [
+            f"[bold]{label + ':':<{label_width + 1}}[/bold] {value}"
+            for label, value in plan_items
+        ]
         print(Panel(
-            f"[bold]Cluster:[/bold]    {name}\n"
-            f"[bold]Masters:[/bold]     {master['name']} ({master['ip']})\n"
-            f"[bold]Current workers:[/bold] {current_count}\n"
-            f"[bold]Desired workers:[/bold] {workers}\n"
-            f"[bold]Action:[/bold]     Scale {direction} by {diff} node(s)\n"
-            f"[bold]Node size:[/bold]  {node_size}\n"
-            f"[bold]Region:[/bold]     {region}",
+            "\n".join(plan_lines),
             title=f"Scale {'Up' if direction == 'up' else 'Down'}",
         ))
 
@@ -245,6 +301,7 @@ def register(kubeadm_app: typer.Typer):
                 master=master,
                 current_workers=current_workers,
                 new_count=workers,
+                workers_to_reconcile=workers_to_reconcile,
                 resource_group=resource_group,
                 region=region,
                 node_size=node_size,
@@ -276,12 +333,86 @@ def register(kubeadm_app: typer.Typer):
 
 def _scale_up(
     cluster_name, context_id, master, current_workers, new_count,
+    workers_to_reconcile,
     resource_group, region, node_size, admin_username, ssh_key_name,
     image_publisher, image_offer, image_sku, subnet_id, nsg_id,
     key_path, user, metadata, node_labels,
 ):
     """Add new worker nodes to the cluster."""
-    from ...cloud.azure.api import create_azure_vm, run_azure_vm_shell_script
+    from ...cloud.azure.api import (
+        create_azure_vm,
+        get_kubeadm_join_command,
+        run_azure_vm_shell_script,
+    )
+
+    def _clip(text: str, max_chars: int = 1600) -> str:
+        value = str(text or "").strip()
+        if len(value) <= max_chars:
+            return value
+        return "...\n" + value[-max_chars:]
+
+    def _print_step_logs(worker_name: str, step: str, result: dict[str, object]) -> None:
+        stdout = _clip(str(result.get("stdout") or ""))
+        stderr = _clip(str(result.get("stderr") or ""))
+        print(f"  [yellow]{worker_name} {step} diagnostics:[/yellow]")
+        if stdout:
+            print(f"    [dim]stdout:\n{stdout}[/dim]")
+        else:
+            print("    [dim]stdout: <empty>[/dim]")
+        if stderr:
+            print(f"    [dim]stderr:\n{stderr}[/dim]")
+        else:
+            print("    [dim]stderr: <empty>[/dim]")
+
+    def _print_worker_runtime_diagnostics(worker: dict[str, str]) -> None:
+        diagnostics = run_azure_vm_shell_script(
+            resource_group=resource_group,
+            vm_name=worker["name"],
+            script=(
+                "set +e\n"
+                "echo '__kubelet_active__'\n"
+                "sudo systemctl is-active kubelet\n"
+                "echo '__containerd_active__'\n"
+                "sudo systemctl is-active containerd\n"
+                "echo '__kubelet_status__'\n"
+                "sudo systemctl status kubelet --no-pager -l\n"
+                "echo '__kubelet_journal__'\n"
+                "sudo journalctl -u kubelet -n 120 --no-pager\n"
+            ),
+            subscription_id=context_id,
+        )
+        _print_step_logs(worker["name"], "runtime", diagnostics)
+
+    def _log_relevant_output(worker_name: str, step_name: str, result: dict[str, object]) -> None:
+        """Print a concise, relevant summary from Azure RunCommand output."""
+        stdout = str(result.get("stdout") or "").strip()
+        if not stdout:
+            return
+
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        if not lines:
+            return
+
+        preferred = [
+            line
+            for line in lines
+            if any(
+                token in line.lower()
+                for token in (
+                    "version",
+                    "installed",
+                    "complete",
+                    "joined",
+                    "ready",
+                    "done",
+                )
+            )
+        ]
+        selected = preferred[-2:] if preferred else lines[-1:]
+        snippet = " | ".join(selected)
+        if len(snippet) > 240:
+            snippet = snippet[:237] + "..."
+        print(f"    [dim]{worker_name} {step_name}: {snippet}[/dim]")
 
     core_v1 = _build_k8s_api(cluster_name)
     if core_v1 is None:
@@ -295,15 +426,7 @@ def _scale_up(
         raise typer.Exit(1)
 
     current_count = len(current_workers)
-    existing_numbers = []
-    for w in current_workers:
-        parts = w["name"].rsplit("-", 1)
-        if parts[-1].isdigit():
-            existing_numbers.append(int(parts[-1]))
-    next_start = max(existing_numbers) + 1 if existing_numbers else 1
-
-    nodes_to_add = new_count - current_count
-    new_worker_names = [f"{cluster_name}-node-{next_start + i}" for i in range(nodes_to_add)]
+    new_workers: list[dict[str, str]] = []
 
     # --- Read SSH public key ---
     ssh_public_key = None
@@ -312,135 +435,183 @@ def _scale_up(
         if pub_path.exists():
             ssh_public_key = pub_path.read_text().strip()
 
-    # --- Step 1: Create new VMs ---
-    print(f"\n[bold]Step 1/4: Creating {nodes_to_add} new worker VM(s)...[/bold]")
-    new_workers = []
-    for vm_name in new_worker_names:
-        typer.echo(f"  Creating {vm_name} ({node_size})...")
-        result = create_azure_vm(
-            resource_group=resource_group,
-            vm_name=vm_name,
-            location=region,
-            vm_size=node_size,
-            admin_username=admin_username,
-            ssh_public_key=ssh_public_key,
-            image_publisher=image_publisher,
-            image_offer=image_offer,
-            image_sku=image_sku,
-            subnet_id=subnet_id,
-            nsg_id=nsg_id,
-            subscription_id=context_id,
-        )
-        print(f"  [green]{vm_name} created - IP: {result.get('public_ip', 'N/A')}[/green]")
-        new_workers.append({"name": vm_name, "ip": result.get("public_ip"), "resource_group": resource_group})
+    def _prepare_and_register_workers(target_workers: list[dict[str, str]], phase_title: str) -> None:
+        if not target_workers:
+            return
 
-    # --- Step 2: Install prerequisites on new workers via Azure RunCommand ---
-    print(f"\n[bold]Step 2/4: Installing prerequisites on new workers (cloud API)...[/bold]")
-    for worker in new_workers:
-        print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
-        result = run_azure_vm_shell_script(
-            resource_group=resource_group,
-            vm_name=worker["name"],
-            script=_SCRIPT_PREREQS,
-            subscription_id=context_id,
+        print(
+            f"\n[bold]{phase_title}: Installing prerequisites on {len(target_workers)} worker(s) (cloud API)...[/bold]"
         )
-        stderr = (result.get("stderr") or "").strip()
-        if stderr:
-            print(f"  [red]Failed on {worker['name']}[/red]")
-            if stderr:
-                print(f"  [dim]{stderr[-400:]}[/dim]")
+        for worker in target_workers:
+            print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
+            result = run_azure_vm_shell_script(
+                resource_group=resource_group,
+                vm_name=worker["name"],
+                script=_SCRIPT_PREREQS,
+                subscription_id=context_id,
+            )
+            stdout = (result.get("stdout") or "").strip()
+            stderr = (result.get("stderr") or "").strip()
+            if stderr or "__DATALAYER_PREREQS_OK__" not in stdout:
+                print(f"  [red]Failed on {worker['name']}[/red]")
+                _print_step_logs(worker["name"], "prereqs", result)
+                raise typer.Exit(1)
+            print(f"  [green]{worker['name']} prerequisites done.[/green]")
+            _log_relevant_output(worker["name"], "prereqs", result)
+
+        print(
+            f"\n[bold]{phase_title}: Upgrading kubelet/kubeadm/kubectl on {len(target_workers)} worker(s) (cloud API)...[/bold]"
+        )
+        for worker in target_workers:
+            print(f"  [cyan]{worker['name']}[/cyan] upgrading kubelet stack...")
+            upgrade_result = run_azure_vm_shell_script(
+                resource_group=resource_group,
+                vm_name=worker["name"],
+                script=_SCRIPT_UPGRADE_KUBELET,
+                subscription_id=context_id,
+            )
+            upgrade_stdout = (upgrade_result.get("stdout") or "").strip()
+            upgrade_stderr = (upgrade_result.get("stderr") or "").strip()
+            if upgrade_stderr or "__DATALAYER_KUBELET_UPGRADE_OK__" not in upgrade_stdout:
+                print(f"  [red]Kubelet upgrade failed on {worker['name']}[/red]")
+                _print_step_logs(worker["name"], "upgrade", upgrade_result)
+                raise typer.Exit(1)
+            print(f"  [green]{worker['name']} kubelet stack upgraded.[/green]")
+            _log_relevant_output(worker["name"], "upgrade", upgrade_result)
+
+        print(f"\n[bold]{phase_title}: Getting join command from master (Python cloud API)...[/bold]")
+        try:
+            join_command = get_kubeadm_join_command(
+                resource_group=resource_group,
+                master_vm_name=master["name"],
+                subscription_id=context_id,
+            )
+        except ValueError as exc:
+            print("[red]Could not get a valid join command from master.[/red]")
+            typer.echo(str(exc))
             raise typer.Exit(1)
-        print(f"  [green]{worker['name']} done.[/green]")
+        print(f"  [dim]Join command: {join_command}[/dim]")
 
-    # --- Step 3: Upgrade kubelet/kubeadm/kubectl on new workers before join ---
-    print(f"\n[bold]Step 3/5: Upgrading kubelet/kubeadm/kubectl on new workers (cloud API)...[/bold]")
-    for worker in new_workers:
-        print(f"  [cyan]{worker['name']}[/cyan] upgrading kubelet stack...")
-        upgrade_result = run_azure_vm_shell_script(
-            resource_group=resource_group,
-            vm_name=worker["name"],
-            script=_SCRIPT_UPGRADE_KUBELET,
-            subscription_id=context_id,
+        print(
+            f"\n[bold]{phase_title}: Joining workers, enabling feature gates, and applying labels (cloud API + k8s API)...[/bold]"
         )
-        upgrade_stderr = (upgrade_result.get("stderr") or "").strip()
-        if upgrade_stderr:
-            print(f"  [red]Kubelet upgrade failed on {worker['name']}[/red]")
-            print(f"  [dim]{upgrade_stderr[-400:]}[/dim]")
-            raise typer.Exit(1)
-        print(f"  [green]{worker['name']} kubelet stack upgraded.[/green]")
+        for worker in target_workers:
+            print(f"  [cyan]{worker['name']}[/cyan] joining...")
+            join_worker_result = run_azure_vm_shell_script(
+                resource_group=resource_group,
+                vm_name=worker["name"],
+                script=f"sudo {join_command} --v=5",
+                subscription_id=context_id,
+            )
+            join_worker_stdout = (join_worker_result.get("stdout") or "").strip()
+            join_worker_stderr = (join_worker_result.get("stderr") or "").strip()
+            join_worker_failed_markers = (
+                "error execution phase",
+                "preflight",
+                "timed out waiting for",
+                "unable to",
+                "failed",
+            )
+            join_worker_suspected_failure = any(
+                marker in join_worker_stdout.lower() for marker in join_worker_failed_markers
+            )
+            if join_worker_stderr or join_worker_suspected_failure:
+                print(f"  [red]Join failed on {worker['name']}[/red]")
+                _print_step_logs(worker["name"], "join", join_worker_result)
+                _print_worker_runtime_diagnostics(worker)
+                raise typer.Exit(1)
+            print(f"  [green]{worker['name']} joined.[/green]")
+            _log_relevant_output(worker["name"], "join", join_worker_result)
 
-    # --- Step 4: Get fresh join command from master via Azure RunCommand ---
-    print(f"\n[bold]Step 4/5: Getting join command from master (cloud API)...[/bold]")
-    join_result = run_azure_vm_shell_script(
-        resource_group=resource_group,
-        vm_name=master["name"],
-        script="sudo kubeadm token create --print-join-command",
-        subscription_id=context_id,
-    )
-    join_stdout = (join_result.get("stdout") or "").strip()
-    join_stderr = (join_result.get("stderr") or "").strip()
-    join_command = ""
-    for line in join_stdout.splitlines():
-        candidate = line.strip()
-        if "kubeadm join" in candidate:
-            join_command = candidate
-            break
+            print(f"  [cyan]{worker['name']}[/cyan] enabling feature gates...")
+            feature_result = run_azure_vm_shell_script(
+                resource_group=resource_group,
+                vm_name=worker["name"],
+                script=_SCRIPT_WORKER_FEATURE_GATE,
+                subscription_id=context_id,
+            )
+            feature_stderr = (feature_result.get("stderr") or "").strip()
+            if feature_stderr:
+                print(f"  [yellow]Feature gate setup failed on {worker['name']} (non-fatal)[/yellow]")
+                print(f"  [dim]{feature_stderr[-300:]}[/dim]")
+            else:
+                print(f"  [green]{worker['name']} feature gates enabled.[/green]")
+            _log_relevant_output(worker["name"], "feature-gates", feature_result)
 
-    if not join_command and "kubeadm join" in join_stdout:
-        join_command = join_stdout
+            kubelet_check = run_azure_vm_shell_script(
+                resource_group=resource_group,
+                vm_name=worker["name"],
+                script="sudo systemctl is-active kubelet; sudo systemctl is-active containerd",
+                subscription_id=context_id,
+            )
+            kubelet_state = (kubelet_check.get("stdout") or "").strip().splitlines()
+            kubelet_active = any(str(line).strip() == "active" for line in kubelet_state)
+            if not kubelet_active:
+                print(f"  [red]{worker['name']} kubelet is not active right after join.[/red]")
+                _print_step_logs(worker["name"], "service-check", kubelet_check)
+                _print_step_logs(worker["name"], "join", join_worker_result)
+                _print_worker_runtime_diagnostics(worker)
+                raise typer.Exit(1)
 
-    if not join_command or "kubeadm join" not in join_command:
-        print("[red]Could not get a valid join command from master.[/red]")
-        if join_stderr:
-            typer.echo(f"stderr: {join_stderr}")
-        typer.echo(f"stdout: {join_stdout}")
-        raise typer.Exit(1)
-    print(f"  [dim]Join command: {join_command}[/dim]")
+            print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready via Kubernetes API...")
+            ready = _wait_for_node_ready_api(core_v1, worker["name"])
+            if not ready:
+                print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
+                _print_step_logs(worker["name"], "join", join_worker_result)
+                _print_step_logs(worker["name"], "feature-gates", feature_result)
+                _print_worker_runtime_diagnostics(worker)
+                raise typer.Exit(1)
+            print(f"  [green]{worker['name']} is Ready.[/green]")
 
-    # --- Step 5: Join new workers + enable feature gates + label when Ready ---
-    print(
-        "\n[bold]Step 5/5: Joining new workers, enabling feature gates, and applying labels (cloud API + k8s API)...[/bold]"
-    )
-    for worker in new_workers:
-        print(f"  [cyan]{worker['name']}[/cyan] joining...")
-        join_worker_result = run_azure_vm_shell_script(
-            resource_group=resource_group,
-            vm_name=worker["name"],
-            script=f"sudo {join_command}",
-            subscription_id=context_id,
+            print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
+            _apply_node_labels_api(core_v1, worker["name"], node_labels)
+            print(f"  [green]{worker['name']} labels applied.[/green]")
+
+    reconciling_workers = list(workers_to_reconcile or [])
+    if reconciling_workers:
+        _prepare_and_register_workers(reconciling_workers, "Phase A (reconcile)")
+
+    refreshed_cluster = _resolve_cluster_vms(cluster_name)
+    refreshed_workers = refreshed_cluster["workers"]
+    registered_after_reconcile = _registered_worker_names(core_v1, cluster_name)
+
+    desired_missing_workers = max(0, int(new_count) - len(registered_after_reconcile))
+
+    existing_numbers = []
+    for worker in refreshed_workers:
+        parts = worker["name"].rsplit("-", 1)
+        if parts[-1].isdigit():
+            existing_numbers.append(int(parts[-1]))
+    next_start = max(existing_numbers) + 1 if existing_numbers else 1
+
+    new_worker_names = [
+        f"{cluster_name}-node-{next_start + i}" for i in range(desired_missing_workers)
+    ]
+
+    if new_worker_names:
+        print(
+            f"\n[bold]Phase B (scale): Creating {len(new_worker_names)} new worker VM(s) to reach desired registered workers...[/bold]"
         )
-        join_worker_stderr = (join_worker_result.get("stderr") or "").strip()
-        if join_worker_stderr:
-            print(f"  [red]Join failed on {worker['name']}[/red]")
-            print(f"  [dim]{join_worker_stderr[-400:]}[/dim]")
-            raise typer.Exit(1)
-        print(f"  [green]{worker['name']} joined.[/green]")
+        for vm_name in new_worker_names:
+            typer.echo(f"  Creating {vm_name} ({node_size})...")
+            result = create_azure_vm(
+                resource_group=resource_group,
+                vm_name=vm_name,
+                location=region,
+                vm_size=node_size,
+                admin_username=admin_username,
+                ssh_public_key=ssh_public_key,
+                image_publisher=image_publisher,
+                image_offer=image_offer,
+                image_sku=image_sku,
+                subnet_id=subnet_id,
+                nsg_id=nsg_id,
+                subscription_id=context_id,
+            )
+            print(f"  [green]{vm_name} created - IP: {result.get('public_ip', 'N/A')}[/green]")
+            new_workers.append({"name": vm_name, "ip": result.get("public_ip"), "resource_group": resource_group})
 
-        print(f"  [cyan]{worker['name']}[/cyan] enabling feature gates...")
-        feature_result = run_azure_vm_shell_script(
-            resource_group=resource_group,
-            vm_name=worker["name"],
-            script=_SCRIPT_WORKER_FEATURE_GATE,
-            subscription_id=context_id,
-        )
-        feature_stderr = (feature_result.get("stderr") or "").strip()
-        if feature_stderr:
-            print(f"  [yellow]Feature gate setup failed on {worker['name']} (non-fatal)[/yellow]")
-            print(f"  [dim]{feature_stderr[-300:]}[/dim]")
-        else:
-            print(f"  [green]{worker['name']} feature gates enabled.[/green]")
-
-        print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready via Kubernetes API...")
-        ready = _wait_for_node_ready_api(core_v1, worker["name"])
-
-        if not ready:
-            print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
-            raise typer.Exit(1)
-        print(f"  [green]{worker['name']} is Ready.[/green]")
-
-        print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
-        _apply_node_labels_api(core_v1, worker["name"], node_labels)
-        print(f"  [green]{worker['name']} labels applied.[/green]")
+        _prepare_and_register_workers(new_workers, "Phase B (scale)")
 
     # --- Update metadata ---
     if metadata:

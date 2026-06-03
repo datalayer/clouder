@@ -235,7 +235,8 @@ def resolve_kubeadm_cluster_name(cluster_name: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 _SCRIPT_PREREQS = f"""
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # --- Disable swap ---
@@ -337,11 +338,24 @@ sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kubelet kubeadm kubectl > /dev/null
 sudo apt-mark hold kubelet kubeadm kubectl containerd.io
 
+# --- Validate kube binaries/services are present ---
+command -v kubelet >/dev/null
+command -v kubeadm >/dev/null
+command -v kubectl >/dev/null
+if ! systemctl list-unit-files | grep -q '^kubelet.service'; then
+    echo "ERROR: kubelet.service unit file is missing"
+    exit 1
+fi
+sudo systemctl daemon-reload
+sudo systemctl enable kubelet >/dev/null 2>&1 || true
+
 echo "Prerequisites installed successfully."
+echo "__DATALAYER_PREREQS_OK__"
 """
 
 _SCRIPT_KUBEADM_INIT = """
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
 
@@ -424,7 +438,8 @@ kubeadm token create --print-join-command 2>/dev/null
 # """
 
 _SCRIPT_INSTALL_CNI = """
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 
 # Install Flannel CNI
 kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
@@ -435,7 +450,8 @@ kubectl -n kube-flannel wait --for=condition=Ready pod -l app=flannel --timeout=
 """
 
 _SCRIPT_WORKER_FEATURE_GATE = """
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 # Enable ContainerCheckpoint feature gate on worker kubelet
 KUBELET_CONF=/var/lib/kubelet/config.yaml
 if sudo grep -q "featureGates:" $KUBELET_CONF; then
@@ -479,7 +495,8 @@ echo "io_uring disabled for unprivileged processes."
 """
 
 _SCRIPT_UPGRADE_KUBELET = f"""
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 echo "=== Upgrading kubelet / kubeadm / kubectl to v{K8S_VERSION}.x ==="
@@ -498,6 +515,15 @@ sudo apt-mark unhold kubelet kubeadm kubectl 2>/dev/null || true
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kubelet kubeadm kubectl > /dev/null
 sudo apt-mark hold kubelet kubeadm kubectl
 
+# --- Validate kube binaries/services are present ---
+command -v kubelet >/dev/null
+command -v kubeadm >/dev/null
+command -v kubectl >/dev/null
+if ! systemctl list-unit-files | grep -q '^kubelet.service'; then
+    echo "ERROR: kubelet.service unit file is missing after upgrade"
+    exit 1
+fi
+
 # --- Restart kubelet ---
 sudo systemctl daemon-reload
 sudo systemctl restart kubelet
@@ -505,6 +531,7 @@ sudo systemctl restart kubelet
 echo "kubelet version: $(kubelet --version 2>&1)"
 echo "kubeadm version: $(kubeadm version -o short 2>&1)"
 echo "kubectl version: $(kubectl version --client -o yaml 2>&1 | head -3)"
+echo "__DATALAYER_KUBELET_UPGRADE_OK__"
 echo "=== Upgrade complete ==="
 """
 
