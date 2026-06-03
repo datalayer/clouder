@@ -19,3 +19,30 @@ It supports alpha features of Kubernetes like [Container checkpoint and restore]
 Azure, AWS and OVHcloud are supported for now. Support of other cloud is planned in subsequent releases.
 
 Read more on the [Clouder documentation](https://clouder.sh) website.
+
+## Kubeadm Commands
+
+Common lifecycle commands for kubeadm clusters:
+
+```bash
+# Scale cluster workers
+clouder kubeadm scale r1 --workers 10
+
+# Scale workers with larger OS disks for higher ephemeral-storage on each node
+clouder kubeadm scale r1 --workers 10 --os-disk-size-gb 128
+
+# Prune unhealthy worker nodes/VMs (interactive confirmation)
+clouder kubeadm prune r1
+
+# Prune unhealthy worker nodes/VMs without prompt
+clouder kubeadm prune r1 --force
+```
+
+### Prune Command
+
+`clouder kubeadm prune <cluster>` identifies unhealthy worker resources for the cluster and asks for confirmation before forced cleanup:
+
+- Kubernetes worker nodes where `Ready != True`
+- Azure worker VMs where `provisioning_state != Succeeded`
+
+When confirmed, it force-deletes matching Kubernetes node objects and Azure VMs.

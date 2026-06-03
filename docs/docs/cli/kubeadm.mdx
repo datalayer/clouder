@@ -38,6 +38,9 @@ clouder kubeadm smoke-test r1
 # Upgrade kubelet/Kubeadm/kubectl on all nodes (e.g. after bumping K8S_VERSION)
 clouder kubeadm upgrade-kubelet r1
 
+# Prune unhealthy worker Kubernetes nodes/VMs (interactive confirmation)
+clouder kubeadm prune r1
+
 # Disable ingress
 clouder kubeadm disable-ingress-traefik r1
 
@@ -280,6 +283,7 @@ clouder kubeadm scale <name> [OPTIONS]
 | `--workers` (required) | `-w` | Desired number of worker nodes |
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--os-disk-size-gb` | | OS disk size in GiB for newly created workers. Larger disks increase node ephemeral-storage capacity. |
 | `--node-label` | | Node label (`key=value`) applied after each new worker becomes Ready. Repeatable or comma-separated. Defaults to runtime labels. |
 | `--force` | `-f` | Skip confirmation prompt |
 
@@ -289,8 +293,46 @@ clouder kubeadm scale <name> [OPTIONS]
 # Scale up to 5 workers
 clouder kubeadm scale my-cluster --workers 5
 
+# Scale up with larger worker OS disks (improves ephemeral-storage capacity)
+clouder kubeadm scale my-cluster --workers 5 --os-disk-size-gb 128
+
 # Scale down to 1 worker (force, no confirmation)
 clouder kubeadm scale my-cluster --workers 1 --force
+```
+
+---
+
+### `clouder kubeadm prune`
+
+Identify unhealthy worker Kubernetes nodes and Azure VMs, list them, and ask for confirmation before force deletion.
+
+```bash
+clouder kubeadm prune <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--force` | `-f` | Skip confirmation prompt |
+
+**What is considered unhealthy:**
+
+- Kubernetes worker node where `Ready != True`
+- Azure worker VM where `provisioning_state != Succeeded`
+
+When confirmed, Clouder force-deletes matching Kubernetes node objects and Azure VMs.
+
+**Example:**
+
+```bash
+# Interactive confirmation
+clouder kubeadm prune my-cluster
+
+# No prompt
+clouder kubeadm prune my-cluster --force
 ```
 
 ---

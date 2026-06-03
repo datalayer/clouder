@@ -20,6 +20,7 @@ from .aws_cmd import aws_app
 from .cost import cost_app
 from .criu import criu_app
 from .completion import completion_app
+from ..util.utils import run_sbin
 
 app = typer.Typer(
     name="clouder",
@@ -77,21 +78,7 @@ def server():
 @app.command("about")
 def about():
     """Show Clouder banner and project links."""
-    typer.secho(
-        """┏┓┓     ┓    
-┃ ┃┏┓┓┏┏┫┏┓┏┓
-┗┛┗┗┛┗┻┗┻┗ ┛ """,
-        fg=typer.colors.GREEN,
-    )
-    typer.echo(
-        """
-Copyright (c) Datalayer, Inc. https://datalayer.ai
-
-☰ ☁️  Clouder - Create, manage and share Kubernetes clusters.
-
-Documentation: https://clouder.sh
-Source code: https://github.com/datalayer/clouder"""
-    )
+    run_sbin(["shell", "sbin", "about"])
 
 
 # Register the kubectl Click command directly on Typer's Click group.

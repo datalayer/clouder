@@ -19,7 +19,7 @@ def kubeadm_callback():
 
 
 # -- Register every sub-command module --
-from . import create, setup, get_config, scale, terminate  # noqa: E402
+from . import create, setup, get_config, scale, terminate, prune  # noqa: E402
 from . import list_clusters                                     # noqa: E402
 from . import set_default                                       # noqa: E402
 from . import info, ingress_nginx, ingress_traefik, smoke_test    # noqa: E402
@@ -33,6 +33,7 @@ get_config.register(kubeadm_app)
 info.register(kubeadm_app)
 scale.register(kubeadm_app)
 terminate.register(kubeadm_app)
+prune.register(kubeadm_app)
 ingress_nginx.register(kubeadm_app)
 ingress_traefik.register(kubeadm_app)
 smoke_test.register(kubeadm_app)
