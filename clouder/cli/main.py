@@ -38,6 +38,7 @@ app.add_typer(operator_app, name="operator", help="Manage the Clouder operator."
 app.add_typer(sh_app, name="sh", help="Run shell/sbin scripts.")
 app.add_typer(ssh_app, name="ssh", help="SSH into a virtual machine.")
 app.add_typer(kubeadm_app, name="kubeadm", help="Provision and setup kubeadm Kubernetes clusters.")
+app.add_typer(kubeadm_app, name="k", help="Alias for kubeadm commands.")
 app.add_typer(azure_app, name="azure", help="Azure cloud operations.")
 app.add_typer(aws_app, name="aws", help="AWS cloud operations.")
 app.add_typer(criu_app, name="criu", help="CRIU checkpoint visibility and configuration.")

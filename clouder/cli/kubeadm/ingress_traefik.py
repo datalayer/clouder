@@ -10,6 +10,7 @@ from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    resolve_kubeadm_cluster_name,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
@@ -64,7 +65,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("enable-ingress-traefik")
     def kubeadm_enable_ingress_traefik(
-        name: str = typer.Argument(..., help="Cluster name."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
@@ -80,6 +81,7 @@ def register(kubeadm_app: typer.Typer):
         """
         import os as _os
 
+        name = resolve_kubeadm_cluster_name(name)
         (cloud, context_id) = get_current_context()
         if cloud != "azure":
             typer.echo("Load balancer setup is currently only supported for Azure.", err=True)
@@ -329,7 +331,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("disable-ingress-traefik")
     def kubeadm_disable_ingress_traefik(
-        name: str = typer.Argument(..., help="Cluster name."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
@@ -339,6 +341,7 @@ def register(kubeadm_app: typer.Typer):
         Deletes the Azure Load Balancer, its public IP, and uninstalls
         the Traefik ingress controller from the cluster.
         """
+        name = resolve_kubeadm_cluster_name(name)
         (cloud, context_id) = get_current_context()
         if cloud != "azure":
             typer.echo("Load balancer commands are currently only supported for Azure.", err=True)

@@ -60,7 +60,7 @@ clouder ssh-key set-current
 
 Lists the SSH keys available in `~/.ssh/` and asks you to pick one as the default. You can also choose **(clear default)** to unset it. The selection is stored in `~/.clouder/clouder.yaml` and automatically used by:
 
-- `clouder ssh connect`
+- `clouder ssh`
 - `clouder kubeadm setup`, `enable-ingress-nginx`, `smoke-test`, etc.
 
 An explicit `--key`/`-i` flag on any command still takes priority.
@@ -113,4 +113,4 @@ clouder ssh-key download my-server
 - During `clouder vm create`, you can pick from existing local keys or generate a new one.
 - Use `clouder ssh-key set-current` to avoid being prompted for a key every time. The stored default is used whenever no explicit key is provided and no cluster-specific key exists.
 - Keys generated during VM creation are named `<vm-name>-key`.
-- `clouder ssh connect` auto-detects keys matching `<vm-name>-key` in `~/.ssh/`.
+- `clouder ssh` auto-detects keys matching `<vm-name>-key` in `~/.ssh/`.

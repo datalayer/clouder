@@ -10,6 +10,7 @@ from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
     K8S_VERSION,
+    resolve_kubeadm_cluster_name,
     _build_aws_ebs_csi_setup_script,
     _build_aws_load_balancer_setup_script,
     _SCRIPT_INSTALL_AZURE_DISK_CSI,
@@ -35,7 +36,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("setup")
     def kubeadm_setup(
-        name: str = typer.Argument(..., help="Cluster name (must match vm-create name)."),
+        name: str | None = typer.Argument(None, help="Cluster name (must match vm-create name). If omitted, uses default kubeadm cluster."),
         user: str = typer.Option("ubuntu", "--admin-user", "-u", help="SSH username on the VMs (ubuntu for AWS, azureuser for Azure)."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         k8s_version: str = typer.Option(K8S_VERSION, "--k8s-version", help="Kubernetes version to install."),
@@ -45,6 +46,7 @@ def register(kubeadm_app: typer.Typer):
         Steps: install prerequisites → kubeadm init (master) → install CNI →
         kubeadm join (workers) → enable CRIU feature gates (all nodes).
         """
+        name = resolve_kubeadm_cluster_name(name)
         cluster = _resolve_cluster_vms(name)
         master = cluster["master"]
         workers = cluster["workers"]

@@ -11,6 +11,7 @@ from ...util.utils import kubeadm_cluster_folder
 from ...util.wait import wait_with_spinner
 
 from ._helpers import (
+    resolve_kubeadm_cluster_name,
     _delete_cluster_metadata,
     _load_cluster_metadata,
     _resolve_cluster_vms,
@@ -22,7 +23,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("vm-terminate")
     def kubeadm_vm_terminate(
-        name: str = typer.Argument(..., help="Cluster name."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
         delete_rg: bool = typer.Option(False, "--delete-rg", help="Also delete the resource group."),
     ):
@@ -30,6 +31,7 @@ def register(kubeadm_app: typer.Typer):
 
         Deletes VMs, NICs, public IPs, OS disks, NSG, and VNet for the cluster.
         """
+        name = resolve_kubeadm_cluster_name(name)
         (cloud, context_id) = get_current_context()
         if cloud not in {"azure", "aws"}:
             typer.echo("Kubeadm commands are currently supported for Azure and AWS.", err=True)

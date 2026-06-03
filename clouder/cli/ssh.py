@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+from typing import Optional
 
 import typer
 from rich import print
@@ -15,22 +16,21 @@ ssh_app = typer.Typer(no_args_is_help=True)
 
 
 @ssh_app.callback(invoke_without_command=True)
-def ssh_default(ctx: typer.Context):
-    """SSH into a VM if no subcommand given."""
-    if ctx.invoked_subcommand is None:
-        typer.echo("Usage: clouder ssh connect <vm-name>")
-        raise typer.Exit(0)
-
-
-@ssh_app.command("connect")
-def ssh_connect(
-    vm_name: str = typer.Argument(..., help="Name of the virtual machine to SSH into."),
+def ssh_default(
+    ctx: typer.Context,
+    vm_name: Optional[str] = typer.Argument(None, help="Name of the virtual machine to SSH into."),
     user: str = typer.Option(None, "--user", "-u", help="SSH username."),
     key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     port: int = typer.Option(22, "--port", "-p", help="SSH port."),
     command: str = typer.Option(None, "--command", "-c", help="Command to run on the remote host (non-interactive)."),
 ):
     """SSH into a virtual machine by name."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not vm_name:
+        typer.echo("Usage: clouder ssh <vm-name>")
+        raise typer.Exit(1)
+
     (cloud, context_id) = get_current_context()
 
     # Resolve the VM's IP address

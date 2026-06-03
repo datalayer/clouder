@@ -16,6 +16,7 @@ from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
     K8S_VERSION,
+    resolve_kubeadm_cluster_name,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd_stream,
@@ -62,7 +63,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("upgrade-kubelet", help="Upgrade kubelet, kubeadm, and kubectl on all nodes to the target K8s version.")
     def kubeadm_upgrade_kubelet(
-        name: str = typer.Argument(..., help="Cluster name (must match vm-create name)."),
+        name: str | None = typer.Argument(None, help="Cluster name (must match vm-create name). If omitted, uses default kubeadm cluster."),
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
@@ -77,6 +78,7 @@ def register(kubeadm_app: typer.Typer):
         kubeadm helpers (currently v{k8s_version}).
         """.format(k8s_version=K8S_VERSION)
 
+        name = resolve_kubeadm_cluster_name(name)
         cluster = _resolve_cluster_vms(name)
         master = cluster["master"]
         workers = cluster["workers"]

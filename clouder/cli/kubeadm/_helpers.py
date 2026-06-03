@@ -7,7 +7,7 @@ import typer
 from rich import print
 from rich.prompt import Prompt
 
-from ..ctx import get_current_context, get_default_ssh_key
+from ..ctx import get_current_context, get_default_ssh_key, load_context, save_context
 from ...util.utils import kubeadm_metadata_path, SSH_FOLDER
 
 # Kubernetes version to install
@@ -200,6 +200,34 @@ def _delete_cluster_metadata(cluster_name: str):
     if path.exists():
         path.unlink()
         typer.echo(f"  Removed cluster metadata: {path}")
+
+
+def get_default_kubeadm_cluster() -> str | None:
+    """Get the default kubeadm cluster name from ~/.clouder/clouder.yaml."""
+    context = load_context()
+    return context.get("clouder", {}).get("default_kubeadm_cluster")
+
+
+def set_default_kubeadm_cluster(cluster_name: str | None):
+    """Set or clear the default kubeadm cluster name."""
+    context = load_context()
+    if cluster_name:
+        context.setdefault("clouder", {})["default_kubeadm_cluster"] = cluster_name
+    else:
+        context.setdefault("clouder", {}).pop("default_kubeadm_cluster", None)
+    save_context(context)
+
+
+def resolve_kubeadm_cluster_name(cluster_name: str | None) -> str:
+    """Resolve explicit cluster name or fall back to configured default."""
+    if cluster_name:
+        return cluster_name
+    default_cluster = get_default_kubeadm_cluster()
+    if default_cluster:
+        return default_cluster
+    raise typer.BadParameter(
+        "Cluster name is required. Pass <name> or set a default with `clouder kubeadm set-default <name>`."
+    )
 
 
 # ---------------------------------------------------------------------------

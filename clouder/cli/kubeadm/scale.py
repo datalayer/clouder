@@ -11,6 +11,7 @@ from ...util.utils import SSH_FOLDER
 from ._helpers import (
     _SCRIPT_PREREQS,
     _SCRIPT_WORKER_FEATURE_GATE,
+    resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
@@ -26,7 +27,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("scale")
     def kubeadm_scale(
-        name: str = typer.Argument(..., help="Cluster name."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
         workers: int = typer.Option(..., "--workers", "-w", help="Desired number of worker nodes."),
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
@@ -42,6 +43,7 @@ def register(kubeadm_app: typer.Typer):
             typer.echo("Worker count must be >= 0.", err=True)
             raise typer.Exit(1)
 
+        name = resolve_kubeadm_cluster_name(name)
         (cloud, context_id) = get_current_context()
         if cloud != "azure":
             typer.echo("Kubeadm scale is currently only supported for Azure.", err=True)

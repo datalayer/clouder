@@ -7,11 +7,16 @@ sidebar_position: 9
 
 Provision, set up, and manage Kubeadm Kubernetes clusters. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
 
+Alias: `clouder k` (for example, `clouder k list`, `clouder k vm-create my-cluster`).
+
 ## Overview
 
 ```bash
 # Create the VMs (1 master + 1 worker)
 clouder kubeadm vm-create --workers 1 k1
+
+# List locally known kubeadm clusters
+clouder kubeadm list
 
 # Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
 clouder kubeadm setup k1
@@ -41,6 +46,44 @@ clouder kubeadm vm-terminate k1
 ```
 
 ## Commands
+
+By default, commands below accept `<name>`. If a default is configured with
+`clouder kubeadm set-default <name>`, you can omit `<name>` and Clouder will
+use the persisted default cluster.
+
+### `clouder kubeadm list`
+
+List kubeadm clusters known locally from `~/.clouder/kubeadm/<name>/kubeadm.json`.
+
+```bash
+clouder kubeadm list
+```
+
+The command prints a table with cluster name, cloud, region, resource group,
+whether kubeconfig exists, and whether setup is marked complete.
+
+---
+
+### `clouder kubeadm set-default`
+
+Persist the default kubeadm cluster name in `~/.clouder/clouder.yaml`.
+
+```bash
+clouder kubeadm set-default <name>
+```
+
+Examples:
+
+```bash
+clouder kubeadm set-default my-cluster
+
+# Now cluster name can be omitted on kubeadm commands that operate on existing clusters
+clouder kubeadm info
+clouder kubeadm get-config
+clouder kubeadm scale --workers 5
+```
+
+---
 
 ### `clouder kubeadm vm-create`
 
@@ -555,6 +598,18 @@ clouder kubeadm upgrade-kubelet my-cluster --key my-cluster-key
 
 ---
 
+## Networking
+
+See [Networking details](#networking-details).
+
+## CRIU Support
+
+See [CRIU support details](#criu-support-details).
+
+## Storage
+
+See [Storage details](#storage-details).
+
 ## Typical Workflow
 
 ### Create a Cluster
@@ -679,7 +734,7 @@ helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
 
 ---
 
-## Networking
+## Networking Details
 
 The `setup` command installs **Flannel** as the CNI with `--pod-network-cidr=10.244.0.0/16`. Flannel provides VXLAN-based overlay networking that works reliably on Azure VNets where all nodes share the same subnet.
 
@@ -687,7 +742,7 @@ The `setup` command installs **Flannel** as the CNI with `--pod-network-cidr=10.
 Calico CNI code is preserved in the codebase (commented out in `Kubeadm.py`) for future use. Calico's default `VXLANCrossSubnet` mode uses direct routing when nodes are on the same subnet, which requires IP forwarding enabled on Azure NICs. Flannel's VXLAN overlay avoids this issue entirely.
 :::
 
-## CRIU Support
+## CRIU Support Details
 
 The `setup` command configures every node for CRIU checkpoint/restore:
 
@@ -710,7 +765,7 @@ clouder kubeadm setup my-cluster
 An in-place upgrade from containerd 1.7 to 2.x is not supported.
 :::
 
-## Storage
+## Storage Details
 
 The `setup` command installs the **Azure Disk CSI driver** and the **Azure File CSI driver** for dynamic persistent volume provisioning. The Disk CSI driver allows pods to request `PersistentVolumeClaim` resources backed by Azure Managed Disks. The File CSI driver enables NFS-based shared filesystem provisioning and setup creates the `azure-nfs` StorageClass with the cluster's Azure subscription, resource group, and location baked in (required on Kubeadm; on AKS these are auto-detected from IMDS).
 

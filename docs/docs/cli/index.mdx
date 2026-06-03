@@ -34,6 +34,7 @@ clouder --show-completion      # Print completion script
 | [`clouder cost`](./cost) | List node SKU pricing helpers by cloud |
 | [`clouder k8s`](./kubernetes) | Manage OVH Managed Kubernetes clusters and node pools |
 | [`clouder kubeadm`](./kubeadm) | Provision and operate Kubeadm clusters on VMs |
+| `clouder k` | Alias for `clouder kubeadm` |
 | [`clouder kubectl`](./kubectl) | Run kubectl with persisted kubeconfig for a cluster |
 | [`clouder helm`](./helm) | Run helm with persisted kubeconfig for a cluster |
 | [`clouder vm`](./vm) | Manage virtual machines (multi-cloud: Azure, AWS, OVH) |
@@ -56,7 +57,7 @@ clouder azure configure
 clouder vm create my-server
 
 # 3. SSH into it
-clouder ssh connect my-server
+clouder ssh my-server
 
 # 4. Create a Kubeadm cluster (1 master + 3 workers)
 clouder kubeadm vm-create my-cluster

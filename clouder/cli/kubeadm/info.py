@@ -5,6 +5,7 @@ from rich import print
 from rich.panel import Panel
 
 from ._helpers import (
+    resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
     _resolve_cluster_vms,
 )
@@ -15,13 +16,14 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("info")
     def kubeadm_info(
-        name: str = typer.Argument(..., help="Cluster name."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
     ):
         """Show cluster information and next steps.
 
         Displays the current state of a kubeadm cluster and lists useful
         commands for day-to-day operations as well as further setup steps.
         """
+        name = resolve_kubeadm_cluster_name(name)
         cluster = _resolve_cluster_vms(name)
         master = cluster["master"]
         workers = cluster["workers"]
@@ -55,7 +57,7 @@ def register(kubeadm_app: typer.Typer):
         cmd_lines = [
             f"  Get kubeconfig:    clouder kubeadm get-config {name}",
             f"  Run kubectl:       clouder kubectl {name} get nodes",
-            f"  SSH to master:     clouder ssh connect {name}-master",
+            f"  SSH to master:     clouder ssh {name}-master",
             f"  Scale workers:     clouder kubeadm scale {name} --workers N",
             f"  Ingress (nginx):   clouder kubeadm enable-ingress-nginx {name}",
             f"  Ingress (traefik): clouder kubeadm enable-ingress-traefik {name}",

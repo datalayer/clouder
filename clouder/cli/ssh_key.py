@@ -91,7 +91,7 @@ def ssh_key_set_current():
 
     Lists available SSH keys in ~/.ssh/ and lets you pick one as the
     default.  The choice is persisted in ~/.clouder/clouder.yaml and
-    used automatically by 'clouder ssh connect', 'clouder kubeadm' commands,
+    used automatically by 'clouder ssh', 'clouder kubeadm' commands,
     etc. — unless overridden with --key/-i.
     """
     from rich.prompt import Prompt

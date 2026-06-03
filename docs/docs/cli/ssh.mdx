@@ -9,12 +9,12 @@ SSH into a virtual machine by name. Automatically resolves the VM's public IP an
 
 ## Commands
 
-### `clouder ssh connect`
+### `clouder ssh`
 
 Connect to a VM via SSH.
 
 ```bash
-clouder ssh connect <vm-name> [OPTIONS]
+clouder ssh <vm-name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -44,13 +44,13 @@ clouder ssh connect <vm-name> [OPTIONS]
 
 ```bash
 # Basic usage — auto-detects key and user
-clouder ssh connect my-server
+clouder ssh my-server
 
 # Specify user and key
-clouder ssh connect my-server --user ubuntu --key my-custom-key
+clouder ssh my-server --user ubuntu --key my-custom-key
 
 # Custom port
-clouder ssh connect my-server -p 2222
+clouder ssh my-server -p 2222
 ```
 
 ---
@@ -62,13 +62,13 @@ clouder ssh connect my-server -p 2222
 clouder vm create my-server
 
 # SSH in immediately
-clouder ssh connect my-server
+clouder ssh my-server
 
 # Or with a downloaded key
 clouder ssh-key download my-server --key /path/to/key.pem
-clouder ssh connect my-server --key my-server
+clouder ssh my-server --key my-server
 ```
 
 :::tip
-When you create a VM with `clouder vm create` and choose "Generate new key pair", the key is named `<vm-name>-key`. The `clouder ssh connect` command automatically finds and uses this key.
+When you create a VM with `clouder vm create` and choose "Generate new key pair", the key is named `<vm-name>-key`. The `clouder ssh` command automatically finds and uses this key.
 :::
