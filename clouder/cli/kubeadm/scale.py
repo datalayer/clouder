@@ -25,6 +25,66 @@ from ._helpers import (
 )
 
 
+DEFAULT_NODE_LABELS = [
+    "role.datalayer.io/runtime=true",
+    "node.datalayer.io/variant=medium",
+    "xpu.datalayer.io/cpu=true",
+]
+
+
+def _resolve_node_labels(raw_labels: list[str] | None) -> list[str]:
+    """Resolve node labels, supporting repeated flags and comma-separated values."""
+    if not raw_labels:
+        return list(DEFAULT_NODE_LABELS)
+
+    labels: list[str] = []
+    for value in raw_labels:
+        for part in str(value).split(","):
+            candidate = part.strip()
+            if not candidate:
+                continue
+            if "=" not in candidate:
+                typer.echo(f"Invalid --node-label '{candidate}'. Expected key=value.", err=True)
+                raise typer.Exit(1)
+            labels.append(candidate)
+    if not labels:
+        return list(DEFAULT_NODE_LABELS)
+    return labels
+
+
+def _wait_for_node_ready(master_ip: str, ssh_user: str, key_path: str, node_name: str, timeout_seconds: int = 300) -> bool:
+    """Wait until the Kubernetes node is registered and Ready."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        status = _ssh_cmd(
+            master_ip,
+            ssh_user,
+            key_path,
+            (
+                f"kubectl get node {node_name} "
+                "-o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' "
+                "2>/dev/null || true"
+            ),
+            check=False,
+        ).stdout.strip()
+        if status == "True":
+            return True
+        time.sleep(5)
+    return False
+
+
+def _apply_node_labels(master_ip: str, ssh_user: str, key_path: str, node_name: str, labels: list[str]) -> None:
+    """Apply labels to a Kubernetes node using kubectl on the master."""
+    for label in labels:
+        _ssh_cmd(
+            master_ip,
+            ssh_user,
+            key_path,
+            f"kubectl label node {node_name} {label} --overwrite",
+            check=False,
+        )
+
+
 def register(kubeadm_app: typer.Typer):
     """Register the scale command on the given Typer app."""
 
@@ -34,6 +94,14 @@ def register(kubeadm_app: typer.Typer):
         workers: int = typer.Option(..., "--workers", "-w", help="Desired number of worker nodes."),
         user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
+        node_labels: list[str] | None = typer.Option(
+            None,
+            "--node-label",
+            help=(
+                "Node label key=value to apply once each new worker becomes Ready. "
+                "Repeatable or comma-separated. Defaults to runtime labels."
+            ),
+        ),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
     ):
         """Scale the number of worker nodes in an existing kubeadm cluster.
@@ -123,6 +191,8 @@ def register(kubeadm_app: typer.Typer):
             if not Confirm.ask(f"\nProceed with scale {direction}?", default=True):
                 raise typer.Abort()
 
+        resolved_node_labels = _resolve_node_labels(node_labels)
+
         if direction == "up":
             _scale_up(
                 cluster_name=name,
@@ -143,6 +213,7 @@ def register(kubeadm_app: typer.Typer):
                 key_path=key_path,
                 user=user,
                 metadata=metadata,
+                node_labels=resolved_node_labels,
             )
         else:
             _scale_down(
@@ -162,7 +233,7 @@ def _scale_up(
     cluster_name, context_id, master, current_workers, new_count,
     resource_group, region, node_size, admin_username, ssh_key_name,
     image_publisher, image_offer, image_sku, subnet_id, nsg_id,
-    key_path, user, metadata,
+    key_path, user, metadata, node_labels,
 ):
     """Add new worker nodes to the cluster."""
     from ...cloud.azure.api import create_azure_vm
@@ -233,8 +304,8 @@ def _scale_up(
         raise typer.Exit(1)
     print(f"  [dim]Join command: {join_command}[/dim]")
 
-    # --- Step 4: Join new workers + enable feature gates ---
-    print(f"\n[bold]Step 4/4: Joining new workers and enabling feature gates...[/bold]")
+    # --- Step 4: Join new workers + enable feature gates + label when Ready ---
+    print(f"\n[bold]Step 4/4: Joining new workers, enabling feature gates, and applying labels...[/bold]")
     for worker in new_workers:
         print(f"  [cyan]{worker['name']}[/cyan] joining...")
         rc = _ssh_cmd_stream(worker["ip"], user, key_path, f"sudo {join_command}")
@@ -249,6 +320,16 @@ def _scale_up(
             print(f"  [yellow]Feature gate setup failed on {worker['name']} (non-fatal)[/yellow]")
         else:
             print(f"  [green]{worker['name']} feature gates enabled.[/green]")
+
+        print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready...")
+        if not _wait_for_node_ready(master["ip"], user, key_path, worker["name"]):
+            print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
+            raise typer.Exit(1)
+        print(f"  [green]{worker['name']} is Ready.[/green]")
+
+        print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
+        _apply_node_labels(master["ip"], user, key_path, worker["name"], node_labels)
+        print(f"  [green]{worker['name']} labels applied.[/green]")
 
     # --- Update metadata ---
     if metadata:

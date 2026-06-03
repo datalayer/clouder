@@ -155,6 +155,13 @@ clouder kubeadm setup <name> [OPTIONS]
 | `--admin-user` | `-u` | SSH username (default: `ubuntu`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 | `--k8s-version` | | Kubernetes version (default: `1.32`) |
+| `--node-label` | | Node label (`key=value`) applied after each worker becomes Ready. Repeatable or comma-separated. Defaults to runtime labels. |
+
+Default worker labels applied after each node becomes Ready:
+
+- `role.datalayer.io/runtime=true`
+- `node.datalayer.io/variant=medium`
+- `xpu.datalayer.io/cpu=true`
 
 **What it does (6 steps):**
 
@@ -273,6 +280,7 @@ clouder kubeadm scale <name> [OPTIONS]
 | `--workers` (required) | `-w` | Desired number of worker nodes |
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--node-label` | | Node label (`key=value`) applied after each new worker becomes Ready. Repeatable or comma-separated. Defaults to runtime labels. |
 | `--force` | `-f` | Skip confirmation prompt |
 
 **Example:**
@@ -607,20 +615,6 @@ clouder kubeadm upgrade-kubelet my-cluster
 clouder kubeadm upgrade-kubelet my-cluster --key my-cluster-key
 ```
 
----
-
-## Networking
-
-See [Networking details](#networking-details).
-
-## CRIU Support
-
-See [CRIU support details](#criu-support-details).
-
-## Storage
-
-See [Storage details](#storage-details).
-
 ## Typical Workflow
 
 ### Create a Cluster
@@ -681,67 +675,6 @@ clouder kubeadm disable-ingress-nginx my-cluster
 clouder kubeadm terminate my-cluster
 ```
 
----
-
-## Related: `clouder kubectl`
-
-Run kubectl commands using the persisted kubeconfig for a cluster.
-
-Full reference: [`clouder kubectl`](./kubectl).
-
-```bash
-clouder kubectl <name> <kubectl-args...>
-```
-
-| Argument | Description |
-|----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
-| `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
-
-**Example:**
-
-```bash
-clouder kubectl my-cluster get nodes
-clouder kubectl my-cluster get pods -A
-clouder kubectl my-cluster apply -f deployment.yaml
-clouder kubectl my-cluster logs my-pod
-```
-
-This is equivalent to running:
-```bash
-kubectl --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig get nodes
-```
-
----
-
-## Related: `clouder helm`
-
-Run helm commands using the persisted kubeconfig for a cluster.
-
-Full reference: [`clouder helm`](./helm).
-
-```bash
-clouder helm <name> <helm-args...>
-```
-
-| Argument | Description |
-|----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
-| `helm-args` | Any helm arguments (e.g. `list -A`, `install ...`) |
-
-**Example:**
-
-```bash
-clouder helm my-cluster list -A
-clouder helm my-cluster install my-release my-chart
-clouder helm my-cluster upgrade my-release my-chart
-clouder helm my-cluster uninstall my-release
-```
-
-This is equivalent to running:
-```bash
-helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
-```
 
 ---
 
@@ -750,7 +683,7 @@ helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
 The `setup` command installs **Flannel** as the CNI with `--pod-network-cidr=10.244.0.0/16`. Flannel provides VXLAN-based overlay networking that works reliably on Azure VNets where all nodes share the same subnet.
 
 :::note
-Calico CNI code is preserved in the codebase (commented out in `Kubeadm.py`) for future use. Calico's default `VXLANCrossSubnet` mode uses direct routing when nodes are on the same subnet, which requires IP forwarding enabled on Azure NICs. Flannel's VXLAN overlay avoids this issue entirely.
+Calico CNI code is preservRelated:ed in the codebase (commented out in `Kubeadm.py`) for future use. Calico's default `VXLANCrossSubnet` mode uses direct routing when nodes are on the same subnet, which requires IP forwarding enabled on Azure NICs. Flannel's VXLAN overlay avoids this issue entirely.
 :::
 
 ## CRIU Support Details
@@ -878,3 +811,65 @@ All VMs are on the same subnet (`10.0.0.0/24`), so Kubeadm nodes discover each o
 :::note
 Supported cloud providers: Azure and AWS.
 :::
+
+---
+
+## Related: `clouder kubectl`
+
+Run kubectl commands using the persisted kubeconfig for a cluster.
+
+Full reference: [`clouder kubectl`](./kubectl).
+
+```bash
+clouder kubectl <name> <kubectl-args...>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
+| `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
+
+**Example:**
+
+```bash
+clouder kubectl my-cluster get nodes
+clouder kubectl my-cluster get pods -A
+clouder kubectl my-cluster apply -f deployment.yaml
+clouder kubectl my-cluster logs my-pod
+```
+
+This is equivalent to running:
+```bash
+kubectl --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig get nodes
+```
+
+---
+
+## Related: `clouder helm`
+
+Run helm commands using the persisted kubeconfig for a cluster.
+
+Full reference: [`clouder helm`](./helm).
+
+```bash
+clouder helm <name> <helm-args...>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
+| `helm-args` | Any helm arguments (e.g. `list -A`, `install ...`) |
+
+**Example:**
+
+```bash
+clouder helm my-cluster list -A
+clouder helm my-cluster install my-release my-chart
+clouder helm my-cluster upgrade my-release my-chart
+clouder helm my-cluster uninstall my-release
+```
+
+This is equivalent to running:
+```bash
+helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
+```

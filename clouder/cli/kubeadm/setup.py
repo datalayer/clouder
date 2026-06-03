@@ -31,6 +31,68 @@ from ._helpers import (
 )
 
 
+DEFAULT_NODE_LABELS = [
+    "role.datalayer.io/runtime=true",
+    "node.datalayer.io/variant=medium",
+    "xpu.datalayer.io/cpu=true",
+]
+
+
+def _resolve_node_labels(raw_labels: list[str] | None) -> list[str]:
+    """Resolve node labels, supporting repeated flags and comma-separated values."""
+    if not raw_labels:
+        return list(DEFAULT_NODE_LABELS)
+
+    labels: list[str] = []
+    for value in raw_labels:
+        for part in str(value).split(","):
+            candidate = part.strip()
+            if not candidate:
+                continue
+            if "=" not in candidate:
+                typer.echo(f"Invalid --node-label '{candidate}'. Expected key=value.", err=True)
+                raise typer.Exit(1)
+            labels.append(candidate)
+    if not labels:
+        return list(DEFAULT_NODE_LABELS)
+    return labels
+
+
+def _wait_for_node_ready(master_ip: str, ssh_user: str, key_path: str, node_name: str, timeout_seconds: int = 300) -> bool:
+    """Wait until the Kubernetes node is registered and Ready."""
+    import time
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        status = _ssh_cmd(
+            master_ip,
+            ssh_user,
+            key_path,
+            (
+                f"kubectl get node {node_name} "
+                "-o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' "
+                "2>/dev/null || true"
+            ),
+            check=False,
+        ).stdout.strip()
+        if status == "True":
+            return True
+        time.sleep(5)
+    return False
+
+
+def _apply_node_labels(master_ip: str, ssh_user: str, key_path: str, node_name: str, labels: list[str]) -> None:
+    """Apply labels to a Kubernetes node using kubectl on the master."""
+    for label in labels:
+        _ssh_cmd(
+            master_ip,
+            ssh_user,
+            key_path,
+            f"kubectl label node {node_name} {label} --overwrite",
+            check=False,
+        )
+
+
 def register(kubeadm_app: typer.Typer):
     """Register the setup command on the given Typer app."""
 
@@ -40,6 +102,14 @@ def register(kubeadm_app: typer.Typer):
         user: str = typer.Option("ubuntu", "--admin-user", "-u", help="SSH username on the VMs (ubuntu for AWS, azureuser for Azure)."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         k8s_version: str = typer.Option(K8S_VERSION, "--k8s-version", help="Kubernetes version to install."),
+        node_labels: list[str] | None = typer.Option(
+            None,
+            "--node-label",
+            help=(
+                "Node label key=value to apply once each worker becomes Ready. "
+                "Repeatable or comma-separated. Defaults to runtime labels."
+            ),
+        ),
     ):
         """Set up a kubeadm cluster on previously created VMs.
 
@@ -47,6 +117,7 @@ def register(kubeadm_app: typer.Typer):
         kubeadm join (workers) → enable CRIU feature gates (all nodes).
         """
         name = resolve_kubeadm_cluster_name(name)
+        resolved_node_labels = _resolve_node_labels(node_labels)
         cluster = _resolve_cluster_vms(name)
         master = cluster["master"]
         workers = cluster["workers"]
@@ -145,6 +216,16 @@ def register(kubeadm_app: typer.Typer):
                 print(f"  [red]Join failed on {worker['name']}[/red]")
                 raise typer.Exit(1)
             print(f"  [green]{worker['name']} joined.[/green]")
+
+            print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready...")
+            if not _wait_for_node_ready(master["ip"], user, key_path, worker["name"]):
+                print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
+                raise typer.Exit(1)
+            print(f"  [green]{worker['name']} is Ready.[/green]")
+
+            print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
+            _apply_node_labels(master["ip"], user, key_path, worker["name"], resolved_node_labels)
+            print(f"  [green]{worker['name']} labels applied.[/green]")
 
         # ----- Step 5: Enable CRIU feature gates on all nodes -----
         print("\n[bold]Step 5/6: Enabling CRIU feature gates on all nodes...[/bold]")
