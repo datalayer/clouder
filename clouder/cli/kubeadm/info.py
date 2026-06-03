@@ -51,7 +51,7 @@ def register(kubeadm_app: typer.Typer):
             if metadata.get("resource_group"):
                 status_lines.append(f"  [bold]RG:[/bold]       {metadata['resource_group']}")
 
-        print(Panel("\n".join(status_lines), title="Cluster Info"))
+        print(Panel("\n".join(status_lines), title="[bold cyan]Cluster Info[/bold cyan]"))
 
         # --- Cluster commands ---
         cmd_lines = [
@@ -65,7 +65,7 @@ def register(kubeadm_app: typer.Typer):
             f"  Terminate:         clouder kubeadm vm-terminate {name}",
         ]
 
-        print(Panel("\n".join(cmd_lines), title="Cluster Commands"))
+        print(Panel("\n".join(cmd_lines), title="[bold bright_blue]Cluster Commands[/bold bright_blue]"))
 
         # --- Plane setup steps ---
         plane_lines = [
@@ -82,7 +82,7 @@ def register(kubeadm_app: typer.Typer):
             "  plane create-cert-issuer",
             "",
             "Full services documentation:",
-            "  [link=https://clouder.sh/plane/kubernetes/services]https://clouder.sh/plane/kubernetes/services[/link]",
+            "  [link=https://clouder.sh/services]https://clouder.sh/services[/link]",
         ]
 
-        print(Panel("\n".join(plane_lines), title="Next Steps — Plane"))
+        print(Panel("\n".join(plane_lines), title="[bold magenta]Next Steps — Plane[/bold magenta]"))

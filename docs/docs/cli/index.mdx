@@ -95,6 +95,18 @@ clouder kubeadm vm-terminate my-cluster
 clouder info ctx
 ```
 
+### Kubeadm default cluster tip
+
+If you run kubeadm commands repeatedly against the same cluster, set a default once:
+
+```bash
+clouder kubeadm set-default my-cluster
+clouder kubeadm info
+clouder kubeadm get-config
+```
+
+See the full workflow in [`clouder kubeadm`](./kubeadm#set-default).
+
 ## Shell Completion
 
 Clouder supports tab completion for bash, zsh, and fish:

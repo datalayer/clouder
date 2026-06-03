@@ -6,15 +6,18 @@ import time
 import typer
 from rich import print
 from rich.panel import Panel
+from rich.prompt import Prompt
 
 from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
     resolve_kubeadm_cluster_name,
+    _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
+    _update_cluster_metadata,
 )
 
 
@@ -330,11 +333,28 @@ EOF
                     if ingress_passed:
                         import os as _os
                         run_url = _os.environ.get("DATALAYER_RUN_URL", "")
-                        run_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
+                        env_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
+
+                        # Prefer persisted per-cluster hostname from kubeadm metadata.
+                        metadata = _load_cluster_metadata(name) or {}
+                        run_host = (metadata.get("public_hostname") or "").strip()
+
                         if not run_host:
-                            print("\n[bold]Step 4/4: Validating HTTP through DATALAYER_RUN_URL...[/bold]")
-                            print("  [dim]DATALAYER_RUN_URL is not set — skipping DNS validation.[/dim]")
-                            print("  [dim]Set it to test DNS resolution: export DATALAYER_RUN_URL=https://prod1.datalayer.run[/dim]")
+                            print("\n[bold]Step 4/4: Configure public hostname for DNS validation...[/bold]")
+                            prompt_text = "Public hostname for ingress validation"
+                            if env_host:
+                                run_host = Prompt.ask(prompt_text, default=env_host).strip()
+                            else:
+                                run_host = Prompt.ask(prompt_text).strip()
+
+                            if run_host:
+                                _update_cluster_metadata(name, {"public_hostname": run_host})
+                                print(f"  [green]Saved public hostname in kubeadm metadata:[/green] {run_host}")
+
+                        if not run_host:
+                            print("\n[bold]Step 4/4: Validating HTTP through public hostname...[/bold]")
+                            print("  [dim]No public hostname configured — skipping DNS validation.[/dim]")
+                            print("  [dim]Re-run and provide a hostname, or set DATALAYER_RUN_URL as a default suggestion.[/dim]")
                         else:
                             print(f"\n[bold]Step 4/4: Validating HTTP through {run_host}...[/bold]")
 
