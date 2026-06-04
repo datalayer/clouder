@@ -168,6 +168,67 @@ def list_azure_vm_sizes(location: str, subscription_id: Optional[str] = None) ->
     ]
 
 
+def list_azure_popular_vm_images(location: str, subscription_id: Optional[str] = None) -> list:
+    """List popular VM images and whether they are available in a location.
+
+    Returns a list of dicts with keys:
+    - ``name``: friendly image label consumed by CLI (e.g. Ubuntu2204)
+    - ``publisher``
+    - ``offer``
+    - ``sku``
+    - ``version`` (always ``latest``)
+    - ``available`` (bool)
+    """
+
+    client = _get_compute_client(subscription_id)
+    candidates = [
+        {
+            "name": "Ubuntu2204",
+            "publisher": "Canonical",
+            "offer": "0001-com-ubuntu-server-jammy",
+            "sku": "22_04-lts-gen2",
+            "version": "latest",
+        },
+        {
+            "name": "Ubuntu2404",
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest",
+        },
+        {
+            "name": "Debian12",
+            "publisher": "Debian",
+            "offer": "debian-12",
+            "sku": "12-gen2",
+            "version": "latest",
+        },
+    ]
+
+    images: list[dict] = []
+    for candidate in candidates:
+        available = False
+        try:
+            versions = list(
+                client.virtual_machine_images.list(
+                    location=location,
+                    publisher_name=candidate["publisher"],
+                    offer=candidate["offer"],
+                    skus=candidate["sku"],
+                    top=1,
+                )
+            )
+            available = len(versions) > 0
+        except Exception:
+            available = False
+
+        image = dict(candidate)
+        image["available"] = available
+        images.append(image)
+
+    return images
+
+
 # --- Virtual Machines ---
 
 def list_azure_vms(resource_group: Optional[str] = None,

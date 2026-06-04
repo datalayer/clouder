@@ -18,6 +18,7 @@ from ._helpers import (
     _SCRIPT_INSTALL_CNI,
     _SCRIPT_KUBEADM_INIT,
     _SCRIPT_PREREQS,
+    _SCRIPT_UPGRADE_KUBELET,
     _SCRIPT_WORKER_FEATURE_GATE,
     _build_azure_cloud_config,
     _build_azure_nfs_storageclass_script,
@@ -99,7 +100,7 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("setup")
     def kubeadm_setup(
         name: str | None = typer.Argument(None, help="Cluster name (must match create name). If omitted, uses default kubeadm cluster."),
-        user: str = typer.Option("ubuntu", "--admin-user", "-u", help="SSH username on the VMs (ubuntu for AWS, azureuser for Azure)."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs (default: metadata value or azureuser on Azure, ubuntu on AWS)."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         k8s_version: str = typer.Option(K8S_VERSION, "--k8s-version", help="Kubernetes version to install."),
         node_labels: list[str] | None = typer.Option(
@@ -122,37 +123,55 @@ def register(kubeadm_app: typer.Typer):
         master = cluster["master"]
         workers = cluster["workers"]
         cloud, _ = get_current_context()
+        metadata = _load_cluster_metadata(name) or {}
 
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
+        resolved_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")
 
         all_nodes = [master] + workers
 
         print(Panel(
             f"[bold]Cluster:[/bold] {name}\n"
-            f"[bold]Masters:[/bold]  {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold] {master['name']} ({master['ip']})\n"
             f"[bold]Workers:[/bold] {', '.join(w['name'] for w in workers)}\n"
             f"[bold]Key:[/bold]     {key_path}\n"
+            f"[bold]User:[/bold]    {resolved_user}\n"
             f"[bold]K8s:[/bold]     v{k8s_version}",
             title="Kubeadm Setup",
         ))
 
+        print(
+            "[dim]This setup upgrades kubelet/kubeadm/kubectl, installs node prerequisites, "
+            "initializes the control plane, joins workers, then enables runtime features and cloud integrations.[/dim]"
+        )
+
         if not Confirm.ask("\nProceed with cluster setup?", default=True):
             raise typer.Abort()
 
-        # ----- Step 1: Install prerequisites on ALL nodes -----
-        print("\n[bold]Step 1/5: Installing prerequisites on all nodes...[/bold]")
+        # ----- Step 1: Upgrade kubelet on ALL nodes (master first) -----
+        print("\n[bold]Step 1/7: Upgrading kubelet/kubeadm/kubectl on all nodes (master first)...[/bold]")
         for node in all_nodes:
             print(f"  [cyan]{node['name']}[/cyan] ({node['ip']})...")
-            rc = _ssh_cmd_stream(node["ip"], user, key_path, _SCRIPT_PREREQS)
+            rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_UPGRADE_KUBELET)
+            if rc != 0:
+                print(f"  [red]kubelet upgrade failed on {node['name']}[/red]")
+                raise typer.Exit(1)
+            print(f"  [green]{node['name']} kubelet upgraded.[/green]")
+
+        # ----- Step 2: Install prerequisites on ALL nodes -----
+        print("\n[bold]Step 2/7: Installing prerequisites on all nodes...[/bold]")
+        for node in all_nodes:
+            print(f"  [cyan]{node['name']}[/cyan] ({node['ip']})...")
+            rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_PREREQS)
             if rc != 0:
                 print(f"  [red]Failed on {node['name']}[/red]")
                 raise typer.Exit(1)
             print(f"  [green]{node['name']} done.[/green]")
 
-        # ----- Step 2: kubeadm init on master -----
-        print("\n[bold]Step 2/5: Initializing control plane on master...[/bold]")
+        # ----- Step 3: kubeadm init on master -----
+        print("\n[bold]Step 3/7: Initializing control plane on master...[/bold]")
         init_script = _SCRIPT_KUBEADM_INIT.replace("PUBLIC_IP_PLACEHOLDER", master["ip"])
-        result = _ssh_cmd(master["ip"], user, key_path, init_script, check=False)
+        result = _ssh_cmd(master["ip"], resolved_user, key_path, init_script, check=False)
         if result.returncode != 0:
             typer.echo(result.stderr)
             print(f"[red]kubeadm init failed on {master['name']}[/red]")
@@ -189,20 +208,20 @@ def register(kubeadm_app: typer.Typer):
         print(f"  [green]Control plane initialized.[/green]")
         print(f"  [dim]Join command: {join_command}[/dim]")
 
-        # ----- Step 3: Install CNI on master -----
-        print("\n[bold]Step 3/5: Installing Calico CNI...[/bold]")
-        rc = _ssh_cmd_stream(master["ip"], user, key_path, _SCRIPT_INSTALL_CNI)
+        # ----- Step 4: Install CNI on master -----
+        print("\n[bold]Step 4/7: Installing Calico CNI...[/bold]")
+        rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_CNI)
         if rc != 0:
             print("[red]CNI installation failed.[/red]")
             raise typer.Exit(1)
         print("  [green]CNI installed.[/green]")
 
-        # ----- Step 4: Join workers -----
-        print("\n[bold]Step 4/5: Joining worker nodes...[/bold]")
+        # ----- Step 5: Join workers -----
+        print("\n[bold]Step 5/7: Joining worker nodes...[/bold]")
         for worker in workers:
             print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
             # Reset any previous kubeadm state and ensure containerd is ready (idempotent re-runs).
-            _ssh_cmd_stream(worker["ip"], user, key_path,
+            _ssh_cmd_stream(worker["ip"], resolved_user, key_path,
                 "sudo kubeadm reset -f --cri-socket unix:///var/run/containerd/containerd.sock 2>/dev/null || true; "
                 "sudo rm -rf /etc/cni/net.d; "
                 "sudo systemctl restart containerd; "
@@ -211,35 +230,34 @@ def register(kubeadm_app: typer.Typer):
                 "  sleep 1; "
                 "done"
             )
-            rc = _ssh_cmd_stream(worker["ip"], user, key_path, f"sudo {join_command}")
+            rc = _ssh_cmd_stream(worker["ip"], resolved_user, key_path, f"sudo {join_command}")
             if rc != 0:
                 print(f"  [red]Join failed on {worker['name']}[/red]")
                 raise typer.Exit(1)
             print(f"  [green]{worker['name']} joined.[/green]")
 
             print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready...")
-            if not _wait_for_node_ready(master["ip"], user, key_path, worker["name"]):
+            if not _wait_for_node_ready(master["ip"], resolved_user, key_path, worker["name"]):
                 print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
                 raise typer.Exit(1)
             print(f"  [green]{worker['name']} is Ready.[/green]")
 
             print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
-            _apply_node_labels(master["ip"], user, key_path, worker["name"], resolved_node_labels)
+            _apply_node_labels(master["ip"], resolved_user, key_path, worker["name"], resolved_node_labels)
             print(f"  [green]{worker['name']} labels applied.[/green]")
 
-        # ----- Step 5: Enable CRIU feature gates on all nodes -----
-        print("\n[bold]Step 5/6: Enabling CRIU feature gates on all nodes...[/bold]")
+        # ----- Step 6: Enable CRIU feature gates on all nodes -----
+        print("\n[bold]Step 6/7: Enabling CRIU feature gates on all nodes...[/bold]")
         for node in all_nodes:
             print(f"  [cyan]{node['name']}[/cyan]...")
-            rc = _ssh_cmd_stream(node["ip"], user, key_path, _SCRIPT_WORKER_FEATURE_GATE)
+            rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_WORKER_FEATURE_GATE)
             if rc != 0:
                 print(f"  [red]Feature gate setup failed on {node['name']}[/red]")
                 # Non-fatal — continue
 
-        # ----- Step 6: Install cloud-specific storage and load balancer providers -----
-        print("\n[bold]Step 6/6: Installing cloud storage and load balancer providers...[/bold]")
+        # ----- Step 7: Install cloud-specific storage and load balancer providers -----
+        print("\n[bold]Step 7/7: Installing cloud storage and load balancer providers...[/bold]")
 
-        metadata = _load_cluster_metadata(name)
         storage_ok = False
         loadbalancer_ok = False
         if cloud == "aws":
@@ -301,7 +319,7 @@ def register(kubeadm_app: typer.Typer):
                     secret_access_key=secret_access_key or None,
                     session_token=aws_creds.get("session_token") or None,
                 )
-                rc = _ssh_cmd_stream(master["ip"], user, key_path, aws_storage_script)
+                rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, aws_storage_script)
                 if rc != 0:
                     print("[red]  AWS EBS CSI installation failed.[/red]")
                 else:
@@ -318,7 +336,7 @@ def register(kubeadm_app: typer.Typer):
                         vpc_id=vpc_id,
                         cluster_name=name,
                     )
-                    rc = _ssh_cmd_stream(master["ip"], user, key_path, aws_lb_script)
+                    rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, aws_lb_script)
                     if rc != 0:
                         print("[red]  AWS Load Balancer Controller installation failed.[/red]")
                     else:
@@ -361,7 +379,7 @@ def register(kubeadm_app: typer.Typer):
                 )
                 for node in all_nodes:
                     print(f"  Deploying cloud config to [cyan]{node['name']}[/cyan]...")
-                    rc = _ssh_cmd_stream(node["ip"], user, key_path, deploy_cmd)
+                    rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, deploy_cmd)
                     if rc != 0:
                         print(f"  [red]Failed to deploy cloud config on {node['name']}[/red]")
 
@@ -372,13 +390,13 @@ def register(kubeadm_app: typer.Typer):
                     "-n kube-system --dry-run=client -o yaml | kubectl apply -f -"
                 )
                 print("  Creating azure-cloud-provider secret...")
-                rc = _ssh_cmd_stream(master["ip"], user, key_path, secret_cmd)
+                rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, secret_cmd)
                 if rc != 0:
                     print("  [red]Failed to create cloud-provider secret.[/red]")
                 else:
                     # Install the Azure Disk CSI driver and create StorageClass.
                     print("  Installing Azure Disk CSI driver...")
-                    rc = _ssh_cmd_stream(master["ip"], user, key_path, _SCRIPT_INSTALL_AZURE_DISK_CSI)
+                    rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_AZURE_DISK_CSI)
                     if rc != 0:
                         print("[red]  Azure Disk CSI driver installation failed.[/red]")
                     else:
@@ -387,7 +405,7 @@ def register(kubeadm_app: typer.Typer):
 
                         # Install the Azure File CSI driver (required for azure-nfs shared filesystem).
                         print("  Installing Azure File CSI driver...")
-                        rc = _ssh_cmd_stream(master["ip"], user, key_path, _SCRIPT_INSTALL_AZURE_FILE_CSI)
+                        rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_AZURE_FILE_CSI)
                         if rc != 0:
                             print("[red]  Azure File CSI driver installation failed.[/red]")
                         else:
@@ -401,7 +419,7 @@ def register(kubeadm_app: typer.Typer):
                                 resource_group=metadata.get("resource_group", ""),
                                 location=metadata.get("region", ""),
                             )
-                            rc = _ssh_cmd_stream(master["ip"], user, key_path, sc_script)
+                            rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, sc_script)
                             if rc != 0:
                                 print("[red]  azure-nfs StorageClass creation failed.[/red]")
                             else:

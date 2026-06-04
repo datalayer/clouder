@@ -3,7 +3,7 @@
 import typer
 from rich import print
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 from ...util.wait import wait_with_spinner
 
 from ..ctx import get_current_context
@@ -11,10 +11,12 @@ from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
     resolve_kubeadm_cluster_name,
+    _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
     _ssh_cmd_stream,
+    _update_cluster_metadata,
 )
 
 
@@ -298,6 +300,77 @@ def register(kubeadm_app: typer.Typer):
         # ----- Done -----
         run_url = _os.environ.get("DATALAYER_RUN_URL", "")
         run_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
+        # Wait until public IP is fully assigned.
+        if not public_ip.ip_address:
+            import time as _time
+
+            print(f"\n[bold]Waiting for load balancer IP assignment for {lb_ip_name}...[/bold]")
+            for _ in range(60):
+                refreshed = network_client.public_ip_addresses.get(rg, lb_ip_name)
+                if refreshed and refreshed.ip_address:
+                    public_ip = refreshed
+                    break
+                _time.sleep(2)
+            if not public_ip.ip_address:
+                print(f"[red]Timed out waiting for load balancer IP assignment for {lb_ip_name}.[/red]")
+                raise typer.Exit(1)
+
+        print(f"\n[bold]Load balancer IP:[/bold] [green]{public_ip.ip_address}[/green]")
+
+        metadata = _load_cluster_metadata(name) or {}
+        saved_domain = str(metadata.get("ingress_nginx_domain") or "").strip()
+        default_domain = saved_domain or str(metadata.get("public_hostname") or "").strip() or run_host
+
+        import socket as _socket
+        import time as _time
+
+        def _resolve_domain_ip(hostname: str) -> str | None:
+            try:
+                return _socket.gethostbyname(hostname)
+            except Exception:
+                return None
+
+        domain_name = ""
+        print("\n[bold]DNS configuration:[/bold]")
+        while True:
+            if default_domain:
+                domain_name = Prompt.ask("Hostname mapped to this load balancer", default=default_domain).strip()
+            else:
+                domain_name = Prompt.ask("Hostname mapped to this load balancer").strip()
+            domain_name = domain_name.replace("https://", "").replace("http://", "").strip().rstrip("/")
+
+            if not domain_name:
+                print("[yellow]Hostname is required to continue.[/yellow]")
+                continue
+
+            print(f"  Checking DNS resolution for [cyan]{domain_name}[/cyan]...")
+            resolved_ip = None
+            for attempt in range(1, 11):
+                resolved_ip = _resolve_domain_ip(domain_name)
+                if resolved_ip == public_ip.ip_address:
+                    print(f"  [green]DNS resolved correctly: {domain_name} -> {resolved_ip}[/green]")
+                    _update_cluster_metadata(name, {
+                        "ingress_nginx_domain": domain_name,
+                        "public_hostname": domain_name,
+                    })
+                    print(f"  [green]Saved ingress-nginx domain in kubeadm metadata:[/green] {domain_name}")
+                    break
+                if resolved_ip:
+                    print(
+                        f"  Attempt {attempt}/10: [yellow]{domain_name} resolves to {resolved_ip}, "
+                        f"expected {public_ip.ip_address}[/yellow]"
+                    )
+                else:
+                    print(f"  Attempt {attempt}/10: [yellow]DNS not resolved yet for {domain_name}[/yellow]")
+                if attempt < 10:
+                    _time.sleep(5)
+
+            if resolved_ip == public_ip.ip_address:
+                break
+
+            if not Confirm.ask("DNS not ready. Retry with a hostname?", default=True):
+                print("[red]DNS validation is required before persisting hostname.[/red]")
+                raise typer.Exit(1)
 
         print(Panel(
             f"[green]Ingress NGINX + load balancer enabled for cluster '{name}'![/green]\n\n"
@@ -309,13 +382,14 @@ def register(kubeadm_app: typer.Typer):
         ))
 
         # ----- DNS Configuration Reminder -----
-        if run_host:
+        reminder_host = domain_name or run_host
+        if reminder_host:
             print(Panel(
                 f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]{run_host}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Update your DNS provider to point [cyan]{run_host}[/cyan]\n"
+                f"  [bold]{reminder_host}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
+                f"  Update your DNS provider to point [cyan]{reminder_host}[/cyan]\n"
                 f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
-                f"  You can verify with:  [dim]dig +short {run_host}[/dim]",
+                f"  You can verify with:  [dim]dig +short {reminder_host}[/dim]",
                 title="⚠ DNS Configuration Required",
                 border_style="yellow",
             ))

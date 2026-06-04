@@ -335,9 +335,15 @@ EOF
                         run_url = _os.environ.get("DATALAYER_RUN_URL", "")
                         env_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
 
-                        # Prefer persisted per-cluster hostname from kubeadm metadata.
+                        # Prefer persisted ingress-specific hostname from kubeadm metadata.
                         metadata = _load_cluster_metadata(name) or {}
-                        run_host = (metadata.get("public_hostname") or "").strip()
+                        ingress_domain_key = (
+                            "ingress_traefik_domain" if ingress_type == "traefik" else "ingress_nginx_domain"
+                        )
+                        run_host = (
+                            str(metadata.get(ingress_domain_key) or "").strip()
+                            or str(metadata.get("public_hostname") or "").strip()
+                        )
 
                         if not run_host:
                             print("\n[bold]Step 4/4: Configure public hostname for DNS validation...[/bold]")

@@ -1,124 +1,196 @@
 ---
-title: "Ray Cluster Addon"
+title: "Ray Addon"
 ---
 
-# Ray Cluster Addon
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
 
-The key steps are summarized down here, for more information refer to the [official Ray's documentation](https://docs.ray.io/en/latest/cluster/kubernetes/getting-started/raycluster-quick-start.html#kuberay-raycluster-quickstart).
+# ☰ 🛂 Datalayer Ray Addon
 
-## 1. Deploy a KubeRay Operator
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+## Deploy Datalayer IAM
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-iam
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-ray
+export NAMESPACE=datalayer-api
+...
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+
+## Overview
+
+This page describes the productized Ray addon architecture for Datalayer services.
+
+The design follows KubeRay recommendations:
+
+1. KubeRay Operator manages `RayCluster`, `RayJob`, and `RayService` CRDs.
+2. A Datalayer addon API provides a stable REST surface for Datalayer CLI and SDK.
+3. A dedicated `datalayer-ray` chart deploys the addon API and can install KubeRay.
+
+For Ray and KubeRay references, see:
+
+- [Ray on Kubernetes](https://docs.ray.io/en/latest/cluster/kubernetes/index.html)
+- [KubeRay GitHub](https://github.com/ray-project/kuberay)
+
+## Goals
+
+1. Expose a simple REST API to create/list/delete Ray clusters.
+2. Expose a simple REST API to submit and monitor Ray jobs.
+3. Integrate this API in `datalayer ray ...` CLI and SDK primitives.
+4. Package deployables for production usage:
+   - Docker image build context in `services/plane/etc/dockerfiles/datalayer-ray`
+   - Helm chart in `services/plane/etc/helm/charts/datalayer-ray`
+
+## Current Architecture
+
+```mermaid
+flowchart LR
+  CLI[datalayer ray CLI] --> CORE[Datalayer Core SDK]
+  CORE --> API[Datalayer Ray Addon API]
+  API --> K8S[Kubernetes API]
+  K8S --> CRD1[RayCluster CRD]
+  K8S --> CRD2[RayJob CRD]
+  OP[KubeRay Operator] --> CRD1
+  OP --> CRD2
+```
+
+## REST API Contract
+
+Base path: `/api/ray/v1`
+
+All resource endpoints are authenticated and require `platform_member` role.
+
+### Health and Version
+
+1. `GET /healthz`
+2. `GET /version`
+
+### RayCluster Management
+
+1. `GET /clusters?namespace=<ns>`
+2. `POST /clusters`
+3. `GET /clusters/{name}?namespace=<ns>`
+4. `DELETE /clusters/{name}?namespace=<ns>`
+
+### RayJob Management
+
+1. `POST /clusters/{cluster_name}/jobs`
+2. `GET /jobs?namespace=<ns>&cluster_name=<optional>`
+3. `GET /jobs/{name}?namespace=<ns>`
+4. `DELETE /jobs/{name}?namespace=<ns>`
+5. `GET /jobs/{name}/logs?namespace=<ns>&pod_name=<optional>&container=<optional>&tail_lines=200`
+6. `GET /jobs/{name}/events?namespace=<ns>&limit=100`
+
+## Core CLI and SDK
+
+Python Core now exposes:
+
+1. New URL config: `DATALAYER_RAY_URL`
+2. SDK primitives through `RayMixin`:
+   - `ray_list_clusters`, `ray_create_cluster`, `ray_get_cluster`, `ray_delete_cluster`
+   - `ray_submit_job`, `ray_list_jobs`, `ray_get_job`, `ray_delete_job`
+3. CLI command group:
+   - `datalayer ray clusters list|get|create|delete`
+   - `datalayer ray jobs list|submit|status|delete|logs|events`
+
+## Deployment
+
+### Docker Build
+
+Docker context: `services/plane/etc/dockerfiles/datalayer-ray/Dockerfile`
+
+The image runs:
 
 ```bash
-helm repo add kuberay https://ray-project.github.io/kuberay-helm
-helm repo update
-helm upgrade kuberay-operator kuberay/kuberay-operator
+python -m uvicorn --host 0.0.0.0 --port 4460 datalayer_ray.main:app
 ```
 
-## 2. Deploy a RayCluster custom resource
+### Helm Chart
+
+Chart location: `services/plane/etc/helm/charts/datalayer-ray`
+
+Behavior:
+
+1. Deploy `datalayer-ray` API service.
+2. Install `kuberay-operator` as a chart dependency (enabled by default).
+3. Optionally bootstrap a default `RayCluster` via `bootstrapRayCluster.enabled=true`.
+
+### Plane Helper Script
+
+Deployment command added in `plane/datalayer_plane/sbin/up.sh`:
 
 ```bash
-helm install raycluster kuberay/ray-cluster --set worker.replicas=10 --set worker.maxReplicas=100
+./datalayer_plane/sbin/up.sh datalayer-ray
 ```
 
-:::note
-The values for the number of worker replicas and the maximum number of replicas are set to 10 and 100, respectively.
-:::
+## Usage
 
-## 3. Run code from a Pod
-
-<video controls width="100%">
-  <source src="https://images.datalayer.io/legacy/distributed-frameworks/ray_from_cloud.webm"/>
-</video>
-
-First, let's spawn a simple pod with Ray already installed and get a bash inside it (the deployement of the pod ressource is not instantaneous so wait for the pod to be running before attaching a bash). Check out the **supplementary materials** to replicate this example. 
+### Cluster lifecycle
 
 ```bash
-kubectl apply -f simple-ray-pod.yaml
-kubectl exec --stdin --tty python-ray -- /bin/bash 
+datalayer ray clusters create my-ray --namespace default --worker-replicas 2
+datalayer ray clusters list --namespace default
+datalayer ray clusters get my-ray --namespace default
 ```
 
-Then, in the pod's bash start the job. Here the script is already present in the image used for the pod.
+### Submit and check a job
 
 ```bash
-python demo.py
+datalayer ray jobs submit my-ray --namespace default --entrypoint "python /workspace/train.py"
+datalayer ray jobs list --namespace default --cluster-name my-ray
+datalayer ray jobs status my-ray-job-<timestamp> --namespace default
+datalayer ray jobs logs my-ray-job-<timestamp> --namespace default --tail-lines 300
+datalayer ray jobs events my-ray-job-<timestamp> --namespace default --limit 100
 ```
 
-<details>
+## Security and RBAC
 
-<summary>Supplementary materials</summary>
+The chart creates a `ClusterRole` and `ClusterRoleBinding` allowing `rayclusters` and `rayjobs` CRUD across namespaces.
 
-For this example, the following image is be used (see on [Dockerhub](https://hub.docker.com/layers/aelskens/python-ray/3.9.19-2.34.0/images/sha256-461c84cb0ff6bcbdfa1f260d98fbb5a151dd1241ae8fb8d3c11c47d3d1822fac?context=repo)):
+For multi-tenant clusters, prefer one namespace per team/project and deploy one addon instance per namespace.
 
-```bash
-FROM python:3.9.19
+## Implementation Phases
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+1. Phase 1 (done): API contract + core CLI/SDK + deploy artifacts.
+2. Phase 2 (next): Add stricter authn/authz checks and audit metadata.
+3. Phase 3 (next): Add richer job logs/events endpoints.
+4. Phase 4 (next): Add `RayService` API support for long-running serving workloads.
 
-# Get build dependencies
-RUN apt-get update \
-    && apt-get install -y \
-        build-essential \
-        software-properties-common \
-        ca-certificates \
-        vim
+## Open Questions To Confirm
 
-RUN pip install ray[default]==2.34.0
-
-COPY demo.py ./demo.py
-```
-:::note
-The version of Python and Ray must match that of the RayCluster deployement (cf. [Ray's helm chart](https://github.com/ray-project/kuberay-helm/blob/main/helm-chart/ray-cluster/values.yaml#L10)).
-:::
-
-The content of the `demo.py` script is explicited here below:
-
-```python
-# demo.py
-
-import ray
-import time
-
-ray.init(address="ray://raycluster-kuberay-head-svc.default.svc.cluster.local:10001")
-
-print(f"Available ressources: {ray.cluster_resources()}")
-
-@ray.remote
-def dummy(i):
-    time.sleep(1)
-    return i
-
-start_time = time.perf_counter()
-
-futures = [dummy.remote(i) for i in range(11*10)]
-print(f"Results: {ray.get(futures)}")
-
-end_time = time.perf_counter()
-run_time = end_time - start_time
-print(f"Execution time = {run_time:.2f} seconds.")
-```
-
-Here is the configuration file of the simple Ray pod that was used to spawn the pod:
-
-```yaml
-# simple-ray-pod.yaml
-
-apiVersion: v1
-kind: Pod
-metadata:
-  name: python-ray
-spec:
-  containers:
-  - name: python-ray
-    image: aelskens/python-ray:3.9.19-2.34.0
-    command: ['sleep', '3600']
-```
-
-</details>
-
-## 4. Cleanup
-
-```bash
-helm uninstall raycluster
-helm uninstall kuberay-operator
-```
+1. Do we want organization/team scoped authz in this addon from day 1, or after internal validation?
+2. Should we add `RayService` endpoints now or keep them for phase 4?
+3. Do we standardize one namespace per account/team for all Ray resources?

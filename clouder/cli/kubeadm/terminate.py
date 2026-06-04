@@ -41,10 +41,12 @@ def register(kubeadm_app: typer.Typer):
             from ...cloud.aws.api import delete_aws_kubeadm_network, list_aws_vms, terminate_aws_vm
 
             vms = list_aws_vms()
-            master_name = f"{name}-master"
+            master_prefix = f"{name}-master"
             cluster_vms = [
                 vm for vm in vms
-                if vm["name"] == master_name or vm["name"].startswith(f"{name}-node-")
+                if vm["name"] == master_prefix
+                or vm["name"].startswith(f"{master_prefix}-")
+                or vm["name"].startswith(f"{name}-node-")
             ]
             if not cluster_vms:
                 typer.echo(f"No VMs found for cluster '{name}'.", err=True)
@@ -105,10 +107,12 @@ def register(kubeadm_app: typer.Typer):
 
         # Find cluster VMs by naming convention
         vms = list_azure_vms(subscription_id=context_id)
-        master_name = f"{name}-master"
+        master_prefix = f"{name}-master"
         cluster_vms = [
             vm for vm in vms
-            if vm["name"] == master_name or vm["name"].startswith(f"{name}-node-")
+            if vm["name"] == master_prefix
+            or vm["name"].startswith(f"{master_prefix}-")
+            or vm["name"].startswith(f"{name}-node-")
         ]
 
         if not cluster_vms:

@@ -62,10 +62,12 @@ def _resolve_cluster_vms(cluster_name: str):
         from ...cloud.azure.api import list_azure_vms, get_azure_vm_public_ip
         vms = list_azure_vms(subscription_id=context_id)
 
-        master_name = f"{cluster_name}-master"
-        master_vm = next((vm for vm in vms if vm["name"] == master_name), None)
+        master_prefix = f"{cluster_name}-master"
+        master_vm = next((vm for vm in vms if vm["name"] == master_prefix), None)
         if not master_vm:
-            typer.echo(f"Master VM '{master_name}' not found.", err=True)
+            master_vm = next((vm for vm in vms if vm["name"].startswith(f"{master_prefix}-")), None)
+        if not master_vm:
+            typer.echo(f"Master VM '{master_prefix}' not found.", err=True)
             raise typer.Exit(1)
 
         worker_vms = sorted(
@@ -74,7 +76,7 @@ def _resolve_cluster_vms(cluster_name: str):
         )
 
         master_ip = get_azure_vm_public_ip(
-            master_vm["resource_group"], master_name, subscription_id=context_id
+            master_vm["resource_group"], master_vm["name"], subscription_id=context_id
         )
         workers = []
         for wvm in worker_vms:
@@ -84,7 +86,7 @@ def _resolve_cluster_vms(cluster_name: str):
             workers.append({"name": wvm["name"], "ip": wip, "resource_group": wvm["resource_group"]})
 
         return {
-            "master": {"name": master_name, "ip": master_ip, "resource_group": master_vm["resource_group"]},
+            "master": {"name": master_vm["name"], "ip": master_ip, "resource_group": master_vm["resource_group"]},
             "workers": workers,
             "context_id": context_id,
         }
@@ -93,10 +95,12 @@ def _resolve_cluster_vms(cluster_name: str):
         from ...cloud.aws.api import list_aws_vms
 
         vms = list_aws_vms()
-        master_name = f"{cluster_name}-master"
-        master_vm = next((vm for vm in vms if vm["name"] == master_name), None)
+        master_prefix = f"{cluster_name}-master"
+        master_vm = next((vm for vm in vms if vm["name"] == master_prefix), None)
         if not master_vm:
-            typer.echo(f"Master VM '{master_name}' not found.", err=True)
+            master_vm = next((vm for vm in vms if vm["name"].startswith(f"{master_prefix}-")), None)
+        if not master_vm:
+            typer.echo(f"Master VM '{master_prefix}' not found.", err=True)
             raise typer.Exit(1)
 
         worker_vms = sorted(
@@ -115,7 +119,7 @@ def _resolve_cluster_vms(cluster_name: str):
 
         return {
             "master": {
-                "name": master_name,
+                "name": master_vm["name"],
                 "ip": master_vm.get("public_ip"),
                 "instance_id": master_vm.get("id"),
                 "region": master_vm.get("region"),
@@ -342,7 +346,12 @@ sudo apt-mark hold kubelet kubeadm kubectl containerd.io
 command -v kubelet >/dev/null
 command -v kubeadm >/dev/null
 command -v kubectl >/dev/null
-if ! systemctl list-unit-files | grep -q '^kubelet.service'; then
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
+    echo "WARN: kubelet.service not detected, attempting reinstall..."
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall kubelet > /dev/null || true
+    sudo systemctl daemon-reload || true
+fi
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
     echo "ERROR: kubelet.service unit file is missing"
     exit 1
 fi
@@ -519,7 +528,12 @@ sudo apt-mark hold kubelet kubeadm kubectl
 command -v kubelet >/dev/null
 command -v kubeadm >/dev/null
 command -v kubectl >/dev/null
-if ! systemctl list-unit-files | grep -q '^kubelet.service'; then
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
+    echo "WARN: kubelet.service not detected after upgrade, attempting reinstall..."
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall kubelet > /dev/null || true
+    sudo systemctl daemon-reload || true
+fi
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
     echo "ERROR: kubelet.service unit file is missing after upgrade"
     exit 1
 fi

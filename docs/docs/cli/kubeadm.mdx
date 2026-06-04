@@ -24,6 +24,9 @@ clouder kubeadm setup r1
 # Fetch the kubeconfig to ~/.clouder/kubeadm/r1/kubeconfig
 clouder kubeadm get-config r1
 
+# Select cluster kubeconfig for current shell usage (fetches if missing)
+clouder kubeadm use r1
+
 # Verify
 clouder kubectl r1 get nodes
 clouder kubectl r1 get pods -A
@@ -134,6 +137,18 @@ clouder kubeadm create <name> [OPTIONS]
 
 All VMs share the same VNet, subnet, and NSG — they can communicate with each other on private IPs while being individually accessible via public IPs.
 
+After `create`, Clouder persists cluster metadata to
+`~/.clouder/kubeadm/<name>/kubeadm.json` for later commands (`setup`,
+`scale`, `info`, cloud helper commands). The file includes, at minimum:
+
+- `cloud` (`azure` or `aws`)
+- `region`
+- cloud context identifiers (`subscription_id` for Azure, `account_id` for AWS)
+- requested node shape/count (`requested_workers`, `master_size`, `node_size`)
+- image/AMI details and admin user
+- master/worker node names + IPs
+- network resource identifiers
+
 **Interactive prompts** (same as `clouder vm create`):
 1. Resource group — pick existing or create new
 2. Region — only if creating a new resource group
@@ -229,6 +244,45 @@ clouder kubeadm get-config my-cluster
 #     export KUBELET_CLIENT_CERT=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.crt
 #     export KUBELET_CLIENT_KEY=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.key
 #     kubectl get nodes
+```
+
+---
+
+### `clouder kubeadm use`
+
+Select a kubeadm cluster kubeconfig for local `kubectl` usage.
+
+```bash
+clouder kubeadm use [name] [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+
+| Option | Description |
+|--------|-------------|
+| `--admin-user`, `-u` | SSH username used only when kubeconfig must be fetched from master (default: `azureuser`) |
+| `--key`, `-i` | SSH key name from `~/.ssh/` used only when kubeconfig must be fetched |
+| `--print-export` | Print only `export KUBECONFIG=...` (for `eval`) |
+
+Behavior:
+
+- If `~/.clouder/kubeadm/<name>/kubeconfig` exists, it is used directly.
+- If it does not exist, Clouder fetches it from the master (same behavior as `get-config`), then uses it.
+- The command prints an export line to apply in your shell.
+
+Examples:
+
+```bash
+# Use explicit cluster
+clouder kubeadm use my-cluster
+
+# Use default cluster (set with set-default)
+clouder kubeadm use
+
+# Shell-friendly one-liner
+eval "$(clouder kubeadm use my-cluster --print-export)"
 ```
 
 ---
@@ -468,14 +522,16 @@ clouder kubeadm enable-ingress-nginx <name> [OPTIONS]
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
-**What it does (4 steps):**
+**What it does (6 steps):**
 
 | Step | Description |
 |------|-------------|
 | 1 | Deploy ingress-nginx controller in **NodePort** mode on the cluster |
 | 2 | Read the assigned NodePorts for HTTP and HTTPS |
-| 3 | Create Azure Load Balancer (`<name>-lb`) with public IP, rules 80→HTTP NodePort, 443→HTTPS NodePort |
+| 3 | Create Azure Load Balancer (`<name>-lb`) and wait for the public IP assignment |
 | 4 | Add all worker VM NICs to the LB backend pool |
+| 5 | Ask for the DNS hostname mapped to the LB IP and test hostname resolution |
+| 6 | Persist hostname in `kubeadm.json` only after DNS resolves to the LB IP |
 
 **Architecture:**
 
@@ -554,14 +610,16 @@ clouder kubeadm enable-ingress-traefik <name> [OPTIONS]
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
-**What it does (4 steps):**
+**What it does (6 steps):**
 
 | Step | Description |
 |------|-------------|
 | 1 | Install Helm (if needed), deploy Traefik via Helm in **NodePort** mode |
 | 2 | Read the assigned NodePorts for HTTP (web) and HTTPS (websecure) |
-| 3 | Create Azure Load Balancer (`<name>-lb`) with public IP, rules 80→HTTP NodePort, 443→HTTPS NodePort |
+| 3 | Create Azure Load Balancer (`<name>-lb`) and wait for the public IP assignment |
 | 4 | Add all worker VM NICs to the LB backend pool |
+| 5 | Ask for the DNS hostname mapped to the LB IP and test hostname resolution |
+| 6 | Persist hostname in `kubeadm.json` only after DNS resolves to the LB IP |
 
 **Architecture:**
 
