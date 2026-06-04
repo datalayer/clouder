@@ -45,7 +45,9 @@ helm repo update
 
 # Install Traefik with NodePort service type
 # Set ingressClass.name=datalayer-traefik to match plane helm chart expectations
-helm upgrade --install traefik traefik/traefik \
+HELM_TIMEOUT="${HELM_TIMEOUT:-300s}"
+
+if ! helm upgrade --install traefik traefik/traefik \
     --namespace datalayer-traefik \
     --set ingressClass.name=datalayer-traefik \
     --set service.type=NodePort \
@@ -53,7 +55,22 @@ helm upgrade --install traefik traefik/traefik \
     --set ports.websecure.nodePort=30443 \
     --set providers.kubernetesIngress.enabled=true \
     --set providers.kubernetesCRD.enabled=true \
-    --wait --timeout 120s
+    --wait --timeout "$HELM_TIMEOUT"; then
+    echo "Traefik deployment did not become ready within $HELM_TIMEOUT."
+    echo "Collecting diagnostics..."
+    kubectl -n datalayer-traefik get pods -o wide 2>/dev/null || true
+    kubectl -n datalayer-traefik get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 60 || true
+    echo "Retrying helm upgrade with extended timeout 420s..."
+    helm upgrade --install traefik traefik/traefik \
+        --namespace datalayer-traefik \
+        --set ingressClass.name=datalayer-traefik \
+        --set service.type=NodePort \
+        --set ports.web.nodePort=30080 \
+        --set ports.websecure.nodePort=30443 \
+        --set providers.kubernetesIngress.enabled=true \
+        --set providers.kubernetesCRD.enabled=true \
+        --wait --timeout 420s
+fi
 
 echo "Traefik ingress controller installed (NodePort mode) in datalayer-traefik namespace."
 echo ""
@@ -117,7 +134,7 @@ def register(kubeadm_app: typer.Typer):
 
         print(Panel(
             f"[bold]Cluster:[/bold]  {name}\n"
-            f"[bold]Masters:[/bold]   {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold]  {master['name']} ({master['ip']})\n"
             f"[bold]Workers:[/bold]  {', '.join(w['name'] for w in workers)}\n"
             f"[bold]RG:[/bold]       {rg}\n\n"
             f"This will:\n"
