@@ -18,7 +18,7 @@ import { Label, Stack } from '@primer/react-brand';
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-export DATALAYER_RAY_URL=https://r-eastus.datalayer.run
+export DATALAYER_RUN_URL=https://r-eastus.datalayer.run
 plane up datalayer-ray
 ```
   </TabItem>
@@ -70,9 +70,7 @@ For Ray and KubeRay references, see:
 1. Expose a simple REST API to create/list/delete Ray clusters.
 2. Expose a simple REST API to submit and monitor Ray jobs.
 3. Integrate this API in `datalayer ray ...` CLI and SDK primitives.
-4. Package deployables for production usage:
-   - Docker image build context in `services/plane/etc/dockerfiles/datalayer-ray`
-   - Helm chart in `services/plane/etc/helm/charts/datalayer-ray`
+4. Package deployables for production usage via Plane and Helm.
 
 ## Current Architecture
 
@@ -118,8 +116,7 @@ All resource endpoints are authenticated and require `platform_member` role.
 
 Python Core now exposes:
 
-1. New URL config: `DATALAYER_RAY_URL`
-  - Alias supported: `DATALAYER_RAY_CLUSTER_URL`
+1. New URL config: `DATALAYER_RUN_URL`
   - Default: `https://prod1.datalayer.run`
 2. SDK primitives through `RayMixin`:
    - `ray_list_clusters`, `ray_create_cluster`, `ray_get_cluster`, `ray_delete_cluster`
@@ -148,33 +145,19 @@ datalayer --ray-url https://ray.my-company.net ray clusters ls --namespace defau
 3. Environment variable override (current shell):
 
 ```bash
-export DATALAYER_RAY_URL=https://ray.my-company.net
-# or legacy alias:
-export DATALAYER_RAY_CLUSTER_URL=https://ray.my-company.net
+export DATALAYER_RUN_URL=https://ray.my-company.net
 ```
 
 To keep this override across terminal sessions on Linux/macOS:
 
 ```bash
-echo 'export DATALAYER_RAY_URL=https://ray.my-company.net' >> ~/.bashrc
+echo 'export DATALAYER_RUN_URL=https://ray.my-company.net' >> ~/.bashrc
 source ~/.bashrc
 ```
 
 ## Deployment
 
-### Docker Build
-
-Docker context: `services/plane/etc/dockerfiles/datalayer-ray/Dockerfile`
-
-The image runs:
-
-```bash
-python -m uvicorn --host 0.0.0.0 --port 4460 datalayer_ray.main:app
-```
-
 ### Helm Chart
-
-Chart location: `services/plane/etc/helm/charts/datalayer-ray`
 
 Behavior:
 
@@ -182,15 +165,33 @@ Behavior:
 2. Install `kuberay-operator` as a chart dependency (enabled by default).
 3. Optionally bootstrap a default `RayCluster` via `bootstrapRayCluster.enabled=true`.
 
-### Plane Helper Script
+## Autoscaling
 
-Deployment command added in `plane/datalayer_plane/sbin/up.sh`:
+Ray worker autoscaling is supported through KubeRay and enabled by default for bootstrap and API-created clusters.
 
-```bash
-./datalayer_plane/sbin/up.sh datalayer-ray
+When enabled, the RayCluster spec includes:
+
+1. `spec.enableInTreeAutoscaling: true`
+2. Worker bounds from `minReplicas` and `maxReplicas`
+
+Relevant defaults in `datalayer-ray` chart values:
+
+```yaml
+bootstrapRayCluster:
+  autoscaling:
+    enabled: true
+  worker:
+    replicas: 1
+    minReplicas: 1
+    maxReplicas: 3
 ```
 
-Ingress host for `plane up datalayer-ray` is resolved from `DATALAYER_RAY_URL` (with `DATALAYER_RUN_URL` as fallback).
+Notes:
+
+1. Autoscaling acts within each worker group's `minReplicas`/`maxReplicas` bounds.
+2. Existing RayClusters need an update/recreate to pick up newly enabled autoscaling fields.
+
+Ingress host for `plane up datalayer-ray` is resolved from `DATALAYER_RUN_URL`.
 
 ## Usage
 
@@ -210,6 +211,154 @@ datalayer ray jobs list --namespace default --cluster-name my-ray
 datalayer ray jobs status my-ray-job-<timestamp> --namespace default
 datalayer ray jobs logs my-ray-job-<timestamp> --namespace default --tail-lines 300
 datalayer ray jobs events my-ray-job-<timestamp> --namespace default --limit 100
+```
+
+## Hands-On Examples
+
+This section is fully copy/paste friendly and does not depend on repository file paths.
+
+### Prerequisites
+
+```bash
+export DATALAYER_RUN_URL=https://r-eastus.datalayer.run
+# Set your token if not already stored by datalayer login
+export DATALAYER_API_KEY=<your-token>
+```
+
+### 1) Simple health and connectivity
+
+```bash
+# Verify the Ray addon API is healthy.
+curl -sS "${DATALAYER_RUN_URL}/api/ray/v1/version" \
+  -H "Authorization: Bearer ${DATALAYER_API_KEY}" | jq
+
+# List clusters through the Datalayer CLI.
+datalayer ray clusters ls --namespace default
+```
+
+### 2) Create a cluster and scale up/down
+
+```bash
+# Create a Ray cluster.
+datalayer ray clusters create  my-ray --namespace default --worker-replicas 1
+
+# Verify state.
+datalayer ray clusters get  my-ray --namespace default
+
+# Scale up workers to 3.
+kubectl -n default patch raycluster  my-ray --type='json' -p='[
+  {"op":"replace","path":"/spec/workerGroupSpecs/0/replicas","value":3},
+  {"op":"replace","path":"/spec/workerGroupSpecs/0/minReplicas","value":1},
+  {"op":"replace","path":"/spec/workerGroupSpecs/0/maxReplicas","value":6}
+]'
+
+# Confirm scale-up.
+datalayer ray clusters get  my-ray --namespace default
+
+# Scale down workers to 0.
+kubectl -n default patch raycluster  my-ray --type='json' -p='[
+  {"op":"replace","path":"/spec/workerGroupSpecs/0/replicas","value":0},
+  {"op":"replace","path":"/spec/workerGroupSpecs/0/minReplicas","value":0},
+  {"op":"replace","path":"/spec/workerGroupSpecs/0/maxReplicas","value":6}
+]'
+
+# Confirm scale-down.
+datalayer ray clusters get  my-ray --namespace default
+```
+
+### 3) Run a real Python file
+
+No intermediary file creation or copy is required.
+`--py` supports multiline source via stdin (`@-`).
+
+#### Example A: Hello Ray
+
+```bash
+datalayer ray jobs submit  my-ray --namespace default --job-name hello-ray --py @- <<'PY'
+import ray
+
+ray.init(address="auto")
+
+def square(x: int) -> int:
+  return x * x
+
+remote_square = ray.remote(square)
+nums = list(range(10))
+print("Output:", ray.get([remote_square.remote(n) for n in nums]))
+PY
+
+datalayer ray jobs monitor hello-ray --namespace default
+datalayer ray jobs logs hello-ray --namespace default --tail-lines 200
+```
+
+#### Example B: Monte Carlo Pi
+
+```bash
+datalayer ray jobs submit my-ray --namespace default --job-name pi-monte-carlo --py @- <<'PY'
+import random
+import ray
+
+ray.init(address="auto")
+
+workers = 16
+samples_per_worker = 100_000
+
+def count_inside(num_samples: int) -> int:
+  inside = 0
+  for _ in range(num_samples):
+    x = random.random()
+    y = random.random()
+    if x * x + y * y <= 1.0:
+      inside += 1
+  return inside
+
+remote_count_inside = ray.remote(count_inside)
+inside_total = sum(ray.get([remote_count_inside.remote(samples_per_worker) for _ in range(workers)]))
+total_samples = workers * samples_per_worker
+pi_estimate = 4.0 * inside_total / total_samples
+
+print("Workers:", workers)
+print("Samples per worker:", samples_per_worker)
+print("Total samples:", total_samples)
+print("Estimated pi:", pi_estimate)
+PY
+
+datalayer ray jobs monitor pi-monte-carlo --namespace default
+datalayer ray jobs logs pi-monte-carlo --namespace default --tail-lines 200
+```
+
+#### Example C: Stateful Actor Counter
+
+```bash
+datalayer ray jobs submit my-ray --namespace default --job-name actor-counter --py @- <<'PY'
+import ray
+
+ray.init(address="auto")
+
+class Counter:
+  def __init__(self):
+    self.value = 0
+
+  def add(self, amount: int) -> int:
+    self.value += amount
+    return self.value
+
+  def get(self) -> int:
+    return self.value
+
+RemoteCounter = ray.remote(Counter)
+counters = [RemoteCounter.remote() for _ in range(4)]
+
+for step in [1, 2, 3, 4, 5]:
+  ray.get([c.add.remote(step) for c in counters])
+
+totals = ray.get([c.get.remote() for c in counters])
+print("Per-actor totals:", totals)
+print("Grand total:", sum(totals))
+PY
+
+datalayer ray jobs monitor actor-counter --namespace default
+datalayer ray jobs logs actor-counter --namespace default --tail-lines 200
 ```
 
 ## Security and RBAC
@@ -235,3 +384,10 @@ For multi-tenant clusters, prefer one namespace per team/project and deploy one 
 1. Do we want organization/team scoped authz in this addon from day 1, or after internal validation?
 2. Should we add `RayService` endpoints now or keep them for phase 4?
 3. Do we standardize one namespace per account/team for all Ray resources?
+
+## Delete the Cluster
+
+```bash
+datalayer ray jobs ls --namespace default --cluster-name  my-ray
+datalayer ray clusters delete  my-ray --namespace default
+```

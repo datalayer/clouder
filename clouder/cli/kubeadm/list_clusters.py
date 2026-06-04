@@ -7,6 +7,7 @@ from rich import print
 from rich.table import Table
 
 from ...util.utils import CLOUDER_KUBEADM_FOLDER, kubeadm_kubeconfig_path, kubeadm_metadata_path
+from ._helpers import get_default_kubeadm_cluster
 
 
 def register(kubeadm_app: typer.Typer):
@@ -26,11 +27,14 @@ def register(kubeadm_app: typer.Typer):
 
         table = Table(title="Kubeadm Clusters")
         table.add_column("Name", style="cyan")
+        table.add_column("Default", style="yellow")
         table.add_column("Cloud", style="green")
         table.add_column("Region", style="green")
         table.add_column("Resource Group", style="green")
         table.add_column("Kubeconfig", style="yellow")
         table.add_column("Setup", style="yellow")
+
+        default_cluster = get_default_kubeadm_cluster()
 
         found = 0
         for cluster_dir in cluster_dirs:
@@ -50,8 +54,9 @@ def register(kubeadm_app: typer.Typer):
             resource_group = metadata.get("resource_group", "-")
             setup = "yes" if metadata.get("setup_complete") else "no"
             kubeconfig_exists = "yes" if kubeadm_kubeconfig_path(name).exists() else "no"
+            default_marker = "*" if default_cluster and name == default_cluster else ""
 
-            table.add_row(name, cloud, region, resource_group, kubeconfig_exists, setup)
+            table.add_row(name, default_marker, cloud, region, resource_group, kubeconfig_exists, setup)
             found += 1
 
         if found == 0:

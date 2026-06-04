@@ -370,7 +370,8 @@ def register(kubeadm_app: typer.Typer):
             resource_group = metadata["resource_group"]
             region = metadata["region"]
             node_size = metadata["workers"][0]["vm_size"] if metadata.get("workers") else "Standard_B2s"
-            admin_username = metadata.get("admin_username", user)
+            # Legacy metadata may store a null admin_username; fall back to CLI/default user.
+            admin_username = metadata.get("admin_username") or user
             ssh_key_name = metadata.get("ssh_key_name")
             image_publisher = metadata.get("image_publisher", "Canonical")
             image_offer = metadata.get("image_offer", "0001-com-ubuntu-server-jammy")
@@ -402,6 +403,13 @@ def register(kubeadm_app: typer.Typer):
             master_nic = network_client.network_interfaces.get(resource_group, master_nic_name)
             subnet_id = master_nic.ip_configurations[0].subnet.id
             nsg_id = master_nic.network_security_group.id if master_nic.network_security_group else None
+
+        admin_username = (admin_username or "azureuser").strip()
+        if not admin_username:
+            admin_username = "azureuser"
+
+        if metadata and not metadata.get("admin_username"):
+            _update_cluster_metadata(name, {"admin_username": admin_username})
 
         # --- Preflight unhealthy cleanup (K8s NotReady and/or VM unhealthy) ---
         preflight_cleanup_candidates_summary = "-"
@@ -880,26 +888,35 @@ def _scale_up(
                 raise typer.Exit(1)
             join_worker_stdout = (join_worker_result.get("stdout") or "").strip()
             join_worker_stderr = (join_worker_result.get("stderr") or "").strip()
-            join_stdout_lower = join_worker_stdout.lower()
+            join_output_lower = "\n".join(
+                part for part in (join_worker_stdout.lower(), join_worker_stderr.lower()) if part
+            )
             join_worker_fatal_markers = (
                 "error execution phase",
                 "timed out waiting for the condition",
                 "unable to fetch the kubeadm-config configmap",
-                "token id",
+                "token is invalid",
+                "token has expired",
                 "certificate signed by unknown authority",
                 "connection refused",
                 "context deadline exceeded",
                 "run 'kubeadm reset'",
             )
-            join_worker_fatal_signature = any(
-                marker in join_stdout_lower for marker in join_worker_fatal_markers
-            )
-            if join_worker_stderr or join_worker_fatal_signature:
+            join_worker_fatal_signature = any(marker in join_output_lower for marker in join_worker_fatal_markers)
+            if re.search(r"token\s+id\s+.*\s+is\s+invalid", join_output_lower):
+                join_worker_fatal_signature = True
+
+            if join_worker_fatal_signature:
                 print(f"  [red]Join failed on {worker['name']}[/red]")
                 _print_step_logs(worker["name"], "join", join_worker_result)
                 _print_worker_runtime_diagnostics(worker)
                 _delete_worker_and_skip(worker, "join_failed")
                 continue
+
+            if join_worker_stderr:
+                print(
+                    f"  [yellow]{worker['name']} join reported stderr but no fatal markers; continuing.[/yellow]"
+                )
             print(f"  [green]{worker['name']} joined.[/green]")
             _log_relevant_output(worker["name"], "join", join_worker_result)
 
