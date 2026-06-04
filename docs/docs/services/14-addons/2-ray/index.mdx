@@ -6,19 +6,19 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# ☰ 🛂 Datalayer Ray Addon
+# ☰ ⚡  Datalayer Ray Addon
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
   <Label color="red">REST API</Label>
 </Stack>
 
-## Deploy Datalayer IAM
+## Deploy Datalayer Ray Addon
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-plane up datalayer-iam
+plane up datalayer-ray
 ```
   </TabItem>
   <TabItem value="helm" label="Helm">
@@ -48,7 +48,6 @@ helm ls -A
 ```
   </TabItem>
 </Tabs>
-
 
 ## Overview
 
@@ -96,35 +95,69 @@ All resource endpoints are authenticated and require `platform_member` role.
 ### Health and Version
 
 1. `GET /healthz`
-2. `GET /version`
+2. `GET /api/ray/v1/version`
 
 ### RayCluster Management
 
-1. `GET /clusters?namespace=<ns>`
-2. `POST /clusters`
-3. `GET /clusters/{name}?namespace=<ns>`
-4. `DELETE /clusters/{name}?namespace=<ns>`
+1. `GET /api/ray/v1/clusters?namespace=<ns>`
+2. `POST /api/ray/v1/clusters`
+3. `GET /api/ray/v1/clusters/{name}?namespace=<ns>`
+4. `DELETE /api/ray/v1/clusters/{name}?namespace=<ns>`
 
 ### RayJob Management
 
-1. `POST /clusters/{cluster_name}/jobs`
-2. `GET /jobs?namespace=<ns>&cluster_name=<optional>`
-3. `GET /jobs/{name}?namespace=<ns>`
-4. `DELETE /jobs/{name}?namespace=<ns>`
-5. `GET /jobs/{name}/logs?namespace=<ns>&pod_name=<optional>&container=<optional>&tail_lines=200`
-6. `GET /jobs/{name}/events?namespace=<ns>&limit=100`
+1. `POST /api/ray/v1/clusters/{cluster_name}/jobs`
+2. `GET /api/ray/v1/jobs?namespace=<ns>&cluster_name=<optional>`
+3. `GET /api/ray/v1/jobs/{name}?namespace=<ns>`
+4. `DELETE /api/ray/v1/jobs/{name}?namespace=<ns>`
+5. `GET /api/ray/v1/jobs/{name}/logs?namespace=<ns>&pod_name=<optional>&container=<optional>&tail_lines=200`
+6. `GET /api/ray/v1/jobs/{name}/events?namespace=<ns>&limit=100`
 
 ## Core CLI and SDK
 
 Python Core now exposes:
 
 1. New URL config: `DATALAYER_RAY_URL`
+  - Alias supported: `DATALAYER_RAY_CLUSTER_URL`
+  - Default: `https://prod1.datalayer.run`
 2. SDK primitives through `RayMixin`:
    - `ray_list_clusters`, `ray_create_cluster`, `ray_get_cluster`, `ray_delete_cluster`
-   - `ray_submit_job`, `ray_list_jobs`, `ray_get_job`, `ray_delete_job`
+  - `ray_submit_job`, `ray_list_jobs`, `ray_get_job`, `ray_delete_job`
+  - `ray_get_job_logs`, `ray_get_job_events`
 3. CLI command group:
-   - `datalayer ray clusters list|get|create|delete`
-   - `datalayer ray jobs list|submit|status|delete|logs|events`
+  - `datalayer ray clusters ls|list|get|create|delete`
+  - `datalayer ray jobs ls|list|submit|status|monitor|delete|logs|events`
+
+## Point to a Non-Default Ray URL
+
+Use any of the following when your Ray addon is not exposed on `https://prod1.datalayer.run`.
+
+1. Per command override:
+
+```bash
+datalayer ray jobs ls --ray-url https://ray.my-company.net --namespace default
+```
+
+2. Global override for one CLI invocation:
+
+```bash
+datalayer --ray-url https://ray.my-company.net ray clusters ls --namespace default
+```
+
+3. Environment variable override (current shell):
+
+```bash
+export DATALAYER_RAY_URL=https://ray.my-company.net
+# or legacy alias:
+export DATALAYER_RAY_CLUSTER_URL=https://ray.my-company.net
+```
+
+To keep this override across terminal sessions on Linux/macOS:
+
+```bash
+echo 'export DATALAYER_RAY_URL=https://ray.my-company.net' >> ~/.bashrc
+source ~/.bashrc
+```
 
 ## Deployment
 
@@ -178,7 +211,12 @@ datalayer ray jobs events my-ray-job-<timestamp> --namespace default --limit 100
 
 ## Security and RBAC
 
-The chart creates a `ClusterRole` and `ClusterRoleBinding` allowing `rayclusters` and `rayjobs` CRUD across namespaces.
+The chart creates a `ClusterRole` and `ClusterRoleBinding` allowing:
+
+1. `rayclusters` and `rayjobs` CRUD across namespaces.
+2. `pods` read/list/watch for job pod discovery.
+3. `pods/log` read for job logs.
+4. `events` read/list/watch for job events.
 
 For multi-tenant clusters, prefer one namespace per team/project and deploy one addon instance per namespace.
 

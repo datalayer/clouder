@@ -25,7 +25,7 @@ def register(kubeadm_app: typer.Typer):
     def kubeadm_terminate(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
-        delete_rg: bool = typer.Option(False, "--delete-rg", help="Also delete the resource group."),
+        delete_rg: bool = typer.Option(False, "--delete-rg", help="Also delete the resource group (auto-enabled when RG is <cluster>-rg)."),
     ):
         """Terminate all VMs and networking for a kubeadm cluster.
 
@@ -127,6 +127,8 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Exit(1)
 
         rg = cluster_vms[0]["resource_group"]
+        default_rg_name = f"{name}-rg"
+        delete_rg_effective = delete_rg or (rg == default_rg_name)
 
         # Show what will be deleted
         print(f"\n[bold]Resources to delete for cluster '{name}':[/bold]")
@@ -136,8 +138,10 @@ def register(kubeadm_app: typer.Typer):
         typer.echo(f"  LB IP:{name}-lb-ip (if exists)")
         typer.echo(f"  NSG:  {name}-nsg")
         typer.echo(f"  VNet: {name}-vnet")
-        if delete_rg:
+        if delete_rg_effective:
             typer.echo(f"  RG:   {rg}")
+            if not delete_rg and rg == default_rg_name:
+                typer.echo("  Note: auto-deleting default cluster resource group.")
 
         if not force:
             if not Confirm.ask(f"\nDelete all resources for cluster '{name}'?", default=False):
@@ -184,8 +188,8 @@ def register(kubeadm_app: typer.Typer):
         except Exception:
             print(f"  [dim]VNet {name}-vnet not found or already deleted.[/dim]")
 
-        # Step 5: Optionally delete resource group
-        if delete_rg:
+        # Step 5: Delete resource group when explicitly requested or when it's the default cluster RG.
+        if delete_rg_effective:
             print("[bold]Deleting resource group...[/bold]")
             try:
                 from ...cloud.azure.api import _get_resource_client
@@ -198,6 +202,24 @@ def register(kubeadm_app: typer.Typer):
                 print(f"  [green]Deleted: {rg}[/green]")
             except Exception as e:
                 print(f"  [red]Failed to delete resource group {rg}: {e}[/red]")
+        else:
+            # Best-effort orphan sweep in shared RGs: remove any leftover cluster public IPs.
+            print("[bold]Final orphan cleanup (shared resource group)...[/bold]")
+            try:
+                from ...cloud.azure.api import _get_network_client, delete_azure_public_ip
+
+                network_client = _get_network_client(context_id)
+                for pip in network_client.public_ip_addresses.list(rg):
+                    pip_name = str(getattr(pip, "name", "") or "")
+                    if not pip_name.startswith(f"{name}-"):
+                        continue
+                    try:
+                        delete_azure_public_ip(rg, pip_name, subscription_id=context_id)
+                        print(f"  [green]Deleted orphan public IP: {pip_name}[/green]")
+                    except Exception:
+                        print(f"  [dim]Could not delete orphan public IP: {pip_name}[/dim]")
+            except Exception:
+                print("  [dim]Could not run orphan public IP cleanup.[/dim]")
 
         # Remove kubeconfig if it exists
         cluster_folder = kubeadm_cluster_folder(name)
