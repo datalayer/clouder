@@ -13,42 +13,42 @@ Alias: `clouder k` (for example, `clouder k list`, `clouder k create my-cluster`
 
 ```bash
 # Create the VMs (1 master + 1 worker)
-clouder kubeadm create --workers 1 r1
+clouder kubeadm create --workers 1 my-cluster
 
 # List locally known kubeadm clusters
 clouder kubeadm list
 
 # Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
-clouder kubeadm setup r1
+clouder kubeadm setup my-cluster
 
 # Fetch the kubeconfig to ~/.clouder/kubeadm/r1/kubeconfig
-clouder kubeadm get-config r1
+clouder kubeadm get-config my-cluster
 
 # Select cluster kubeconfig for current shell usage (fetches if missing)
-clouder kubeadm use r1
+clouder kubeadm use my-cluster
 
 # Verify
 clouder kubectl my-cluster get nodes
 clouder kubectl my-cluster get pods -A
 
 # Enable ingress with Traefik controller and cloud-specific load balancer setup
-clouder kubeadm enable-ingress-traefik r1
+clouder kubeadm enable-ingress-traefik my-cluster
 clouder helm my-cluster ls -A
 
 # Run the smoke test (Ingress + CRIU validation)
-clouder kubeadm smoke-test r1
+clouder kubeadm smoke-test my-cluster
 
 # Upgrade kubelet/Kubeadm/kubectl on all nodes (e.g. after bumping K8S_VERSION)
-clouder kubeadm upgrade-kubelet r1
+clouder kubeadm upgrade-kubelet my-cluster
 
 # Prune unhealthy worker Kubernetes nodes/VMs (interactive confirmation)
-clouder kubeadm prune r1
+clouder kubeadm prune my-cluster
 
 # Disable ingress
-clouder kubeadm disable-ingress-traefik r1
+clouder kubeadm disable-ingress-traefik my-cluster
 
 # Tear down the cluster and delete all cloud resources
-clouder kubeadm terminate r1
+clouder kubeadm terminate my-cluster
 ```
 
 ## Commands

@@ -102,7 +102,7 @@ Show CRIU readiness on all nodes of a deployment:
 - kubelet `ContainerCheckpoint` feature gate state
 
 ```bash
-clouder criu status --cluster r1
+clouder criu status --cluster my-cluster
 ```
 
 | Option | Short | Description |
@@ -116,7 +116,7 @@ clouder criu status --cluster r1
 List checkpoint archives currently present under `/var/lib/kubelet/checkpoints` on each node.
 
 ```bash
-clouder criu checkpoints --cluster r1
+clouder criu checkpoints --cluster my-cluster
 ```
 
 | Option | Short | Description |
@@ -130,7 +130,7 @@ clouder criu checkpoints --cluster r1
 Show the default checkpoint storage configured in deployment metadata.
 
 ```bash
-clouder criu storage --cluster r1
+clouder criu storage --cluster my-cluster
 ```
 
 ### `clouder criu storage-set`
