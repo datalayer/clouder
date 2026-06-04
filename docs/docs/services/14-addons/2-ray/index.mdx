@@ -18,6 +18,7 @@ import { Label, Stack } from '@primer/react-brand';
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
+export DATALAYER_RAY_URL=https://r-eastus.datalayer.run
 plane up datalayer-ray
 ```
   </TabItem>
@@ -188,6 +189,8 @@ Deployment command added in `plane/datalayer_plane/sbin/up.sh`:
 ```bash
 ./datalayer_plane/sbin/up.sh datalayer-ray
 ```
+
+Ingress host for `plane up datalayer-ray` is resolved from `DATALAYER_RAY_URL` (with `DATALAYER_RUN_URL` as fallback).
 
 ## Usage
 
