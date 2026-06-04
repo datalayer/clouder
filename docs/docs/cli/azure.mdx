@@ -306,16 +306,16 @@ Generate a JSON values file containing all Azure credentials required by the `da
 
 ```bash
 # Generate from configured Azure + kubeadm cluster metadata
-clouder azure helm-values --cluster r1 -o datalayer-operator-azure.json
+clouder azure helm-values --cluster my-cluster -o datalayer-operator-azure.json
 
 # Print JSON to stdout
-clouder azure helm-values --cluster r1 --output -
+clouder azure helm-values --cluster my-cluster --output -
 
 # Disable service principal auto-creation (fail if client credentials are missing)
-clouder azure helm-values --cluster r1 --no-create-sp
+clouder azure helm-values --cluster my-cluster --no-create-sp
 
 # Strict reuse mode (never creates an SP; fails if credentials are missing)
-clouder azure helm-values --cluster r1 --reuse-sp-only
+clouder azure helm-values --cluster my-cluster --reuse-sp-only
 
 # Fully explicit mode
 clouder azure helm-values \

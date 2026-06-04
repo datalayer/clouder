@@ -4,7 +4,7 @@ import shutil
 
 import typer
 from rich import print
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 
 from ..ctx import get_current_context
 from ...util.utils import kubeadm_cluster_folder
@@ -37,6 +37,12 @@ def register(kubeadm_app: typer.Typer):
             typer.echo("Kubeadm commands are currently supported for Azure and AWS.", err=True)
             raise typer.Exit(1)
 
+        def _require_cluster_name_confirmation() -> None:
+            typed_name = Prompt.ask(f"Type the cluster name to confirm deletion ({name})")
+            if typed_name.strip() != name:
+                print("[red]Cluster name mismatch. Aborting deletion.[/red]")
+                raise typer.Abort()
+
         if cloud == "aws":
             from ...cloud.aws.api import delete_aws_kubeadm_network, list_aws_vms, terminate_aws_vm
 
@@ -65,6 +71,7 @@ def register(kubeadm_app: typer.Typer):
             if not force:
                 if not Confirm.ask(f"\nDelete all resources for cluster '{name}'?", default=False):
                     raise typer.Abort()
+                _require_cluster_name_confirmation()
 
             print("\n[bold]Terminating EC2 instances...[/bold]")
             for vm in cluster_vms:
@@ -135,6 +142,7 @@ def register(kubeadm_app: typer.Typer):
         if not force:
             if not Confirm.ask(f"\nDelete all resources for cluster '{name}'?", default=False):
                 raise typer.Abort()
+            _require_cluster_name_confirmation()
 
         # Step 1: Delete VMs (with automatic cleanup of disks, NICs, IPs)
         print("\n[bold]Deleting VMs (with disks, NICs, IPs)...[/bold]")

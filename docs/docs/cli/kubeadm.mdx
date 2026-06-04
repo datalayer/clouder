@@ -28,12 +28,12 @@ clouder kubeadm get-config r1
 clouder kubeadm use r1
 
 # Verify
-clouder kubectl r1 get nodes
-clouder kubectl r1 get pods -A
+clouder kubectl my-cluster get nodes
+clouder kubectl my-cluster get pods -A
 
 # Enable ingress with Traefik controller and cloud-specific load balancer setup
 clouder kubeadm enable-ingress-traefik r1
-clouder helm r1 ls -A
+clouder helm my-cluster ls -A
 
 # Run the smoke test (Ingress + CRIU validation)
 clouder kubeadm smoke-test r1

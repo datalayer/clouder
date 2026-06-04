@@ -319,7 +319,18 @@ def register(kubeadm_app: typer.Typer):
 
         metadata = _load_cluster_metadata(name) or {}
         saved_domain = str(metadata.get("ingress_nginx_domain") or "").strip()
-        default_domain = saved_domain or str(metadata.get("public_hostname") or "").strip() or run_host
+        default_domain = saved_domain or str(metadata.get("public_hostname") or "").strip() or f"{name}.datalayer.run"
+
+        # Show DNS guidance before prompting for hostname validation.
+        print(Panel(
+            f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
+            f"  [bold]{default_domain}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
+            f"  Update your DNS provider to point [cyan]{default_domain}[/cyan]\n"
+            f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
+            f"  You can verify with:  [dim]dig +short {default_domain}[/dim]",
+            title="⚠ DNS Configuration Required",
+            border_style="yellow",
+        ))
 
         import socket as _socket
         import time as _time
@@ -380,28 +391,6 @@ def register(kubeadm_app: typer.Typer):
             f"  Remove with:    clouder kubeadm disable-ingress-nginx {name}",
             title="Ingress NGINX + LB Ready",
         ))
-
-        # ----- DNS Configuration Reminder -----
-        reminder_host = domain_name or run_host
-        if reminder_host:
-            print(Panel(
-                f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]{reminder_host}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Update your DNS provider to point [cyan]{reminder_host}[/cyan]\n"
-                f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
-                f"  You can verify with:  [dim]dig +short {reminder_host}[/dim]",
-                title="⚠ DNS Configuration Required",
-                border_style="yellow",
-            ))
-        else:
-            print(Panel(
-                f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]<your-domain>[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Set DATALAYER_RUN_URL to enable automatic DNS reminders.\n"
-                f"  Example: export DATALAYER_RUN_URL=https://prod1.datalayer.run",
-                title="⚠ DNS Configuration Required",
-                border_style="yellow",
-            ))
 
     @kubeadm_app.command("disable-ingress-nginx")
     def kubeadm_disable_ingress_nginx(

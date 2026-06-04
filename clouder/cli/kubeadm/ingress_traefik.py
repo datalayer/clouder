@@ -47,29 +47,48 @@ helm repo update
 # Set ingressClass.name=datalayer-traefik to match plane helm chart expectations
 HELM_TIMEOUT="${HELM_TIMEOUT:-300s}"
 
-if ! helm upgrade --install traefik traefik/traefik \
+if ! HELM_ERR=$(helm upgrade --install traefik traefik/traefik \
     --namespace datalayer-traefik \
     --set ingressClass.name=datalayer-traefik \
     --set service.type=NodePort \
     --set ports.web.nodePort=30080 \
     --set ports.websecure.nodePort=30443 \
     --set providers.kubernetesIngress.enabled=true \
-    --set providers.kubernetesCRD.enabled=true \
-    --wait --timeout "$HELM_TIMEOUT"; then
-    echo "Traefik deployment did not become ready within $HELM_TIMEOUT."
+    --set providers.kubernetesCRD.enabled=true 2>&1); then
+    echo "$HELM_ERR"
+    if echo "$HELM_ERR" | grep -q "another operation (install/upgrade/rollback) is in progress"; then
+        echo "Helm release is currently locked by another operation."
+        echo "Proceeding to Kubernetes rollout checks; if Traefik is healthy, this is non-fatal."
+    else
+    echo "Traefik helm install/upgrade command failed."
     echo "Collecting diagnostics..."
     kubectl -n datalayer-traefik get pods -o wide 2>/dev/null || true
     kubectl -n datalayer-traefik get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 60 || true
-    echo "Retrying helm upgrade with extended timeout 420s..."
-    helm upgrade --install traefik traefik/traefik \
+    echo "Retrying helm upgrade once..."
+        helm upgrade --install traefik traefik/traefik \
         --namespace datalayer-traefik \
         --set ingressClass.name=datalayer-traefik \
         --set service.type=NodePort \
         --set ports.web.nodePort=30080 \
         --set ports.websecure.nodePort=30443 \
         --set providers.kubernetesIngress.enabled=true \
-        --set providers.kubernetesCRD.enabled=true \
-        --wait --timeout 420s
+        --set providers.kubernetesCRD.enabled=true
+    fi
+fi
+
+echo "Validating Traefik deployment readiness..."
+if ! kubectl -n datalayer-traefik rollout status deployment/traefik --timeout "$HELM_TIMEOUT"; then
+    echo "ERROR: Traefik deployment did not become Ready within $HELM_TIMEOUT"
+    kubectl -n datalayer-traefik get pods -o wide 2>/dev/null || true
+    kubectl -n datalayer-traefik describe deployment traefik 2>/dev/null || true
+    kubectl -n datalayer-traefik get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 80 || true
+    exit 1
+fi
+
+if ! kubectl -n datalayer-traefik get svc traefik >/dev/null 2>&1; then
+    echo "ERROR: Traefik service was not created"
+    kubectl -n datalayer-traefik get all 2>/dev/null || true
+    exit 1
 fi
 
 echo "Traefik ingress controller installed (NodePort mode) in datalayer-traefik namespace."
@@ -337,7 +356,18 @@ def register(kubeadm_app: typer.Typer):
 
         metadata = _load_cluster_metadata(name) or {}
         saved_domain = str(metadata.get("ingress_traefik_domain") or "").strip()
-        default_domain = saved_domain or str(metadata.get("public_hostname") or "").strip() or run_host
+        default_domain = saved_domain or str(metadata.get("public_hostname") or "").strip() or f"{name}.datalayer.run"
+
+        # Show DNS guidance before prompting for hostname validation.
+        print(Panel(
+            f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
+            f"  [bold]{default_domain}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
+            f"  Update your DNS provider to point [cyan]{default_domain}[/cyan]\n"
+            f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
+            f"  You can verify with:  [dim]dig +short {default_domain}[/dim]",
+            title="⚠ DNS Configuration Required",
+            border_style="yellow",
+        ))
 
         import socket as _socket
         import time as _time
@@ -398,28 +428,6 @@ def register(kubeadm_app: typer.Typer):
             f"  Remove with:    clouder kubeadm disable-ingress-traefik {name}",
             title="Ingress Traefik + LB Ready",
         ))
-
-        # ----- DNS Configuration Reminder -----
-        reminder_host = domain_name or run_host
-        if reminder_host:
-            print(Panel(
-                f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]{reminder_host}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Update your DNS provider to point [cyan]{reminder_host}[/cyan]\n"
-                f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
-                f"  You can verify with:  [dim]dig +short {reminder_host}[/dim]",
-                title="⚠ DNS Configuration Required",
-                border_style="yellow",
-            ))
-        else:
-            print(Panel(
-                f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]<your-domain>[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Set DATALAYER_RUN_URL to enable automatic DNS reminders.\n"
-                f"  Example: export DATALAYER_RUN_URL=https://prod1.datalayer.run",
-                title="⚠ DNS Configuration Required",
-                border_style="yellow",
-            ))
 
     @kubeadm_app.command("disable-ingress-traefik")
     def kubeadm_disable_ingress_traefik(
