@@ -7,7 +7,7 @@ sidebar_position: 9
 
 Provision, set up, and manage Kubeadm Kubernetes clusters. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
 
-Alias: `clouder k` (for example, `clouder k list`, `clouder k create my-cluster`).
+Alias: `clouder k` (for example, `clouder k ls`, `clouder k create my-cluster`).
 
 ## Overview
 
@@ -16,7 +16,10 @@ Alias: `clouder k` (for example, `clouder k list`, `clouder k create my-cluster`
 clouder kubeadm create --workers 1 my-cluster
 
 # List locally known kubeadm clusters
-clouder kubeadm list
+clouder kubeadm ls
+
+# Include node counts/readiness details (slower)
+clouder kubeadm ls --details
 
 # Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
 clouder kubeadm setup my-cluster
@@ -57,16 +60,22 @@ By default, commands below accept `<name>`. If a default is configured with
 `clouder kubeadm set-default <name>`, you can omit `<name>` and Clouder will
 use the persisted default cluster.
 
-### `clouder kubeadm list`
+### `clouder kubeadm ls`
 
 List kubeadm clusters known locally from `~/.clouder/kubeadm/<name>/kubeadm.json`.
 
 ```bash
-clouder kubeadm list
+clouder kubeadm ls
 ```
 
 The command prints a table with cluster name, cloud, region, resource group,
 whether kubeconfig exists, and whether setup is marked complete.
+
+Use `--details` to include master/worker counts and readiness state:
+
+```bash
+clouder kubeadm ls --details
+```
 
 ---
 
@@ -292,12 +301,12 @@ eval "$(clouder kubeadm use my-cluster --print-export)"
 Show cluster information and next steps. Displays the current state of a Kubeadm cluster and lists useful commands for day-to-day operations as well as further setup steps.
 
 ```bash
-clouder kubeadm info <name>
+clouder kubeadm info [name]
 ```
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name |
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
 
 **Example:**
 
@@ -743,6 +752,9 @@ clouder kubeadm get-config my-cluster
 clouder kubectl my-cluster get nodes
 clouder kubectl my-cluster get pods -A
 clouder kubectl my-cluster apply -f deployment.yaml
+
+# If a default kubeadm cluster is configured, name can be omitted
+clouder kubectl get nodes
 ```
 
 ### Add an Ingress Controller
@@ -921,12 +933,12 @@ Run kubectl commands using the persisted kubeconfig for a cluster.
 Full reference: [`clouder kubectl`](./kubectl).
 
 ```bash
-clouder kubectl <name> <kubectl-args...>
+clouder kubectl [name] <kubectl-args...>
 ```
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster. |
 | `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
 
 **Example:**

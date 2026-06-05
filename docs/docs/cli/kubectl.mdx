@@ -10,10 +10,10 @@ Run kubectl commands against a Clouder kubeadm cluster using the persisted kubec
 ## Usage
 
 ```bash
-clouder kubectl <name> <kubectl-args...>
+clouder kubectl [name] <kubectl-args...>
 ```
 
-- `<name>`: kubeadm cluster name.
+- `[name]`: optional kubeadm cluster name. If omitted, Clouder uses the default kubeadm cluster.
 - `<kubectl-args...>`: any standard kubectl arguments (for example `get nodes`, `get pods -A`, `apply -f ...`).
 
 The kubeconfig path used by the wrapper is:
@@ -33,6 +33,9 @@ clouder kubeadm get-config <name>
 ```bash
 # Cluster nodes
 clouder kubectl my-cluster get nodes
+
+# If a default kubeadm cluster is configured
+clouder kubectl get nodes
 
 # Pods in all namespaces
 clouder kubectl my-cluster get pods -A
