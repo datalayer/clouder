@@ -270,11 +270,14 @@ datalayer ray clusters get  my-ray --namespace default
 
 No intermediary file creation or copy is required.
 `--py` supports multiline source via stdin (`@-`).
+Use unique job names when re-running examples to avoid `409 AlreadyExists`.
 
 #### Example A: Hello Ray
 
 ```bash
-datalayer ray jobs submit  my-ray --namespace default --job-name hello-ray --py @- <<'PY'
+JOB_NAME="hello-ray-$(date +%s)"
+
+datalayer ray jobs submit  my-ray --namespace default --job-name "${JOB_NAME}" --py @- <<'PY'
 import ray
 
 ray.init(address="auto")
@@ -287,14 +290,16 @@ nums = list(range(10))
 print("Output:", ray.get([remote_square.remote(n) for n in nums]))
 PY
 
-datalayer ray jobs monitor hello-ray --namespace default
-datalayer ray jobs logs hello-ray --namespace default --tail-lines 200
+datalayer ray jobs monitor "${JOB_NAME}" --namespace default
+datalayer ray jobs logs "${JOB_NAME}" --namespace default --tail-lines 200
 ```
 
 #### Example B: Monte Carlo Pi
 
 ```bash
-datalayer ray jobs submit my-ray --namespace default --job-name pi-monte-carlo --py @- <<'PY'
+JOB_NAME="pi-monte-carlo-$(date +%s)"
+
+datalayer ray jobs submit my-ray --namespace default --job-name "${JOB_NAME}" --py @- <<'PY'
 import random
 import ray
 
@@ -323,14 +328,16 @@ print("Total samples:", total_samples)
 print("Estimated pi:", pi_estimate)
 PY
 
-datalayer ray jobs monitor pi-monte-carlo --namespace default
-datalayer ray jobs logs pi-monte-carlo --namespace default --tail-lines 200
+datalayer ray jobs monitor "${JOB_NAME}" --namespace default
+datalayer ray jobs logs "${JOB_NAME}" --namespace default --tail-lines 200
 ```
 
 #### Example C: Stateful Actor Counter
 
 ```bash
-datalayer ray jobs submit my-ray --namespace default --job-name actor-counter --py @- <<'PY'
+JOB_NAME="actor-counter-$(date +%s)"
+
+datalayer ray jobs submit my-ray --namespace default --job-name "${JOB_NAME}" --py @- <<'PY'
 import ray
 
 ray.init(address="auto")
@@ -357,8 +364,8 @@ print("Per-actor totals:", totals)
 print("Grand total:", sum(totals))
 PY
 
-datalayer ray jobs monitor actor-counter --namespace default
-datalayer ray jobs logs actor-counter --namespace default --tail-lines 200
+datalayer ray jobs monitor "${JOB_NAME}" --namespace default
+datalayer ray jobs logs "${JOB_NAME}" --namespace default --tail-lines 200
 ```
 
 ## Security and RBAC
