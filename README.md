@@ -36,6 +36,9 @@ clouder kubeadm prune r1
 
 # Prune unhealthy worker nodes/VMs without prompt
 clouder kubeadm prune r1 --force
+
+# Repair worker VMs missing from kubectl nodes
+clouder kubeadm repair r1
 ```
 
 ### Prune Command
@@ -46,3 +49,21 @@ clouder kubeadm prune r1 --force
 - Azure worker VMs where `provisioning_state != Succeeded`
 
 When confirmed, it force-deletes matching Kubernetes node objects and Azure VMs.
+
+### Repair Command
+
+`clouder kubeadm repair <cluster>` detects VMs that exist in the cluster inventory but are not registered as Kubernetes nodes, then runs a full worker setup on each missing VM:
+
+- list cluster VM inventory (master + workers)
+- list Kubernetes nodes via kubectl on master
+- for each missing worker VM: kubelet upgrade, prerequisites, kubeadm reset/join, feature-gate setup, wait for Ready, and apply labels
+
+Examples:
+
+```bash
+# Use default node labels
+clouder kubeadm repair r1
+
+# Apply custom labels on reconciled workers
+clouder kubeadm repair r1 --node-label role.datalayer.io/runtime=true --node-label node.datalayer.io/variant=large
+```

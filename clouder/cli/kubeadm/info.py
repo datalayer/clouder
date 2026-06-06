@@ -65,6 +65,7 @@ def register(kubeadm_app: typer.Typer):
             f"  Run kubectl:       clouder kubectl {name} get nodes",
             f"  SSH to master:     clouder ssh {master['name']}",
             f"  Scale workers:     clouder kubeadm scale {name} --workers N",
+            f"  Repair workers:    clouder kubeadm repair {name}",
             f"  Ingress (nginx):   clouder kubeadm enable-ingress-nginx {name}",
             f"  Ingress (traefik): clouder kubeadm enable-ingress-traefik {name}",
             f"  Smoke test:        clouder kubeadm smoke-test {name}",
