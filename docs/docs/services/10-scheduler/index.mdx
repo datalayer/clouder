@@ -2,13 +2,87 @@
 title: Datalayer Scheduler
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# 🚧 ⏰ Datalayer Scheduler
+# ⏰ Datalayer Scheduler
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
   <Label color="red">Service</Label>
 </Stack>
 
-`Datalayer Scheduler` plans and runs jobs.
+`Datalayer Scheduler` stores schedule definitions, plans runs, and executes notebook runs in the background.
+
+## Deploy Datalayer Scheduler
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-scheduler
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
+
+Remove scheduler:
+
+```bash
+plane down datalayer-scheduler
+```
+
+Local development:
+
+```bash
+plane pf-local
+plane local
+```
+
+`plane local` starts the scheduler on `http://localhost:9920` and wires service URLs for IAM/Spacer/Runtimes local ports.
+
+## Responsibilities
+
+- Persist schedule definitions (`type_s=schedule`) and runs (`type_s=schedule_run`) in Solr.
+- Poll due planned runs every 10 seconds by default.
+- Execute due runs in background worker threads.
+- Mark run outcomes and create next planned runs from cron expressions.
+
+## APIs
+
+- `GET /api/scheduler/v1/ping`
+- `GET /api/scheduler/v1/status` (platform admin)
+- `GET /api/scheduler/v1/status/self-check` (platform admin)
+- `GET /api/scheduler/v1/schedules`
+- `GET /api/scheduler/v1/schedules/runs`
+- `POST /api/scheduler/v1/schedules`
+- `POST /api/scheduler/v1/schedules/{id}/disable`
+
+## Required Environment Variables
+
+- `DATALAYER_SOLR_ZK_HOST`
+- `DATALAYER_JWT_ISSUER`
+- `DATALAYER_JWT_SECRET`
+- `DATALAYER_JWT_ALGORITHM`
+- `DATALAYER_IAM_SERVICE_URL`
+- `DATALAYER_SPACER_SERVICE_URL`
+- `DATALAYER_RUNTIME_SERVICE_URL`
+
+## Optional Environment Variables
+
+- `DATALAYER_SCHEDULER_INTERVAL_SECONDS` (default: `10`)
+- `DATALAYER_SCHEDULER_RUNTIME_ENVIRONMENT` (default: `ai-agent-env`)
+- `DATALAYER_SCHEDULER_RUNTIME_CREDITS_FRACTION` (default: `0.5`)
+- `DATALAYER_SCHEDULER_EXEC_TIMEOUT_SECONDS` (default: `300`)
+- `DATALAYER_SCHEDULER_SERVICE_TOKEN`
+
+## Ingress
+
+- Scheduler chart now provides an ingress route on `/api/scheduler` (same host pattern as IAM ingress).
+- For GKE clusters, scheduler chart also provides a `BackendConfig` template and service annotation.
+- UI and CLI should target scheduler via dedicated scheduler URL configuration, not through generic run URL fallback.
