@@ -5,7 +5,7 @@ import typer
 from .._version import __version__
 from .ctx import ctx_app
 from .vm import vm_app
-from .k8s import k8s_app
+from .kubernetes import kubernetes_app
 from .ssh_key import ssh_key_app
 from .s3 import s3_app
 from .info import info_app
@@ -15,8 +15,8 @@ from .ssh import ssh_app
 from .kubeadm import kubeadm_app
 from .kubectl import kubectl_command
 from .helm import helm_command
-from .azure_cmd import azure_app
-from .aws_cmd import aws_app
+from .azure import azure_app
+from .aws import aws_app
 from .cost import cost_app
 from .criu import criu_app
 from .completion import completion_app
@@ -31,7 +31,7 @@ app = typer.Typer(
 
 app.add_typer(ctx_app, name="ctx", help="Manage Clouder contexts.")
 app.add_typer(vm_app, name="vm", help="Manage virtual machines.")
-app.add_typer(k8s_app, name="kubernetes", help="Manage Kubernetes clusters.")
+app.add_typer(kubernetes_app, name="kubernetes", help="Manage Kubernetes clusters.")
 app.add_typer(ssh_key_app, name="ssh-key", help="Manage SSH keys.")
 app.add_typer(s3_app, name="s3", help="Manage S3 buckets.")
 app.add_typer(info_app, name="info", help="Show info about the current context.")

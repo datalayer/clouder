@@ -10,7 +10,7 @@ from rich.markdown import Markdown
 from .ctx import get_current_context, set_default_kubeconfig_path
 from ..util.utils import OVH_K8S_FOLDER
 
-k8s_app = typer.Typer(no_args_is_help=True)
+kubernetes_app = typer.Typer(no_args_is_help=True)
 
 
 def _require_ovh(cloud: str):
@@ -20,14 +20,14 @@ def _require_ovh(cloud: str):
         raise typer.Exit(1)
 
 
-@k8s_app.callback(invoke_without_command=True)
+@kubernetes_app.callback(invoke_without_command=True)
 def k8s_default(ctx: typer.Context):
     """List clusters if no subcommand given."""
     if ctx.invoked_subcommand is None:
         k8s_list()
 
 
-@k8s_app.command("create")
+@kubernetes_app.command("create")
 def k8s_create(
     name: str = typer.Argument(..., help="Name for the Kubernetes cluster."),
 ):
@@ -39,7 +39,7 @@ def k8s_create(
     print(res)
 
 
-@k8s_app.command("ls")
+@kubernetes_app.command("ls")
 def k8s_list():
     """List Kubernetes clusters."""
     (cloud, context_id) = get_current_context()
@@ -115,7 +115,7 @@ def k8s_list():
             print()
 
 
-@k8s_app.command("kubeconfig")
+@kubernetes_app.command("kubeconfig")
 def k8s_kubeconfig(
     name: str = typer.Argument(..., help="Name of the Kubernetes cluster."),
 ):
@@ -141,7 +141,7 @@ def k8s_kubeconfig(
     raise typer.Exit(1)
 
 
-@k8s_app.command("use")
+@kubernetes_app.command("use")
 def k8s_use(
     name: str = typer.Argument(..., help="Name of the Kubernetes cluster."),
 ):
@@ -161,7 +161,7 @@ def k8s_use(
     raise typer.Exit(1)
 
 
-@k8s_app.command("create-nodepool")
+@kubernetes_app.command("create-nodepool")
 def k8s_create_nodepool(
     cluster_name: str = typer.Argument(..., help="Name of the Kubernetes cluster."),
     nodepool_name: str = typer.Argument(..., help="Name for the node pool."),
@@ -215,7 +215,7 @@ def k8s_create_nodepool(
     raise typer.Exit(1)
 
 
-@k8s_app.command("update-nodepool")
+@kubernetes_app.command("update-nodepool")
 def k8s_update_nodepool(
     cluster_name: str = typer.Argument(..., help="Name of the Kubernetes cluster."),
     nodepool_name: str = typer.Argument(..., help="Name of the node pool."),
