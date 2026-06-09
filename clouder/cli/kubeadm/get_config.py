@@ -4,6 +4,7 @@ import re
 
 import typer
 from rich import print
+from rich.panel import Panel
 
 from ...util.utils import (
     ensure_kubeadm_cluster_folder,
@@ -115,10 +116,20 @@ def register(kubeadm_app: typer.Typer):
         # -----------------------------------------------------------------
         # Print usage
         # -----------------------------------------------------------------
-        typer.echo(f"\nUsage:")
-        typer.echo(f"  export KUBECONFIG={kubeconfig_path}")
+        usage_lines = [
+            f"export KUBECONFIG={kubeconfig_path}",
+        ]
         if cert_local and key_local:
-            typer.echo(f"  export KUBELET_CLIENT_CERT={cert_local}")
-            typer.echo(f"  export KUBELET_CLIENT_KEY={key_local}")
-        typer.echo(f"  kubectl get nodes")
-        typer.echo(f"  clouder kubectl {name} get nodes")
+            usage_lines.append(f"export KUBELET_CLIENT_CERT={cert_local}")
+            usage_lines.append(f"export KUBELET_CLIENT_KEY={key_local}")
+        usage_lines.append("kubectl get nodes")
+        usage_lines.append(f"clouder kubectl {name} get nodes")
+
+        usage_block = "\n".join(f"  {line}" for line in usage_lines)
+        print(
+            Panel.fit(
+                f"[bold]Usage[/bold]\n\n[cyan]{usage_block}[/cyan]",
+                title="Next Commands",
+                border_style="green",
+            )
+        )

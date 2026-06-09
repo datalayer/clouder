@@ -105,7 +105,7 @@ def register(kubeadm_app: typer.Typer):
             f"[bold bright_green]{len(workers)}[/bold bright_green]"
         )
         status_lines.append("")
-        status_lines.append(f"  [bold]Masters:[/bold]   {master['name']} ({master['ip']})")
+        status_lines.append(f"  [bold]Masters:[/bold]  {master['name']} ({master['ip']})")
         if workers:
             status_lines.append(f"  [bold]Workers:[/bold]  {', '.join(w['name'] + ' (' + w['ip'] + ')' for w in workers)}")
         else:

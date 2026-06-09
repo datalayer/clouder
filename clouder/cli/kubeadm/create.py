@@ -5,6 +5,7 @@ import uuid
 
 import typer
 from rich import print
+from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
@@ -491,7 +492,13 @@ def _create_kubeadm_azure(
     print()
     print(table)
 
-    print(f"\n[yellow]  clouder kubeadm setup {cluster_name}[/yellow]\n")
+    print(
+        Panel.fit(
+            f"[bold cyan]clouder kubeadm setup {cluster_name}[/bold cyan]",
+            title="Next Step",
+            border_style="yellow",
+        )
+    )
 
     # --- Save cluster metadata ---
     master_result = results[0][1]
@@ -643,7 +650,13 @@ def _create_kubeadm_aws(
     print()
     print(table)
 
-    print(f"\n[yellow]  clouder kubeadm setup {cluster_name}[/yellow]\n")
+    print(
+        Panel.fit(
+            f"[bold cyan]clouder kubeadm setup {cluster_name}[/bold cyan]",
+            title="Next Step",
+            border_style="yellow",
+        )
+    )
 
     master_result = results[0][1]
     worker_results = [(role, res) for role, res in results if role == "node"]
