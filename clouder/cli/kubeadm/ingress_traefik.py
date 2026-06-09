@@ -171,7 +171,14 @@ def register(kubeadm_app: typer.Typer):
         check = _ssh_cmd(master["ip"], user, key_path, "which kubectl", check=False)
         if check.returncode != 0:
             print("[red]kubectl not found on master node.[/red]")
-            print(f"[yellow]Run 'clouder kubeadm setup {name}' first to install the cluster.[/yellow]")
+            print(
+                Panel.fit(
+                    f"[bold cyan]clouder kubeadm setup {name}[/bold cyan]",
+                    title="Prerequisite",
+                    subtitle="Run this first to install the cluster",
+                    border_style="bright_yellow",
+                )
+            )
             raise typer.Exit(1)
 
         # ----- Step 1: Deploy Traefik on the cluster -----

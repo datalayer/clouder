@@ -428,8 +428,9 @@ def register(kubeadm_app: typer.Typer):
         # ----- Done -----
         print(Panel(
             f"[green]Cluster '{name}' is ready![/green]\n\n"
-            f"  Run [bold]clouder kubeadm info {name}[/bold] to see cluster details and next steps.",
-            title="Setup Complete",
+            f"  Next: [bold cyan]clouder kubeadm info {name}[/bold cyan]",
+            title="Next Step",
+            border_style="yellow",
         ))
 
         # Update cluster metadata with setup info

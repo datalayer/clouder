@@ -119,7 +119,13 @@ def register(kubeadm_app: typer.Typer):
             if metadata.get("resource_group"):
                 status_lines.append(f"  [bold]RG:[/bold]       {metadata['resource_group']}")
 
-        print(Panel("\n".join(status_lines), title="[bold cyan]Cluster Info[/bold cyan]"))
+        print(
+            Panel(
+                "\n".join(status_lines),
+                title="Cluster Info",
+                border_style="cyan",
+            )
+        )
 
         # --- Load balancer addresses ---
         lb_addresses = _discover_load_balancer_addresses(name, cluster, metadata)
@@ -134,41 +140,59 @@ def register(kubeadm_app: typer.Typer):
             lb_lines.append("")
             lb_lines.append("Hint: run ingress setup first, then re-run this command.")
 
-        print(Panel("\n".join(lb_lines), title="[bold green]Load Balancer[/bold green]"))
+        print(
+            Panel(
+                "\n".join(lb_lines),
+                title="Load Balancer",
+                border_style="green",
+            )
+        )
 
         # --- Cluster commands ---
         cmd_lines = [
-            f"  Get kubeconfig:    clouder kubeadm get-config {name}",
-            f"  Run kubectl:       clouder kubectl {name} get nodes",
-            f"  SSH to master:     clouder ssh {master['name']}",
-            f"  Scale workers:     clouder kubeadm scale {name} --workers N",
-            f"  Repair workers:    clouder kubeadm repair {name}",
-            f"  Ingress (nginx):   clouder kubeadm enable-ingress-nginx {name}",
-            f"  Ingress (traefik): clouder kubeadm enable-ingress-traefik {name}",
-            f"  Smoke test:        clouder kubeadm smoke-test {name}",
-            f"  Terminate:         clouder kubeadm terminate {name}",
+            f"  Get kubeconfig:    [cyan]clouder kubeadm get-config {name}[/cyan]",
+            f"  Run kubectl:       [cyan]clouder kubectl {name} get nodes[/cyan]",
+            f"  SSH to master:     [cyan]clouder ssh {master['name']}[/cyan]",
+            f"  Scale workers:     [cyan]clouder kubeadm scale {name} --workers N[/cyan]",
+            f"  Repair workers:    [cyan]clouder kubeadm repair {name}[/cyan]",
+            f"  Ingress (nginx):   [cyan]clouder kubeadm enable-ingress-nginx {name}[/cyan]",
+            f"  Ingress (traefik): [cyan]clouder kubeadm enable-ingress-traefik {name}[/cyan]",
+            f"  Smoke test:        [cyan]clouder kubeadm smoke-test {name}[/cyan]",
+            f"  Terminate:         [cyan]clouder kubeadm terminate {name}[/cyan]",
         ]
 
-        print(Panel("\n".join(cmd_lines), title="[bold bright_blue]Cluster Commands[/bold bright_blue]"))
+        print(
+            Panel(
+                "\n".join(cmd_lines),
+                title="Cluster Commands",
+                border_style="bright_blue",
+            )
+        )
 
         # --- Plane setup steps ---
         plane_lines = [
             "After retrieving the kubeconfig, run the following plane commands",
             "to complete the platform setup:\n",
-            f"  clouder kubeadm get-config {name}",
-            f"  clouder kubeadm enable-ingress-traefik {name} ",
-            f"  clouder kubeadm smoke-test {name} ",
+            f"  [cyan]clouder kubeadm get-config {name}[/cyan]",
+            f"  [cyan]clouder kubeadm enable-ingress-traefik {name}[/cyan]",
+            f"  [cyan]clouder kubeadm smoke-test {name}[/cyan]",
             "",
-            "  plane k8s-label-nodes",
-            "  plane k8s-create-namespaces",
-            "  plane reg-creds-create",
-            "  plane k8s-prepull-cpu",
-            "  plane up datalayer-cert-manager",
-            "  plane create-cert-issuer",
+            "  [cyan]plane k8s-label-nodes[/cyan]",
+            "  [cyan]plane k8s-create-namespaces[/cyan]",
+            "  [cyan]plane reg-creds-create[/cyan]",
+            "  [cyan]plane k8s-prepull-cpu[/cyan]",
+            "  [cyan]plane up datalayer-cert-manager[/cyan]",
+            "  [cyan]plane create-cert-issuer[/cyan]",
             "",
             "Full services documentation:",
             "",
             "  [link=https://clouder.sh/services]https://clouder.sh/services[/link]",
         ]
 
-        print(Panel("\n".join(plane_lines), title="[bold magenta]Next Steps[/bold magenta]"))
+        print(
+            Panel(
+                "\n".join(plane_lines),
+                title="Next Steps",
+                border_style="magenta",
+            )
+        )

@@ -129,7 +129,7 @@ def register(kubeadm_app: typer.Typer):
         print(
             Panel.fit(
                 f"[bold]Usage[/bold]\n\n[cyan]{usage_block}[/cyan]",
-                title="Next Commands",
+                title="Usage",
                 border_style="green",
             )
         )
