@@ -16,9 +16,13 @@ For small devevelopment cluster, you can create a single Nodepool. Every node sh
 
 :::tip Quick labelling
 
-Run `plane k8s-label-nodes` to apply all the above labels to every worker node in one go. This is the fastest way to set up a small development cluster.
+Run to apply all the above labels to every worker node in one go. This is the fastest way to set up a small development cluster.
 
 :::
+
+```bash
+plane k8s-label-nodes
+```
 
 Use your favorite tool to create those nodes, or use [Clouder](https://clouder.sh), a tool to ease the Kubernetes cluster creation and sharing.
 
