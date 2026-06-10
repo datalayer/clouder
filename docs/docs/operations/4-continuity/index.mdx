@@ -15,7 +15,7 @@ To prevent any disaster, ensure you take the recommended backup of the Datalayer
 Take recurring backups with a S3 SolrBackup.
 
 ```bash
-kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer-backup-s3.yaml
+kubectl apply -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml
 kubectl get solrbackups -n datalayer-solr -w
 # NAMESPACE        NAME                               CLOUD            STARTED   FINISHED   SUCCESSFUL   NEXTBACKUP   AGE
 # datalayer-solr   datalayer-solr-collection-backup   solr-datalayer   44s                                            44s
@@ -28,7 +28,7 @@ curl http://localhost:8983/solr/accounts/replication?command=details
 ```
 
 ```bash
-kubectl delete -f $PLANE_HOME/etc/specs/solr/datalayer-backup-s3.yaml
+kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml
 ```
 
 ## Simulate a Disaster

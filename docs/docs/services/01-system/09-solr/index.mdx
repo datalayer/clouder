@@ -135,7 +135,7 @@ You can also configure the size of the cluster, a 3 nodes replica cluster is wha
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer.yaml
+kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer-solr.yaml
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -368,11 +368,11 @@ All backups run daily at 1:00 AM UTC and retain up to 200 snapshots.
   <TabItem value="plane" label="Plane" default>
 ```bash
 # All collections.
-kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer-backup-s3.yaml
+kubectl apply -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml
 # Core collections only.
-kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer-backup-s3-core.yaml
+kubectl apply -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-core.yaml
 # Runtimes collections only.
-kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer-backup-s3-runtimes.yaml
+kubectl apply -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-runtimes.yaml
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
