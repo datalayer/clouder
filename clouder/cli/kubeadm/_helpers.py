@@ -55,9 +55,78 @@ def _ssh_cmd_stream(ip: str, user: str, key_path: str, command: str) -> int:
 # Cluster VM resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_cluster_vms(cluster_name: str):
-    """Resolve all VMs belonging to a kubeadm cluster, returning (master, workers) with IPs."""
-    (cloud, context_id) = get_current_context()
+def resolve_kubeadm_cloud_context(
+    cloud: str | None = None,
+    cluster_name: str | None = None,
+) -> tuple[str, str]:
+    """Resolve the kubeadm cloud/context pair.
+
+    Priority order:
+    1) Explicit ``--cloud`` option when provided.
+    2) Cluster metadata cloud when cluster metadata exists.
+    3) Current context cloud.
+
+    When the resolved cloud differs from the current context cloud, this helper
+    tries to find a matching configured context for that cloud, preferring the
+    context id recorded in cluster metadata.
+    """
+
+    requested_cloud = (cloud or "").strip().lower() or None
+    if requested_cloud and requested_cloud not in {"azure", "aws"}:
+        raise typer.BadParameter("--cloud must be one of: azure, aws")
+
+    metadata: dict = {}
+    if cluster_name:
+        metadata = _load_cluster_metadata(cluster_name) or {}
+
+    metadata_cloud = str(metadata.get("cloud") or "").strip().lower() or None
+    if requested_cloud and metadata_cloud and requested_cloud != metadata_cloud:
+        raise typer.BadParameter(
+            f"Cluster '{cluster_name}' metadata says cloud={metadata_cloud}, but --cloud={requested_cloud}."
+        )
+
+    target_cloud = requested_cloud or metadata_cloud
+    current_cloud, current_context_id = get_current_context()
+    if not target_cloud:
+        return (current_cloud, current_context_id)
+
+    if target_cloud == current_cloud:
+        return (current_cloud, current_context_id)
+
+    context = load_context()
+    cloud_contexts = (
+        context.get("clouder", {})
+        .get("contexts", {})
+        .get(target_cloud, {})
+        or {}
+    )
+
+    preferred_context_id = ""
+    if target_cloud == "azure":
+        preferred_context_id = str(metadata.get("subscription_id") or "")
+    elif target_cloud == "aws":
+        preferred_context_id = str(metadata.get("account_id") or "")
+
+    if preferred_context_id and preferred_context_id in cloud_contexts:
+        return (target_cloud, preferred_context_id)
+
+    if len(cloud_contexts) == 1:
+        return (target_cloud, next(iter(cloud_contexts.keys())))
+
+    raise typer.BadParameter(
+        "Could not resolve a unique context for --cloud. "
+        "Run `clouder ctx set <cloud> <context_id>` for the target cloud or keep the current context aligned."
+    )
+
+
+def _resolve_cluster_vms(
+    cluster_name: str,
+    cloud: str | None = None,
+    context_id: str | None = None,
+):
+    """Resolve all VMs belonging to a kubeadm cluster, returning master/workers with IPs."""
+    if not cloud or not context_id:
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=cluster_name)
     if cloud == "azure":
         from ...cloud.azure.api import list_azure_vms, get_azure_vm_public_ip
         vms = list_azure_vms(subscription_id=context_id)
@@ -86,6 +155,7 @@ def _resolve_cluster_vms(cluster_name: str):
             workers.append({"name": wvm["name"], "ip": wip, "resource_group": wvm["resource_group"]})
 
         return {
+            "cloud": cloud,
             "master": {"name": master_vm["name"], "ip": master_ip, "resource_group": master_vm["resource_group"]},
             "workers": workers,
             "context_id": context_id,
@@ -94,7 +164,10 @@ def _resolve_cluster_vms(cluster_name: str):
     if cloud == "aws":
         from ...cloud.aws.api import list_aws_vms
 
-        vms = list_aws_vms()
+        metadata = _load_cluster_metadata(cluster_name) or {}
+        aws_region = metadata.get("region")
+
+        vms = list_aws_vms(region=aws_region)
         master_prefix = f"{cluster_name}-master"
         master_vm = next((vm for vm in vms if vm["name"] == master_prefix), None)
         if not master_vm:
@@ -118,6 +191,7 @@ def _resolve_cluster_vms(cluster_name: str):
             })
 
         return {
+            "cloud": cloud,
             "master": {
                 "name": master_vm["name"],
                 "ip": master_vm.get("public_ip"),

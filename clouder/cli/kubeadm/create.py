@@ -9,11 +9,10 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 from ...util.wait import wait_with_spinner
 
-from ._helpers import _save_cluster_metadata
+from ._helpers import _save_cluster_metadata, resolve_kubeadm_cloud_context
 
 
 def _ensure_local_ssh_keypair(key_name: str, comment: str) -> tuple[str, str]:
@@ -92,6 +91,7 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("create")
     def kubeadm_create(
         name: str = typer.Argument(..., help="Cluster name (used as prefix for VMs)."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to current context cloud."),
         workers: int = typer.Option(3, "--workers", "-w", help="Number of worker nodes."),
         region: str = typer.Option(None, "--region", "-r", help="Cloud region (e.g. eastus, us-east-1)."),
         resource_group: str = typer.Option(None, "--resource-group", "-g", help="Resource group (Azure only)."),
@@ -102,7 +102,7 @@ def register(kubeadm_app: typer.Typer):
         image: str | None = typer.Option(None, "--image", help="Image: Ubuntu2204, Ubuntu2404, Debian12."),
     ):
         """Create VMs for a kubeadm Kubernetes cluster (1 master + N workers on the same subnet)."""
-        (cloud, context_id) = get_current_context()
+        (cloud, context_id) = resolve_kubeadm_cloud_context(cloud=cloud)
         if cloud not in {"azure", "aws"}:
             typer.echo("Kubeadm VM provisioning is currently supported for Azure and AWS.", err=True)
             raise typer.Exit(1)

@@ -17,7 +17,8 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("use")
     def kubeadm_use(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the master VM when fetching kubeconfig."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the master VM when fetching kubeconfig."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/) when fetching kubeconfig."),
         print_export: bool = typer.Option(False, "--print-export", help="Print only the export command (shell-friendly)."),
     ):
@@ -32,7 +33,7 @@ def register(kubeadm_app: typer.Typer):
         if not kubeconfig_path.exists():
             if not print_export:
                 print(f"[yellow]Local kubeconfig not found for cluster '{name}'. Fetching from server...[/yellow]")
-            fetch_kubeadm_config_materials(name, user=user, key=key)
+            fetch_kubeadm_config_materials(name, user=user, key=key, cloud=cloud)
 
         os.environ["KUBECONFIG"] = str(kubeconfig_path)
         export_cmd = f'export KUBECONFIG="{kubeconfig_path}"'

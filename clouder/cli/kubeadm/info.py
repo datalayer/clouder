@@ -7,6 +7,7 @@ from rich import print
 from rich.panel import Panel
 
 from ._helpers import (
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
     _resolve_cluster_vms,
@@ -79,6 +80,7 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("info")
     def kubeadm_info(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
     ):
         """Show cluster information and next steps.
 
@@ -86,7 +88,8 @@ def register(kubeadm_app: typer.Typer):
         commands for day-to-day operations as well as further setup steps.
         """
         name = resolve_kubeadm_cluster_name(name)
-        cluster = _resolve_cluster_vms(name)
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         workers = cluster["workers"]
         metadata = _load_cluster_metadata(name)

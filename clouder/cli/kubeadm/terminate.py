@@ -6,11 +6,11 @@ import typer
 from rich import print
 from rich.prompt import Confirm, Prompt
 
-from ..ctx import get_current_context
 from ...util.utils import kubeadm_cluster_folder
 from ...util.wait import wait_with_spinner
 
 from ._helpers import (
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _delete_cluster_metadata,
     _load_cluster_metadata,
@@ -24,6 +24,7 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("terminate")
     def kubeadm_terminate(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
         delete_rg: bool = typer.Option(False, "--delete-rg", help="Also delete the resource group (auto-enabled when RG is <cluster>-rg)."),
     ):
@@ -32,7 +33,7 @@ def register(kubeadm_app: typer.Typer):
         Deletes VMs, NICs, public IPs, OS disks, NSG, and VNet for the cluster.
         """
         name = resolve_kubeadm_cluster_name(name)
-        (cloud, context_id) = get_current_context()
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud not in {"azure", "aws"}:
             typer.echo("Kubeadm commands are currently supported for Azure and AWS.", err=True)
             raise typer.Exit(1)

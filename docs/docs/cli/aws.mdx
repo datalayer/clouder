@@ -7,6 +7,20 @@ sidebar_position: 2
 
 AWS cloud operations for Clouder contexts.
 
+## Setup
+
+Use standard AWS credentials (profile, env vars, or IAM role), then verify:
+
+```bash
+clouder aws info
+```
+
+Need setup help?
+
+```bash
+clouder aws configure
+```
+
 ## Commands
 
 ### `clouder aws info`
@@ -37,4 +51,40 @@ Optional region override:
 
 ```bash
 clouder aws vm-ls --region us-east-1
+```
+
+### `clouder aws resources`
+
+Show a quick regional inventory summary (EC2 instances, VPCs, subnets, security groups).
+
+```bash
+clouder aws resources
+clouder aws resources --region eu-west-1
+```
+
+### `clouder aws vm-sizes`
+
+List available current-generation EC2 instance types for a region.
+
+```bash
+clouder aws vm-sizes
+clouder aws vm-sizes --region us-west-2
+```
+
+### `clouder aws vm-create`
+
+Create an EC2 VM using the same interactive flow as `clouder vm create` on AWS.
+
+```bash
+clouder aws vm-create --name my-ec2
+clouder aws vm-create --name my-ec2 --region us-east-1 --vm-size t3.large
+```
+
+### `clouder aws vm-delete`
+
+Terminate an EC2 VM by name (Name tag).
+
+```bash
+clouder aws vm-delete my-ec2
+clouder aws vm-delete my-ec2 --region us-east-1 --force
 ```

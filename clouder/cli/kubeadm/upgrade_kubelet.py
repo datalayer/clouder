@@ -14,7 +14,9 @@ from ...util.utils import SSH_FOLDER
 from ._helpers import (
     K8S_VERSION,
     _SCRIPT_UPGRADE_KUBELET,
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
+    _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd_stream,
@@ -33,8 +35,13 @@ def register(kubeadm_app: typer.Typer):
             None,
             help="Cluster name (must match create name). If omitted, uses default kubeadm cluster.",
         ),
-        user: str = typer.Option(
-            "azureuser",
+        cloud: str | None = typer.Option(
+            None,
+            "--cloud",
+            help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud.",
+        ),
+        user: str | None = typer.Option(
+            None,
             "--admin-user",
             "-u",
             help="SSH username on the VMs.",
@@ -49,9 +56,12 @@ def register(kubeadm_app: typer.Typer):
         """Upgrade kubelet, kubeadm, and kubectl on all nodes."""
 
         name = resolve_kubeadm_cluster_name(name)
-        cluster = _resolve_cluster_vms(name)
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         workers = cluster["workers"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")
 
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
@@ -80,7 +90,7 @@ def register(kubeadm_app: typer.Typer):
             print(
                 f"\n[bold][{i}/{len(all_nodes)}] Upgrading {role} {node['name']} ({node['ip']})...[/bold]"
             )
-            rc = _ssh_cmd_stream(node["ip"], user, key_path, _SCRIPT_UPGRADE_KUBELET)
+            rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_UPGRADE_KUBELET)
             if rc != 0:
                 print(f"  [red]Upgrade failed on {node['name']}[/red]")
                 failed.append(node["name"])

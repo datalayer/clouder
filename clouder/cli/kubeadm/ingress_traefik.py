@@ -6,10 +6,10 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from ...util.wait import wait_with_spinner
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
     _resolve_cluster_vms,
@@ -104,7 +104,8 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("enable-ingress-traefik")
     def kubeadm_enable_ingress_traefik(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
         """Enable ingress load balancing: deploy Traefik + Azure Load Balancer.
@@ -120,14 +121,16 @@ def register(kubeadm_app: typer.Typer):
         import os as _os
 
         name = resolve_kubeadm_cluster_name(name)
-        (cloud, context_id) = get_current_context()
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud != "azure":
             typer.echo("Load balancer setup is currently only supported for Azure.", err=True)
             raise typer.Exit(1)
 
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         workers = cluster["workers"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or "azureuser"
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
         if not workers:
@@ -168,7 +171,7 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Abort()
 
         # ----- Pre-check: verify kubectl is available on master -----
-        check = _ssh_cmd(master["ip"], user, key_path, "which kubectl", check=False)
+        check = _ssh_cmd(master["ip"], resolved_user, key_path, "which kubectl", check=False)
         if check.returncode != 0:
             print("[red]kubectl not found on master node.[/red]")
             print(
@@ -183,7 +186,7 @@ def register(kubeadm_app: typer.Typer):
 
         # ----- Step 1: Deploy Traefik on the cluster -----
         print("\n[bold]Step 1/4: Deploying Traefik ingress controller...[/bold]")
-        rc = _ssh_cmd_stream(master["ip"], user, key_path, _SCRIPT_INSTALL_TRAEFIK)
+        rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_TRAEFIK)
         if rc != 0:
             print("[red]Failed to deploy Traefik.[/red]")
             raise typer.Exit(1)
@@ -191,7 +194,7 @@ def register(kubeadm_app: typer.Typer):
         # ----- Step 2: Get the NodePort assignments -----
         print("\n[bold]Step 2/4: Reading NodePort assignments...[/bold]")
         result = _ssh_cmd(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             f"kubectl -n {_TRAEFIK_NAMESPACE} get svc traefik "
             "-o jsonpath='{.spec.ports[?(@.name==\"web\")].nodePort} {.spec.ports[?(@.name==\"websecure\")].nodePort}'",
             check=False,
@@ -439,7 +442,8 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("disable-ingress-traefik")
     def kubeadm_disable_ingress_traefik(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
     ):
@@ -449,13 +453,15 @@ def register(kubeadm_app: typer.Typer):
         the Traefik ingress controller from the cluster.
         """
         name = resolve_kubeadm_cluster_name(name)
-        (cloud, context_id) = get_current_context()
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud != "azure":
             typer.echo("Load balancer commands are currently only supported for Azure.", err=True)
             raise typer.Exit(1)
 
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or "azureuser"
         rg = master["resource_group"]
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
@@ -492,7 +498,7 @@ def register(kubeadm_app: typer.Typer):
         # Step 3: Remove Traefik from the cluster
         print("[bold]Removing Traefik from cluster...[/bold]")
         rc = _ssh_cmd_stream(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             f"helm uninstall traefik --namespace {_TRAEFIK_NAMESPACE} 2>/dev/null || true; "
             f"kubectl delete namespace {_TRAEFIK_NAMESPACE} 2>/dev/null || true",
         )

@@ -62,6 +62,7 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("ls")
     def kubeadm_list(
+        cloud: str | None = typer.Option(None, "--cloud", help="Filter clusters by cloud provider (azure or aws)."),
         details: bool = typer.Option(
             False,
             "--details",
@@ -107,7 +108,9 @@ def register(kubeadm_app: typer.Typer):
             except Exception:
                 metadata = {}
 
-            cloud = metadata.get("cloud", "-")
+            cluster_cloud = metadata.get("cloud", "-")
+            if cloud and cluster_cloud != cloud:
+                continue
             region = metadata.get("region", "-")
             resource_group = metadata.get("resource_group", "-")
             setup = "yes" if metadata.get("setup_complete") else "no"
@@ -119,7 +122,7 @@ def register(kubeadm_app: typer.Typer):
                 table.add_row(
                     name,
                     default_marker,
-                    cloud,
+                    cluster_cloud,
                     region,
                     resource_group,
                     kubeconfig_exists,
@@ -130,7 +133,7 @@ def register(kubeadm_app: typer.Typer):
                     workers_state,
                 )
             else:
-                table.add_row(name, default_marker, cloud, region, resource_group, kubeconfig_exists, setup)
+                table.add_row(name, default_marker, cluster_cloud, region, resource_group, kubeconfig_exists, setup)
             found += 1
 
         if found == 0:

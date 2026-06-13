@@ -10,9 +10,9 @@ import typer
 from rich import print
 from rich.panel import Panel
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 from ._helpers import (
+    resolve_kubeadm_cloud_context,
     _SCRIPT_PREREQS,
     _SCRIPT_UPGRADE_KUBELET,
     _SCRIPT_WORKER_FEATURE_GATE,
@@ -204,6 +204,11 @@ def register(kubeadm_app: typer.Typer):
             None,
             help="Cluster name. If omitted, uses default kubeadm cluster.",
         ),
+        cloud: str | None = typer.Option(
+            None,
+            "--cloud",
+            help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud.",
+        ),
         user: str | None = typer.Option(
             None,
             "--admin-user",
@@ -234,9 +239,9 @@ def register(kubeadm_app: typer.Typer):
         """
         name = resolve_kubeadm_cluster_name(name)
         node_labels_resolved = _resolve_node_labels(node_labels)
-        cluster = _resolve_cluster_vms(name)
+        cloud, _ = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud)
         metadata = _load_cluster_metadata(name) or {}
-        cloud, _ = get_current_context()
 
         key_path = str(SSH_FOLDER / key) if key else _resolve_ssh_key_for_cluster(name)
         ssh_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")

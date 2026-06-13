@@ -63,6 +63,11 @@ By default, commands below accept `<name>`. If a default is configured with
 `clouder kubeadm set-default <name>`, you can omit `<name>` and Clouder will
 use the persisted default cluster.
 
+Most operational commands also accept:
+
+- `--cloud azure|aws` to force the target provider when your current context is different.
+- If omitted, Clouder resolves cloud from cluster metadata first, then current context.
+
 ### `clouder kubeadm ls`
 
 List kubeadm clusters known locally from `~/.clouder/kubeadm/<name>/kubeadm.json`.
@@ -70,6 +75,10 @@ List kubeadm clusters known locally from `~/.clouder/kubeadm/<name>/kubeadm.json
 ```bash
 clouder kubeadm ls
 ```
+
+Optional:
+
+- `--cloud azure|aws` to filter clusters by provider.
 
 The command prints a table with cluster name, cloud, region, resource group,
 whether kubeconfig exists, and whether setup is marked complete.
@@ -89,6 +98,10 @@ Persist the default kubeadm cluster name in `~/.clouder/clouder.yaml`.
 ```bash
 clouder kubeadm set-default <name>
 ```
+
+Optional:
+
+- `--cloud azure|aws` to validate the selected cluster matches the expected provider.
 
 Examples:
 
@@ -117,6 +130,7 @@ clouder kubeadm create <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--workers` | `-w` | Number of worker nodes (default: `3`) |
 | `--region` | `-r` | Cloud region (e.g. `eastus`, `us-east-1`) |
 | `--resource-group` | `-g` | Resource group (Azure only) |
@@ -182,6 +196,7 @@ clouder kubeadm setup <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--admin-user` | `-u` | SSH username (default: `ubuntu`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 | `--k8s-version` | | Kubernetes version (default: `1.32`) |
@@ -235,6 +250,7 @@ clouder kubeadm get-config <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
@@ -274,6 +290,7 @@ clouder kubeadm use [name] [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
+| `--cloud` | Target cloud provider (`azure` or `aws`) |
 | `--admin-user`, `-u` | SSH username used only when kubeconfig must be fetched from master (default: `azureuser`) |
 | `--key`, `-i` | SSH key name from `~/.ssh/` used only when kubeconfig must be fetched |
 | `--print-export` | Print only `export KUBECONFIG=...` (for `eval`) |
@@ -306,6 +323,8 @@ Show cluster information and next steps. Displays the current state of a Kubeadm
 ```bash
 clouder kubeadm info [name]
 ```
+
+Optional flag: `--cloud azure|aws`.
 
 | Argument | Description |
 |----------|-------------|
@@ -346,6 +365,7 @@ clouder kubeadm scale <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--workers` (required) | `-w` | Desired number of worker nodes |
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
@@ -366,11 +386,15 @@ clouder kubeadm scale my-cluster --workers 5 --os-disk-size-gb 128
 clouder kubeadm scale my-cluster --workers 1 --force
 ```
 
+:::note
+Worker scaling automation currently supports Azure. Use `--cloud azure` when needed.
+:::
+
 ---
 
 ### `clouder kubeadm prune`
 
-Identify unhealthy worker Kubernetes nodes and Azure VMs, list them, and ask for confirmation before force deletion.
+Identify unhealthy worker Kubernetes nodes and cloud VMs, list them, and ask for confirmation before force deletion.
 
 ```bash
 clouder kubeadm prune <name> [OPTIONS]
@@ -382,12 +406,14 @@ clouder kubeadm prune <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--force` | `-f` | Skip confirmation prompt |
 
 **What is considered unhealthy:**
 
 - Kubernetes worker node where `Ready != True`
 - Azure worker VM where `provisioning_state != Succeeded`
+- AWS worker VM where EC2 `state != running`
 
 When confirmed, Clouder force-deletes matching Kubernetes node objects and Azure VMs.
 

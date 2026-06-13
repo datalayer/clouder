@@ -15,26 +15,36 @@ from ...util.utils import (
 )
 
 from ._helpers import (
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
+    _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
 )
 
 
-def fetch_kubeadm_config_materials(name: str, user: str = "azureuser", key: str | None = None) -> tuple[str, str | None, str | None]:
+def fetch_kubeadm_config_materials(
+    name: str,
+    user: str | None = None,
+    key: str | None = None,
+    cloud: str | None = None,
+) -> tuple[str, str | None, str | None]:
     """Fetch kubeconfig and kubelet client cert/key from master VM.
 
     Returns:
         tuple of (kubeconfig_path, kubelet_client_cert_path_or_none, kubelet_client_key_path_or_none)
     """
-    cluster = _resolve_cluster_vms(name)
+    cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
+    cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
     master = cluster["master"]
+    metadata = _load_cluster_metadata(name) or {}
+    resolved_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")
     key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
     typer.echo(f"Fetching kubeconfig from {master['name']} ({master['ip']})...")
 
-    result = _ssh_cmd(master["ip"], user, key_path, "cat $HOME/.kube/config", check=False)
+    result = _ssh_cmd(master["ip"], resolved_user, key_path, "cat $HOME/.kube/config", check=False)
     if result.returncode != 0 or not result.stdout.strip():
         typer.echo(result.stderr, err=True)
         print("[red]Failed to fetch kubeconfig from master.[/red]")
@@ -68,12 +78,12 @@ def fetch_kubeadm_config_materials(name: str, user: str = "azureuser", key: str 
     typer.echo(f"Fetching kubelet client certificates from {master['name']}...")
 
     cert_result = _ssh_cmd(
-        master["ip"], user, key_path,
+        master["ip"], resolved_user, key_path,
         f"sudo cat {cert_remote}",
         check=False,
     )
     key_result = _ssh_cmd(
-        master["ip"], user, key_path,
+        master["ip"], resolved_user, key_path,
         f"sudo cat {key_remote}",
         check=False,
     )
@@ -106,12 +116,13 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("get-config")
     def kubeadm_get_config(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the master VM."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the master VM."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
         """Fetch kubeconfig from the master and save to ~/.clouder/kubeadm/<NAME>/kubeconfig."""
         name = resolve_kubeadm_cluster_name(name)
-        kubeconfig_path, cert_local, key_local = fetch_kubeadm_config_materials(name, user=user, key=key)
+        kubeconfig_path, cert_local, key_local = fetch_kubeadm_config_materials(name, user=user, key=key, cloud=cloud)
 
         # -----------------------------------------------------------------
         # Print usage

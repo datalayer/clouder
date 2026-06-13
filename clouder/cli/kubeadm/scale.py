@@ -14,13 +14,13 @@ from rich import print
 from rich.panel import Panel
 from rich.prompt import Confirm
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER, kubeadm_kubeconfig_path
 
 from ._helpers import (
     _SCRIPT_PREREQS,
     _SCRIPT_UPGRADE_KUBELET,
     _SCRIPT_WORKER_FEATURE_GATE,
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
     _resolve_cluster_vms,
@@ -281,8 +281,9 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("scale")
     def kubeadm_scale(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
         workers: int = typer.Option(..., "--workers", "-w", help="Desired number of worker nodes."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         os_disk_size_gb: int | None = typer.Option(
             None,
@@ -315,14 +316,14 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Exit(1)
 
         name = resolve_kubeadm_cluster_name(name)
-        (cloud, context_id) = get_current_context()
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud != "azure":
-            typer.echo("Kubeadm scale is currently only supported for Azure.", err=True)
+            typer.echo("Kubeadm scale is currently only supported for Azure. Use --cloud azure.", err=True)
             raise typer.Exit(1)
 
         # --- Load cluster metadata (or discover from Azure) ---
         metadata = _load_cluster_metadata(name)
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         current_workers = cluster["workers"]
         current_count = len(current_workers)

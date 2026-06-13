@@ -62,7 +62,7 @@ clouder ssh my-server
 # 4. Create a Kubeadm cluster (1 master + 3 workers)
 clouder kubeadm create my-cluster
 
-# 5. Set up the cluster (containerd 2.x, CRIU, Kubeadm, Flannel CNI, feature gates, Azure CSI drivers)
+# 5. Set up the cluster (containerd 2.x, CRIU, Kubeadm, Flannel CNI, feature gates, cloud-specific CSI/LB bootstrap)
 clouder kubeadm setup my-cluster
 
 # 6. Get kubeconfig (saved to ~/.clouder/kubeadm/<cluster>/)

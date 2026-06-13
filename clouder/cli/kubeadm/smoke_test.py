@@ -8,10 +8,10 @@ from rich import print
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
     _resolve_cluster_vms,
@@ -56,7 +56,8 @@ def register(kubeadm_app: typer.Typer):
     @kubeadm_app.command("smoke-test")
     def kubeadm_smoke_test(
         name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Clean up test pods after the test."),
     ):
@@ -71,11 +72,13 @@ def register(kubeadm_app: typer.Typer):
         using buildah, deploys a restored pod, and validates that state was preserved.
         """
         name = resolve_kubeadm_cluster_name(name)
-        (cloud, context_id) = get_current_context()
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
 
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         workers = cluster["workers"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
         print(Panel(
@@ -98,14 +101,14 @@ def register(kubeadm_app: typer.Typer):
 
         # Detect ingress controller (nginx or traefik)
         result = _ssh_cmd(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             "kubectl get ns datalayer-nginx -o name 2>/dev/null || true",
             check=False,
         )
         has_nginx = "datalayer-nginx" in result.stdout
 
         result = _ssh_cmd(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             "kubectl get ns datalayer-traefik -o name 2>/dev/null || true",
             check=False,
         )
@@ -173,7 +176,7 @@ spec:
     targetPort: 80
 EOF
 """
-                    result = _ssh_cmd(master["ip"], user, key_path, ingress_deploy_script, check=False)
+                    result = _ssh_cmd(master["ip"], resolved_user, key_path, ingress_deploy_script, check=False)
                     if result.returncode != 0:
                         print(f"  [red]Failed to deploy test web server:[/red]\n{result.stderr}")
                         ingress_passed = False
@@ -182,7 +185,7 @@ EOF
 
                         # Wait for deployment ready
                         result = _ssh_cmd(
-                            master["ip"], user, key_path,
+                            master["ip"], resolved_user, key_path,
                             "kubectl rollout status deployment/clouder-smoke-web --timeout=120s",
                             check=False,
                         )
@@ -200,7 +203,7 @@ EOF
                             "kubectl get service clouder-smoke-web -o wide",
                         ]:
                             print(f"  [dim]$ {kubectl_cmd}[/dim]")
-                            r = _ssh_cmd(master["ip"], user, key_path, kubectl_cmd, check=False)
+                            r = _ssh_cmd(master["ip"], resolved_user, key_path, kubectl_cmd, check=False)
                             if r.stdout.strip():
                                 for line in r.stdout.strip().split("\n"):
                                     print(f"  [dim]{line}[/dim]")
@@ -234,7 +237,7 @@ spec:
               number: 80
 EOF
 """
-                        result = _ssh_cmd(master["ip"], user, key_path, ingress_yaml, check=False)
+                        result = _ssh_cmd(master["ip"], resolved_user, key_path, ingress_yaml, check=False)
                         if result.returncode != 0:
                             print(f"  [red]Failed to create Ingress:[/red]\n{result.stderr}")
                             ingress_passed = False
@@ -248,7 +251,7 @@ EOF
                                 "kubectl describe ingress clouder-smoke-ingress",
                             ]:
                                 print(f"  [dim]$ {kubectl_cmd}[/dim]")
-                                r = _ssh_cmd(master["ip"], user, key_path, kubectl_cmd, check=False)
+                                r = _ssh_cmd(master["ip"], resolved_user, key_path, kubectl_cmd, check=False)
                                 if r.stdout.strip():
                                     for line in r.stdout.strip().split("\n"):
                                         print(f"  [dim]{line}[/dim]")
@@ -451,7 +454,7 @@ EOF
                     if cleanup:
                         print("\n[bold]Cleaning up ingress test resources...[/bold]")
                         _ssh_cmd(
-                            master["ip"], user, key_path,
+                            master["ip"], resolved_user, key_path,
                             "kubectl delete ingress clouder-smoke-ingress 2>/dev/null || true; "
                             "kubectl delete deployment clouder-smoke-web 2>/dev/null || true; "
                             "kubectl delete service clouder-smoke-web 2>/dev/null || true",
@@ -477,7 +480,7 @@ EOF
             # ---- Step 1/8: Deploy test pod ----
             print("\n[bold]Step 1/8: Deploying counter pod...[/bold]")
             deploy_cmd = f"cat <<'EOFPOD' | kubectl apply -f -\n{_SMOKE_POD_YAML}EOFPOD"
-            result = _ssh_cmd(master["ip"], user, key_path, deploy_cmd, check=False)
+            result = _ssh_cmd(master["ip"], resolved_user, key_path, deploy_cmd, check=False)
             if result.returncode != 0:
                 print(f"[red]Failed to deploy test pod:[/red]\n{result.stderr}")
                 raise typer.Exit(1)
@@ -486,7 +489,7 @@ EOF
             # ---- Step 2/8: Wait for Running ----
             print("\n[bold]Step 2/8: Waiting for pod to be ready...[/bold]")
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl wait --for=condition=Ready pod/clouder-smoke-test --timeout=120s",
                 check=False,
             )
@@ -499,7 +502,7 @@ EOF
             print("\n[bold]Step 3/8: Letting counter accumulate state (15s)...[/bold]")
             time.sleep(15)
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl exec clouder-smoke-test -- cat /tmp/counter_value",
                 check=False,
             )
@@ -511,7 +514,7 @@ EOF
 
             # Read random token written at pod startup
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl exec clouder-smoke-test -- cat /tmp/smoke_token",
                 check=False,
             )
@@ -523,7 +526,7 @@ EOF
 
             # Print pod details before checkpoint
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o wide",
                 check=False,
             )
@@ -531,7 +534,7 @@ EOF
                 for line in result.stdout.strip().split("\n"):
                     print(f"  [dim]{line}[/dim]")
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='"
                 "{.status.containerStatuses[0].containerID} "
                 "image={.status.containerStatuses[0].image} "
@@ -544,13 +547,13 @@ EOF
             # ---- Step 4/8: Identify node ----
             print("\n[bold]Step 4/8: Identifying pod node...[/bold]")
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='{.spec.nodeName}'",
             )
             node_name = result.stdout.strip().strip("'")
 
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='{.status.hostIP}'",
             )
             node_internal_ip = result.stdout.strip().strip("'")
@@ -574,7 +577,7 @@ EOF
                 f"--cert /etc/kubernetes/pki/apiserver-kubelet-client.crt "
                 f"--key /etc/kubernetes/pki/apiserver-kubelet-client.key"
             )
-            result = _ssh_cmd(master["ip"], user, key_path, checkpoint_cmd, check=False)
+            result = _ssh_cmd(master["ip"], resolved_user, key_path, checkpoint_cmd, check=False)
             if result.returncode != 0:
                 print(f"[red]Checkpoint API call failed:[/red]\n{result.stderr}")
                 criu_passed = False
@@ -607,7 +610,7 @@ EOF
                 # ---- Step 6/8: Verify checkpoint on worker ----
                 print("\n[bold]Step 6/8: Verifying checkpoint on worker node...[/bold]")
                 result = _ssh_cmd(
-                    worker_ip, user, key_path,
+                    worker_ip, resolved_user, key_path,
                     f"sudo ls -lh {checkpoint_path} && echo 'CHECKPOINT_EXISTS'",
                     check=False,
                 )
@@ -623,7 +626,7 @@ EOF
 
                     # Show checkpoint archive contents
                     result = _ssh_cmd(
-                        worker_ip, user, key_path,
+                        worker_ip, resolved_user, key_path,
                         f"sudo tar tf {checkpoint_path} 2>/dev/null | head -20",
                         check=False,
                     )
@@ -636,7 +639,7 @@ EOF
                 # ---- Step 7/8: Delete original pod ----
                 print("\n[bold]Step 7/8: Deleting original pod...[/bold]")
                 _ssh_cmd(
-                    master["ip"], user, key_path,
+                    master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-test --grace-period=0 --force 2>/dev/null",
                     check=False,
                 )
@@ -691,7 +694,7 @@ fi
 
 sudo rm -rf "$WORK_DIR"
 """
-                result = _ssh_cmd(worker_ip, user, key_path, import_script, check=False)
+                result = _ssh_cmd(worker_ip, resolved_user, key_path, import_script, check=False)
                 checkpoint_image = ""
                 import_status = ""
                 for line in result.stdout.strip().split("\n"):
@@ -744,20 +747,20 @@ spec:
       done
 """
                     deploy_cmd = f"cat <<'EOFPOD' | kubectl apply -f -\n{restored_yaml}EOFPOD"
-                    result = _ssh_cmd(master["ip"], user, key_path, deploy_cmd, check=False)
+                    result = _ssh_cmd(master["ip"], resolved_user, key_path, deploy_cmd, check=False)
                     if result.returncode != 0:
                         print(f"  [yellow]Failed to deploy restored pod: {result.stderr.strip()}[/yellow]")
                         criu_passed = False
                     else:
                         result = _ssh_cmd(
-                            master["ip"], user, key_path,
+                            master["ip"], resolved_user, key_path,
                             "kubectl wait --for=condition=Ready pod/clouder-smoke-restored --timeout=60s",
                             check=False,
                         )
                         if result.returncode != 0:
                             print("  [yellow]Restored pod did not become ready.[/yellow]")
                             status = _ssh_cmd(
-                                master["ip"], user, key_path,
+                                master["ip"], resolved_user, key_path,
                                 "kubectl describe pod clouder-smoke-restored 2>/dev/null | tail -20",
                                 check=False,
                             )
@@ -767,7 +770,7 @@ spec:
                         else:
                             time.sleep(5)
                             result = _ssh_cmd(
-                                master["ip"], user, key_path,
+                                master["ip"], resolved_user, key_path,
                                 "kubectl exec clouder-smoke-restored -- cat /tmp/counter_value",
                                 check=False,
                             )
@@ -779,7 +782,7 @@ spec:
                                 # Read the random token from the restored pod
                                 token_after = None
                                 res = _ssh_cmd(
-                                    master["ip"], user, key_path,
+                                    master["ip"], resolved_user, key_path,
                                     "kubectl exec clouder-smoke-restored -- cat /tmp/smoke_token",
                                     check=False,
                                 )
@@ -789,7 +792,7 @@ spec:
 
                                 # Print restored pod details
                                 res = _ssh_cmd(
-                                    master["ip"], user, key_path,
+                                    master["ip"], resolved_user, key_path,
                                     "kubectl get pod clouder-smoke-restored -o wide",
                                     check=False,
                                 )
@@ -797,7 +800,7 @@ spec:
                                     for line in res.stdout.strip().split("\n"):
                                         print(f"  [dim]{line}[/dim]")
                                 res = _ssh_cmd(
-                                    master["ip"], user, key_path,
+                                    master["ip"], resolved_user, key_path,
                                     "kubectl get pod clouder-smoke-restored -o jsonpath='"
                                     "{.status.containerStatuses[0].containerID} "
                                     "image={.status.containerStatuses[0].image} "
@@ -853,18 +856,18 @@ spec:
             if cleanup:
                 print("\n[bold]Cleaning up CRIU test resources...[/bold]")
                 _ssh_cmd(
-                    master["ip"], user, key_path,
+                    master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-test --grace-period=0 --force 2>/dev/null || true",
                     check=False,
                 )
                 _ssh_cmd(
-                    master["ip"], user, key_path,
+                    master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-restored --grace-period=0 --force 2>/dev/null || true",
                     check=False,
                 )
                 if checkpoint_path and worker_ip:
                     _ssh_cmd(
-                        worker_ip, user, key_path,
+                        worker_ip, resolved_user, key_path,
                         f"sudo rm -f {checkpoint_path} 2>/dev/null || true; "
                         "sudo ctr -n k8s.io images rm localhost/clouder-smoke-restored:latest 2>/dev/null || true; "
                         "sudo buildah rmi localhost/clouder-smoke-restored:latest 2>/dev/null || true",

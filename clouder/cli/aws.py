@@ -1,10 +1,19 @@
 """Clouder CLI - AWS commands."""
 
+from typing import Optional
+
 import typer
 from rich import print
+from rich.panel import Panel
+from rich.prompt import Confirm
 from rich.table import Table
 
-from ..cloud.aws.api import get_aws_identity, list_aws_regions, list_aws_vms
+from ..cloud.aws.api import (
+    _client,
+    get_aws_identity,
+    list_aws_regions,
+    list_aws_vms,
+)
 
 aws_app = typer.Typer(no_args_is_help=True)
 
@@ -44,6 +53,84 @@ def aws_regions():
     print(table)
 
 
+@aws_app.command("configure")
+def aws_configure():
+    """Show AWS credential setup guidance."""
+    print(
+        Panel(
+            "Use one of the following methods to configure AWS credentials:\n\n"
+            "  1) aws configure\n"
+            "  2) Export env vars: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY\n"
+            "  3) Use an IAM role/instance profile\n\n"
+            "Then validate with: clouder aws info",
+            title="AWS Credential Setup",
+        )
+    )
+
+
+@aws_app.command("resources")
+def aws_resources(
+    region: Optional[str] = typer.Option(None, "--region", "-r", help="AWS region to inspect."),
+):
+    """List high-level AWS resource inventory for a region."""
+    ec2 = _client("ec2", region=region)
+    resolved_region = ec2.meta.region_name
+
+    vpcs = ec2.describe_vpcs().get("Vpcs", [])
+    subnets = ec2.describe_subnets().get("Subnets", [])
+    security_groups = ec2.describe_security_groups().get("SecurityGroups", [])
+    instances = list_aws_vms(region=resolved_region)
+
+    table = Table(title=f"AWS Resources ({resolved_region})")
+    table.add_column("Resource", justify="left", style="cyan")
+    table.add_column("Count", justify="right", style="green")
+    table.add_row("EC2 Instances", str(len(instances)))
+    table.add_row("VPCs", str(len(vpcs)))
+    table.add_row("Subnets", str(len(subnets)))
+    table.add_row("Security Groups", str(len(security_groups)))
+    print(table)
+
+
+@aws_app.command("vm-sizes")
+def aws_vm_sizes(
+    region: Optional[str] = typer.Option(None, "--region", "-r", help="Region to list EC2 instance types for."),
+):
+    """List common EC2 instance types available in a region."""
+    ec2 = _client("ec2", region=region)
+    resolved_region = ec2.meta.region_name
+    paginator = ec2.get_paginator("describe_instance_types")
+
+    rows: list[dict] = []
+    for page in paginator.paginate(
+        Filters=[
+            {"Name": "current-generation", "Values": ["true"]},
+            {"Name": "supported-virtualization-type", "Values": ["hvm"]},
+        ]
+    ):
+        for item in page.get("InstanceTypes", []):
+            memory_mib = int((item.get("MemoryInfo") or {}).get("SizeInMiB") or 0)
+            rows.append(
+                {
+                    "instance_type": item.get("InstanceType", ""),
+                    "vcpus": int((item.get("VCpuInfo") or {}).get("DefaultVCpus") or 0),
+                    "memory_gib": round(memory_mib / 1024, 2),
+                }
+            )
+        if len(rows) >= 150:
+            break
+
+    rows = sorted(rows, key=lambda x: (x["vcpus"], x["memory_gib"], x["instance_type"]))[:100]
+
+    table = Table(title=f"AWS Instance Types ({resolved_region})")
+    table.add_column("Instance Type", justify="left", style="cyan")
+    table.add_column("vCPUs", justify="right", style="green")
+    table.add_column("Memory (GiB)", justify="right", style="green")
+    for row in rows:
+        table.add_row(row["instance_type"], str(row["vcpus"]), str(row["memory_gib"]))
+    print(table)
+    print(f"\n[dim]Showing {len(rows)} instance types.[/dim]")
+
+
 @aws_app.command("vm-ls")
 def aws_vm_list(
     region: str = typer.Option(None, "--region", "-r", help="Optional AWS region override."),
@@ -67,3 +154,39 @@ def aws_vm_list(
             vm.get("region") or "N/A",
         )
     print(table)
+
+
+@aws_app.command("vm-create")
+def aws_vm_create(
+    name: str = typer.Option(..., "--name", "-n", help="VM name."),
+    region: Optional[str] = typer.Option(None, "--region", "-r", help="Optional AWS region override."),
+    vm_size: Optional[str] = typer.Option(None, "--vm-size", help="EC2 instance type (e.g., t3.large)."),
+):
+    """Create an AWS EC2 VM using the same flow as `clouder vm create` on AWS."""
+    from .vm import _create_aws_vm
+
+    _create_aws_vm(name=name, region=region, vm_size=vm_size)
+
+
+@aws_app.command("vm-delete")
+def aws_vm_delete(
+    name: str = typer.Argument(..., help="VM name to delete."),
+    region: Optional[str] = typer.Option(None, "--region", "-r", help="Optional AWS region override."),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation."),
+):
+    """Terminate an AWS EC2 instance by VM name tag."""
+    from ..cloud.aws.api import terminate_aws_vm
+
+    vms = list_aws_vms(region=region)
+    match = [vm for vm in vms if (vm.get("name") or "") == name]
+    if not match:
+        typer.echo(f"VM '{name}' not found.", err=True)
+        raise typer.Exit(1)
+
+    vm = match[0]
+    if not force:
+        if not Confirm.ask(f"Terminate AWS instance '{name}' (id: {vm.get('id')})?", default=False):
+            raise typer.Abort()
+
+    terminate_aws_vm(vm.get("id"), region=region or vm.get("region"))
+    print(f"[green]VM '{name}' termination requested.[/green]")
