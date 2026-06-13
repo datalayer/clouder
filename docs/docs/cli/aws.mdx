@@ -39,6 +39,19 @@ List available AWS regions for the current credentials.
 clouder aws regions
 ```
 
+Output columns:
+- Region
+- Endpoint
+- Opt-in
+
+Example output:
+
+| Region | Endpoint | Opt-in |
+|--------|----------|--------|
+| us-east-1 | ec2.us-east-1.amazonaws.com | opt-in-not-required |
+| eu-west-1 | ec2.eu-west-1.amazonaws.com | opt-in-not-required |
+| ap-east-1 | ec2.ap-east-1.amazonaws.com | opted-in |
+
 ### `clouder aws vm-ls`
 
 List EC2 instances visible to your current AWS credentials.
@@ -70,6 +83,30 @@ List available current-generation EC2 instance types for a region.
 clouder aws vm-sizes
 clouder aws vm-sizes --region us-west-2
 ```
+
+Output columns:
+- Instance Type
+- Family
+- vCPUs
+- Memory (GiB)
+- Network
+- Arch
+- GPU (Yes/No)
+- GPU Count
+- GPU Type
+- GPU Mem (GiB)
+
+Notes:
+- GPU values are populated when AWS exposes accelerator metadata for the instance type.
+- Non-GPU families show `GPU = No`, `GPU Count = 0`, and `GPU Type/GPU Mem = N/A`.
+
+Example output:
+
+| Instance Type | Family | vCPUs | Memory (GiB) | Network | Arch | GPU | GPU Count | GPU Type | GPU Mem (GiB) |
+|---------------|--------|-------|--------------|---------|------|-----|-----------|----------|---------------|
+| t3.large | t3 | 2 | 8.0 | Up to 5 Gigabit | x86_64 | No | 0 | N/A | N/A |
+| m7i.xlarge | m7i | 4 | 16.0 | Up to 12.5 Gigabit | x86_64 | No | 0 | N/A | N/A |
+| g5.xlarge | g5 | 4 | 16.0 | Up to 10 Gigabit | x86_64 | Yes | 1 | NVIDIA A10G | 24.0 |
 
 ### `clouder aws vm-create`
 

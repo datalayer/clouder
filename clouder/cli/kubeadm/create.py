@@ -107,7 +107,31 @@ def register(kubeadm_app: typer.Typer):
             typer.echo("Kubeadm VM provisioning is currently supported for Azure and AWS.", err=True)
             raise typer.Exit(1)
 
-        if _cluster_exists(cloud=cloud, context_id=context_id, cluster_name=name, region=region):
+        # Keep AWS region/account scoping explicit and deterministic for create.
+        resolved_region = region
+        if cloud == "aws" and not resolved_region:
+            resolved_region = "us-east-1"
+
+        if cloud == "aws":
+            from ...cloud.aws.api import get_aws_identity
+
+            current_account = str(get_aws_identity().get("account_id") or "")
+            if current_account and current_account != context_id:
+                typer.echo(
+                    (
+                        "AWS context/account mismatch: "
+                        f"current credentials are for account '{current_account}' "
+                        f"but selected context is '{context_id}'."
+                    ),
+                    err=True,
+                )
+                typer.echo(
+                    "Switch AWS credentials/profile or run `clouder ctx set aws <account_id>` to align context.",
+                    err=True,
+                )
+                raise typer.Exit(1)
+
+        if _cluster_exists(cloud=cloud, context_id=context_id, cluster_name=name, region=resolved_region):
             print(f"[red]Cluster '{name}' already exists.[/red]")
             print("[yellow]Use another name, terminate the existing cluster first, or run setup/info on the existing cluster.[/yellow]")
             raise typer.Exit(1)
@@ -119,7 +143,7 @@ def register(kubeadm_app: typer.Typer):
                 sub_id=context_id,
                 cluster_name=name,
                 nodes=workers,
-                region=region,
+                region=resolved_region,
                 resource_group=resource_group,
                 master_size=master_size,
                 node_size=node_size,
@@ -133,7 +157,7 @@ def register(kubeadm_app: typer.Typer):
             account_id=context_id,
             cluster_name=name,
             nodes=workers,
-            region=region,
+            region=resolved_region,
             master_size=master_size,
             node_size=node_size,
             os_disk_size_gb=os_disk_size,

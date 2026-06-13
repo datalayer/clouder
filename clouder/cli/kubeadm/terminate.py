@@ -47,7 +47,10 @@ def register(kubeadm_app: typer.Typer):
         if cloud == "aws":
             from ...cloud.aws.api import delete_aws_kubeadm_network, list_aws_vms, terminate_aws_vm
 
-            vms = list_aws_vms()
+            metadata = _load_cluster_metadata(name) or {}
+            aws_region = str(metadata.get("region") or "").strip() or None
+
+            vms = list_aws_vms(region=aws_region)
             master_prefix = f"{name}-master"
             cluster_vms = [
                 vm for vm in vms
@@ -56,10 +59,12 @@ def register(kubeadm_app: typer.Typer):
                 or vm["name"].startswith(f"{name}-node-")
             ]
             if not cluster_vms:
-                typer.echo(f"No VMs found for cluster '{name}'.", err=True)
+                region_hint = aws_region or "current-default"
+                typer.echo(
+                    f"No VMs found for cluster '{name}' in AWS region '{region_hint}'.",
+                    err=True,
+                )
                 raise typer.Exit(1)
-
-            metadata = _load_cluster_metadata(name) or {}
 
             print(f"\n[bold]Resources to delete for cluster '{name}' (AWS):[/bold]")
             for vm in cluster_vms:
@@ -77,7 +82,7 @@ def register(kubeadm_app: typer.Typer):
             print("\n[bold]Terminating EC2 instances...[/bold]")
             for vm in cluster_vms:
                 try:
-                    terminate_aws_vm(vm["id"])
+                    terminate_aws_vm(vm["id"], region=aws_region or vm.get("region"))
                     print(f"  [green]Terminated: {vm['name']} ({vm['id']})[/green]")
                 except Exception as e:
                     print(f"  [red]Failed to terminate {vm['name']}: {e}[/red]")
@@ -110,6 +115,7 @@ def register(kubeadm_app: typer.Typer):
             list_azure_vms,
             delete_azure_vm,
             delete_azure_nsg,
+            delete_azure_public_ip,
             delete_azure_vnet,
         )
 

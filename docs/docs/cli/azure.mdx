@@ -110,7 +110,15 @@ List all available Azure regions/locations.
 clouder azure regions
 ```
 
-Output columns: Name (e.g., `eastus`), Display Name, Regional Name.
+Output columns: Name (e.g., `eastus`), Display Name, Regional Name, Latitude, Longitude.
+
+Example output:
+
+| Name | Display Name | Regional Name | Latitude | Longitude |
+|------|--------------|---------------|----------|-----------|
+| eastus | East US | (US) East US | 37.3719 | -79.8164 |
+| westeurope | West Europe | (Europe) West Europe | 52.3667 | 4.9000 |
+| southeastasia | Southeast Asia | (Asia Pacific) Southeast Asia | 1.2830 | 103.8330 |
 
 ---
 
@@ -166,7 +174,19 @@ clouder azure vm-sizes --region westeurope
 |--------|-------|-------------|
 | `--region` | `-r` | Region to list VM sizes for (interactive if omitted) |
 
-Output columns: Name, vCPUs, Memory (GB), Max Data Disks, OS Disk (GB).
+Output columns: Name, Family, vCPUs, Memory (GB), Max Data Disks, Temp Disk (GB), OS Disk (GB), Arch, GPU, GPU Count, GPU Type, GPU Mem (GB).
+
+Notes:
+- `GPU` is `Yes` when Azure SKU capabilities advertise GPU/accelerator support.
+- `GPU Type` and `GPU Mem (GB)` are shown when provided by Azure capability metadata; otherwise they appear as `N/A`.
+
+Example output:
+
+| Name | Family | vCPUs | Memory (GB) | Max Data Disks | Temp Disk (GB) | OS Disk (GB) | Arch | GPU | GPU Count | GPU Type | GPU Mem (GB) |
+|------|--------|-------|-------------|----------------|----------------|--------------|------|-----|-----------|----------|--------------|
+| Standard_B2s | standardBSFamily | 2 | 4.0 | 4 | 8.0 | 32 | x64 | No | 0 | N/A | N/A |
+| Standard_D4s_v5 | standardDSv5Family | 4 | 16.0 | 8 | 75.0 | 32 | x64 | No | 0 | N/A | N/A |
+| Standard_NC6s_v3 | standardNCSv3Family | 6 | 112.0 | 12 | 736.0 | 32 | x64 | Yes | 1 | NVIDIA Tesla V100 | 16.0 |
 
 ---
 
