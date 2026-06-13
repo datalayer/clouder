@@ -7,7 +7,7 @@ sidebar_position: 13
 
 Manage S3-compatible storage buckets. Used for checkpoint storage, data persistence, and cluster state.
 
-Currently supported for OVH S3 endpoints. Azure Blob is not handled by this command group.
+Supported for AWS S3 and OVH S3 endpoints. Azure Blob is not handled by this command group.
 
 ## Commands
 
@@ -16,17 +16,22 @@ Currently supported for OVH S3 endpoints. Azure Blob is not handled by this comm
 Create an S3 bucket.
 
 ```bash
-clouder s3 create <name>
+clouder s3 create <name> [OPTIONS]
 ```
 
 | Argument | Description |
 |----------|-------------|
 | `name` (required) | Bucket name |
 
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--region` | `-r` | Bucket region (AWS and OVH) |
+
 **Example:**
 
 ```bash
 clouder s3 create clouder-checkpoints
+clouder s3 create clouder-checkpoints --region us-east-1
 ```
 
 ---
@@ -36,8 +41,25 @@ clouder s3 create clouder-checkpoints
 List S3 buckets.
 
 ```bash
-clouder s3 ls
+clouder s3 ls [OPTIONS]
 ```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--region` | `-r` | Region filter |
+
+Examples:
+
+```bash
+clouder s3 ls
+clouder s3 ls --region us-east-1
+```
+
+Provider behavior:
+
+- **AWS context**: creates/lists native AWS S3 buckets.
+- **OVH context**: creates/lists OVH S3 buckets.
+- **Azure context**: command group is not supported; use Azure storage tools instead.
 
 ---
 

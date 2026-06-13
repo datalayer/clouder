@@ -20,6 +20,7 @@ from .ctx import get_current_context
 from .kubeadm._helpers import (
     _load_cluster_metadata,
     _resolve_cluster_vms,
+    resolve_kubeadm_cloud_context,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
     _update_cluster_metadata,
@@ -109,12 +110,13 @@ def _infer_cluster_name(cluster: Optional[str]) -> str:
     )
 
 
-def _default_admin_user(user: Optional[str]) -> str:
+def _default_admin_user(user: Optional[str], cloud: Optional[str] = None) -> str:
     """Pick a default SSH user based on the active cloud context."""
     if user:
         return user
 
-    (cloud, _) = get_current_context()
+    if not cloud:
+        (cloud, _) = get_current_context()
     if cloud == "azure":
         return "azureuser"
     return "ubuntu"
@@ -136,11 +138,13 @@ def criu_status(
         help="SSH key name (from ~/.ssh/).",
         autocompletion=ssh_key_name_completion,
     ),
+    cloud: Optional[str] = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws)."),
 ):
     """Show CRIU readiness and checkpoint prerequisites on each cluster node."""
     cluster_name = _infer_cluster_name(cluster)
-    resolved_user = _default_admin_user(user)
-    cluster_data = _resolve_cluster_vms(cluster_name)
+    resolved_cloud, resolved_context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=cluster_name)
+    resolved_user = _default_admin_user(user, cloud=resolved_cloud)
+    cluster_data = _resolve_cluster_vms(cluster_name, cloud=resolved_cloud, context_id=resolved_context_id)
     key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(cluster_name)
 
     nodes = [cluster_data["master"], *cluster_data["workers"]]
@@ -227,11 +231,13 @@ def criu_checkpoints(
         help="SSH key name (from ~/.ssh/).",
         autocompletion=ssh_key_name_completion,
     ),
+    cloud: Optional[str] = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws)."),
 ):
     """List checkpoint archives currently present on each node."""
     cluster_name = _infer_cluster_name(cluster)
-    resolved_user = _default_admin_user(user)
-    cluster_data = _resolve_cluster_vms(cluster_name)
+    resolved_cloud, resolved_context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=cluster_name)
+    resolved_user = _default_admin_user(user, cloud=resolved_cloud)
+    cluster_data = _resolve_cluster_vms(cluster_name, cloud=resolved_cloud, context_id=resolved_context_id)
     key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(cluster_name)
 
     nodes = [cluster_data["master"], *cluster_data["workers"]]
@@ -395,9 +401,12 @@ def criu_storage(
         help="Kubeadm cluster name.",
         autocompletion=deployment_name_completion,
     ),
+    cloud: Optional[str] = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws)."),
 ):
     """Show configured checkpoint storage for a deployment."""
     cluster_name = _infer_cluster_name(cluster)
+    if cloud:
+        resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=cluster_name)
     metadata = _load_cluster_metadata(cluster_name) or {}
     storage = metadata.get("checkpoint_storage")
 

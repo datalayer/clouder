@@ -47,9 +47,14 @@ def aws_regions():
     regions = list_aws_regions()
     table = Table(title="AWS Regions")
     table.add_column("Region", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Endpoint", justify="left", style="green")
     table.add_column("Opt-in", justify="left", style="green")
     for region in regions:
-        table.add_row(region.get("name", ""), region.get("opt_in_status", ""))
+        table.add_row(
+            region.get("name", ""),
+            region.get("endpoint", ""),
+            region.get("opt_in_status", ""),
+        )
     print(table)
 
 
@@ -109,11 +114,44 @@ def aws_vm_sizes(
     ):
         for item in page.get("InstanceTypes", []):
             memory_mib = int((item.get("MemoryInfo") or {}).get("SizeInMiB") or 0)
+            gpu_info = item.get("GpuInfo") or {}
+            gpu_cards = gpu_info.get("Gpus") or []
+            gpu_count = 0
+            gpu_type_parts: list[str] = []
+            gpu_memory_mib = 0
+            for gpu in gpu_cards:
+                count = int(gpu.get("Count") or 0)
+                gpu_count += count
+                manufacturer = gpu.get("Manufacturer") or ""
+                name = gpu.get("Name") or ""
+                mem_info = gpu.get("MemoryInfo") or {}
+                size_mib = int(mem_info.get("SizeInMiB") or 0)
+                if count > 0 and size_mib > 0:
+                    gpu_memory_mib += size_mib * count
+                if manufacturer and name:
+                    gpu_type_parts.append(f"{manufacturer} {name}")
+                elif name:
+                    gpu_type_parts.append(name)
+                elif manufacturer:
+                    gpu_type_parts.append(manufacturer)
+
+            accelerator_info = item.get("InferenceAcceleratorInfo") or {}
+            accel_items = accelerator_info.get("Accelerators") or []
+            if accel_items and not gpu_type_parts:
+                gpu_type_parts = [a.get("Name") or "Accelerator" for a in accel_items]
+
             rows.append(
                 {
                     "instance_type": item.get("InstanceType", ""),
+                    "family": item.get("InstanceType", "").split(".")[0],
                     "vcpus": int((item.get("VCpuInfo") or {}).get("DefaultVCpus") or 0),
                     "memory_gib": round(memory_mib / 1024, 2),
+                    "network": (item.get("NetworkInfo") or {}).get("NetworkPerformance") or "N/A",
+                    "architecture": ",".join((item.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []) or "N/A",
+                    "gpu_available": gpu_count > 0 or bool(accel_items),
+                    "gpu_count": gpu_count,
+                    "gpu_type": ", ".join(dict.fromkeys(gpu_type_parts)) if gpu_type_parts else "N/A",
+                    "gpu_memory_gib": round(gpu_memory_mib / 1024, 2) if gpu_memory_mib > 0 else None,
                 }
             )
         if len(rows) >= 150:
@@ -123,10 +161,29 @@ def aws_vm_sizes(
 
     table = Table(title=f"AWS Instance Types ({resolved_region})")
     table.add_column("Instance Type", justify="left", style="cyan")
+    table.add_column("Family", justify="left", style="dim")
     table.add_column("vCPUs", justify="right", style="green")
     table.add_column("Memory (GiB)", justify="right", style="green")
+    table.add_column("Network", justify="left", style="yellow")
+    table.add_column("Arch", justify="left", style="dim")
+    table.add_column("GPU", justify="center", style="magenta")
+    table.add_column("GPU Count", justify="right", style="magenta")
+    table.add_column("GPU Type", justify="left", style="magenta")
+    table.add_column("GPU Mem (GiB)", justify="right", style="magenta")
     for row in rows:
-        table.add_row(row["instance_type"], str(row["vcpus"]), str(row["memory_gib"]))
+        gpu_mem = row.get("gpu_memory_gib")
+        table.add_row(
+            row["instance_type"],
+            row.get("family") or "N/A",
+            str(row["vcpus"]),
+            str(row["memory_gib"]),
+            row.get("network") or "N/A",
+            row.get("architecture") or "N/A",
+            "Yes" if row.get("gpu_available") else "No",
+            str(row.get("gpu_count") or 0),
+            row.get("gpu_type") or "N/A",
+            str(gpu_mem) if gpu_mem is not None else "N/A",
+        )
     print(table)
     print(f"\n[dim]Showing {len(rows)} instance types.[/dim]")
 

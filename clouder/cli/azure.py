@@ -177,8 +177,18 @@ def azure_regions():
     table.add_column("Name", justify="left", style="cyan")
     table.add_column("Display Name", justify="left", style="green")
     table.add_column("Regional Name", justify="left", style="green")
+    table.add_column("Latitude", justify="right", style="dim")
+    table.add_column("Longitude", justify="right", style="dim")
     for loc in sorted(locations, key=lambda x: x["name"]):
-        table.add_row(loc["name"], loc["display_name"], loc["regional_display_name"])
+        lat = loc.get("latitude")
+        lon = loc.get("longitude")
+        table.add_row(
+            loc["name"],
+            loc["display_name"],
+            loc["regional_display_name"],
+            f"{lat:.4f}" if isinstance(lat, (float, int)) else "N/A",
+            f"{lon:.4f}" if isinstance(lon, (float, int)) else "N/A",
+        )
     print(table)
     print(f"\n[dim]Total: {len(locations)} regions[/dim]")
 
@@ -277,17 +287,41 @@ def azure_vm_sizes(
     sizes = list_azure_vm_sizes(region, sub_id)
     table = Table(title=f"VM Sizes in {region}")
     table.add_column("Name", justify="left", style="cyan")
+    table.add_column("Family", justify="left", style="dim")
     table.add_column("vCPUs", justify="right", style="green")
     table.add_column("Memory (GB)", justify="right", style="green")
     table.add_column("Max Data Disks", justify="right", style="yellow")
+    table.add_column("Temp Disk (GB)", justify="right", style="yellow")
     table.add_column("OS Disk (GB)", justify="right", style="dim")
-    for size in sorted(sizes, key=lambda x: (x["vcpus"], x["memory_gb"])):
+    table.add_column("Arch", justify="left", style="dim")
+    table.add_column("GPU", justify="center", style="magenta")
+    table.add_column("GPU Count", justify="right", style="magenta")
+    table.add_column("GPU Type", justify="left", style="magenta")
+    table.add_column("GPU Mem (GB)", justify="right", style="magenta")
+
+    def _sort_key(size: dict):
+        return (
+            int(size.get("vcpus") or 0),
+            float(size.get("memory_gb") or 0),
+            str(size.get("name") or ""),
+        )
+
+    for size in sorted(sizes, key=_sort_key):
+        temp_disk_gb = size.get("temp_disk_gb")
+        gpu_mem_gb = size.get("gpu_memory_gb")
         table.add_row(
             size["name"],
-            str(size["vcpus"]),
-            str(size["memory_gb"]),
-            str(size["max_data_disks"]),
-            str(size["os_disk_size_gb"] or "N/A"),
+            size.get("family") or "N/A",
+            str(size.get("vcpus") or "N/A"),
+            str(size.get("memory_gb") or "N/A"),
+            str(size.get("max_data_disks") or "N/A"),
+            f"{temp_disk_gb:.1f}" if isinstance(temp_disk_gb, (float, int)) else "N/A",
+            str(size.get("os_disk_size_gb") or "N/A"),
+            size.get("architecture") or "N/A",
+            "Yes" if size.get("gpu_available") else "No",
+            str(size.get("gpu_count") or 0),
+            size.get("gpu_type") or "N/A",
+            f"{gpu_mem_gb:.1f}" if isinstance(gpu_mem_gb, (float, int)) else "N/A",
         )
     print(table)
     print(f"\n[dim]Total: {len(sizes)} sizes available[/dim]")

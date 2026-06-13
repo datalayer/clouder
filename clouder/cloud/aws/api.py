@@ -72,6 +72,7 @@ def list_aws_regions() -> list:
     return [
         {
             "name": r.get("RegionName", ""),
+            "endpoint": r.get("Endpoint", ""),
             "opt_in_status": r.get("OptInStatus", ""),
         }
         for r in regions

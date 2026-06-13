@@ -154,18 +154,89 @@ def list_azure_resources_by_region(region: Optional[str] = None,
 # --- VM Sizes ---
 
 def list_azure_vm_sizes(location: str, subscription_id: Optional[str] = None) -> list:
-    """List available VM sizes in a location."""
+    """List available VM sizes in a location with capability details.
+
+    Uses Resource SKUs so we can expose richer columns (GPU, architecture,
+    temp disk, acceleration type) in the CLI.
+    """
     client = _get_compute_client(subscription_id)
-    return [
-        {
+
+    # Build a fast map from the legacy VM sizes endpoint for stable vCPU/memory values.
+    base_sizes = {}
+    for size in client.virtual_machine_sizes.list(location):
+        base_sizes[size.name] = {
             "name": size.name,
             "vcpus": size.number_of_cores,
             "memory_gb": round(size.memory_in_mb / 1024, 1),
             "max_data_disks": size.max_data_disk_count,
             "os_disk_size_gb": size.os_disk_size_in_mb // 1024 if size.os_disk_size_in_mb else None,
         }
-        for size in client.virtual_machine_sizes.list(location)
-    ]
+
+    location_lc = location.lower()
+    detailed: list[dict] = []
+
+    for sku in client.resource_skus.list():
+        if str(getattr(sku, "resource_type", "")).lower() != "virtualmachines":
+            continue
+
+        locations = [str(loc).lower() for loc in (getattr(sku, "locations", None) or [])]
+        if location_lc not in locations:
+            continue
+
+        name = str(getattr(sku, "name", "") or "")
+        if not name:
+            continue
+
+        capabilities = {}
+        for capability in (getattr(sku, "capabilities", None) or []):
+            cap_name = str(getattr(capability, "name", "") or "")
+            cap_value = str(getattr(capability, "value", "") or "")
+            if cap_name:
+                capabilities[cap_name] = cap_value
+
+        gpu_count_raw = capabilities.get("GPUs", "0")
+        try:
+            gpu_count = int(float(gpu_count_raw)) if gpu_count_raw else 0
+        except Exception:
+            gpu_count = 0
+
+        gpu_type = capabilities.get("AcceleratorType", "")
+        if not gpu_type and gpu_count > 0:
+            gpu_type = "GPU"
+
+        gpu_mem_raw = capabilities.get("GpuMemoryGB", "")
+        try:
+            gpu_memory_gb = float(gpu_mem_raw) if gpu_mem_raw else None
+        except Exception:
+            gpu_memory_gb = None
+
+        base = base_sizes.get(name, {})
+        detailed.append(
+            {
+                "name": name,
+                "family": str(getattr(sku, "family", "") or ""),
+                "vcpus": base.get("vcpus"),
+                "memory_gb": base.get("memory_gb"),
+                "max_data_disks": base.get("max_data_disks"),
+                "os_disk_size_gb": base.get("os_disk_size_gb"),
+                "temp_disk_gb": (
+                    float(capabilities.get("MaxResourceVolumeMB", "0")) / 1024
+                    if capabilities.get("MaxResourceVolumeMB")
+                    else None
+                ),
+                "architecture": capabilities.get("CpuArchitectureType", ""),
+                "gpu_available": gpu_count > 0,
+                "gpu_count": gpu_count,
+                "gpu_type": gpu_type,
+                "gpu_memory_gb": gpu_memory_gb,
+            }
+        )
+
+    # Keep deterministic order and ensure unique sizes.
+    dedup = {}
+    for row in detailed:
+        dedup[row["name"]] = row
+    return list(dedup.values())
 
 
 def list_azure_popular_vm_images(location: str, subscription_id: Optional[str] = None) -> list:

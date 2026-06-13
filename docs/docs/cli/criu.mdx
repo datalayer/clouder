@@ -108,6 +108,7 @@ clouder criu status --cluster my-cluster
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--cluster` | | Kubeadm deployment name (defaults to current kube context) |
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--admin-user` | `-u` | SSH username used to inspect nodes |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
@@ -122,6 +123,7 @@ clouder criu checkpoints --cluster my-cluster
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--cluster` | | Kubeadm deployment name (defaults to current kube context) |
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--admin-user` | `-u` | SSH username used to inspect nodes |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
@@ -132,6 +134,11 @@ Show the default checkpoint storage configured in deployment metadata.
 ```bash
 clouder criu storage --cluster my-cluster
 ```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cluster` | | Kubeadm deployment name (defaults to current kube context) |
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 
 ### `clouder criu storage-set`
 

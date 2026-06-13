@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import typer
 
+from .ctx import get_current_context
 from ..cloud.base import NodeType
 
 
@@ -28,13 +29,17 @@ def _fallback_node_types(cloud: str) -> list[NodeType]:
 
 @cost_app.command("ls")
 def list_costs(
-    cloud: str = typer.Option("azure", help="Cloud provider (azure|aws)."),
+    cloud: str | None = typer.Option(None, help="Cloud provider (azure|aws). Defaults to current context cloud."),
     region: str = typer.Option("westeurope", help="Cloud region."),
 ):
     """List known node types and hourly costs when available."""
 
     _ = region
-    cloud_name = cloud.strip().lower()
+    cloud_name = (cloud or "").strip().lower()
+    if not cloud_name:
+        cloud_name, _ = get_current_context()
+        if cloud_name not in {"azure", "aws"}:
+            cloud_name = "azure"
     if cloud_name not in {"azure", "aws"}:
         raise typer.BadParameter("cloud must be one of: azure, aws")
 
