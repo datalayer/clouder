@@ -399,32 +399,38 @@ def ctx_set(
     context_id: str = typer.Argument(..., help="The context/project ID."),
 ):
     """Set the default context."""
-    if cloud == "ovh":
-        context = get_ovh_project(context_id)
-        name = context["description"]
-    elif cloud == "azure":
-        try:
-            from ..cloud.azure.api import list_azure_subscriptions
-            subs = list_azure_subscriptions()
-            match = next((s for s in subs if s["id"] == context_id), None)
-            name = match["name"] if match else context_id
-        except Exception:
-            name = context_id
-    elif cloud == "aws":
-        try:
-            from ..cloud.aws.api import list_aws_accounts
-            accounts = list_aws_accounts()
-            match = next((a for a in accounts if a["id"] == context_id), None)
-            name = match["name"] if match else context_id
-        except Exception:
-            name = context_id
-    else:
-        name = context_id
-    clouder = load_context()
+    def _discover_context_name() -> str:
+        if cloud == "ovh":
+            context = get_ovh_project(context_id)
+            return context["description"]
+        if cloud == "azure":
+            try:
+                from ..cloud.azure.api import list_azure_subscriptions
+
+                subs = list_azure_subscriptions()
+                match = next((s for s in subs if s["id"] == context_id), None)
+                return match["name"] if match else context_id
+            except Exception:
+                return context_id
+        if cloud == "aws":
+            try:
+                from ..cloud.aws.api import list_aws_accounts
+
+                accounts = list_aws_accounts()
+                match = next((a for a in accounts if a["id"] == context_id), None)
+                return match["name"] if match else context_id
+            except Exception:
+                return context_id
+        return context_id
+
+    clouder = _ensure_context_shape(load_context())
     clouder["clouder"]["current_context"] = cloud + DEFAULT_BOX_SEPARATOR + context_id
-    if cloud not in clouder["clouder"]["contexts"]:
-        clouder["clouder"]["contexts"][cloud] = {}
-    clouder["clouder"]["contexts"][cloud][context_id] = {"name": name}
+    cloud_contexts = clouder["clouder"]["contexts"].setdefault(cloud, {})
+    existing = cloud_contexts.get(context_id)
+    if not existing:
+        cloud_contexts[context_id] = {"name": _discover_context_name()}
+    elif not existing.get("name"):
+        existing["name"] = _discover_context_name()
     save_context(clouder)
     print_context(clouder)
 

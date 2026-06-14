@@ -226,9 +226,20 @@ def aws_vm_list(
     print(table)
 
 
+@aws_app.command("vm-info")
+def aws_vm_info(
+    name: str = typer.Argument(..., help="VM name to inspect."),
+    region: Optional[str] = typer.Option(None, "--region", "-r", help="Optional AWS region override."),
+):
+    """Show detailed AWS VM info (instance details and associated ALBs)."""
+    from .vm import _show_aws_vm_info
+
+    _show_aws_vm_info(name=name, region=region)
+
+
 @aws_app.command("vm-create")
 def aws_vm_create(
-    name: str = typer.Option(..., "--name", "-n", help="VM name."),
+    name: str = typer.Argument(..., help="VM name."),
     region: Optional[str] = typer.Option(None, "--region", "-r", help="Optional AWS region override."),
     vm_size: Optional[str] = typer.Option(None, "--vm-size", help="EC2 instance type (e.g., t3.large)."),
 ):
@@ -238,28 +249,16 @@ def aws_vm_create(
     _create_aws_vm(name=name, region=region, vm_size=vm_size)
 
 
-@aws_app.command("vm-delete")
-def aws_vm_delete(
+@aws_app.command("vm-terminate")
+def aws_vm_terminate(
     name: str = typer.Argument(..., help="VM name to delete."),
     region: Optional[str] = typer.Option(None, "--region", "-r", help="Optional AWS region override."),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation."),
 ):
     """Terminate an AWS EC2 instance by VM name tag."""
-    from ..cloud.aws.api import terminate_aws_vm
+    from .vm import _delete_aws_vm_with_alb_cleanup
 
-    vms = list_aws_vms(region=region)
-    match = [vm for vm in vms if (vm.get("name") or "") == name]
-    if not match:
-        typer.echo(f"VM '{name}' not found.", err=True)
-        raise typer.Exit(1)
-
-    vm = match[0]
-    if not force:
-        if not Confirm.ask(f"Terminate AWS instance '{name}' (id: {vm.get('id')})?", default=False):
-            raise typer.Abort()
-
-    terminate_aws_vm(vm.get("id"), region=region or vm.get("region"))
-    print(f"[green]VM '{name}' termination requested.[/green]")
+    _delete_aws_vm_with_alb_cleanup(name=name, region=region, force=force)
 
 
 @aws_app.command("vm-ssh")

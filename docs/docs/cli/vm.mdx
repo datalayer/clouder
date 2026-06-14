@@ -62,12 +62,34 @@ clouder vm ls
 
 ---
 
-### `clouder vm delete`
+### `clouder vm info`
 
-Delete a virtual machine by name.
+Show detailed information for a VM in the current context.
 
 ```bash
-clouder vm delete <name> [OPTIONS]
+clouder vm info <name>
+```
+
+Current behavior:
+- Implemented for AWS contexts.
+- Prints instance details including instance id, instance type, state, key pair, VPC/subnet, public/private IP.
+- Prints associated ALB details (name, DNS, ARN, target groups) when present.
+
+Example:
+
+```bash
+clouder ctx set aws <account-id>
+clouder vm info oss
+```
+
+---
+
+### `clouder vm terminate`
+
+Terminate a virtual machine by name.
+
+```bash
+clouder vm terminate <name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -81,8 +103,49 @@ clouder vm delete <name> [OPTIONS]
 **Example:**
 
 ```bash
-clouder vm delete my-vm
-clouder vm delete my-vm --force
+clouder vm terminate my-vm
+clouder vm terminate my-vm --force
+```
+
+AWS behavior:
+- When deleting an AWS VM, Clouder checks whether one or more ALBs are associated with the instance (via target groups).
+- If associations are found, Clouder asks for confirmation to delete ALB resources first.
+- On confirmation, ALB(s) are deleted before EC2 termination is requested.
+
+---
+
+### `clouder vm add-alb`
+
+Create or reuse an AWS Application Load Balancer for a VM and enable HTTPS termination.
+
+```bash
+clouder vm add-alb <vm-name> --certificate-arn <acm-certificate-arn> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `vm-name` (required) | Name of the AWS VM (EC2 Name tag) to expose through ALB |
+
+| Option | Description |
+|--------|-------------|
+| `--certificate-arn` | ACM certificate ARN to attach to HTTPS listener (required) |
+| `--target-port` | Backend VM HTTP port (default: `80`) |
+
+Behavior:
+
+- AWS context only.
+- Creates/reuses an internet-facing ALB named `<vm-name>-alb`.
+- Creates/reuses a target group named `<vm-name>-tg` and registers the instance.
+- Configures listener `443/HTTPS` with your ACM certificate and forwards to backend HTTP.
+- Configures listener `80/HTTP` to redirect to HTTPS.
+- Opens ALB ingress on ports 80 and 443, and allows ALB-to-instance traffic on `--target-port`.
+
+Example:
+
+```bash
+clouder ctx set aws <account-id>
+clouder vm add-alb oss --certificate-arn arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+clouder vm add-alb oss --certificate-arn <acm-arn> --target-port 8080
 ```
 
 ---
@@ -90,8 +153,8 @@ clouder vm delete my-vm --force
 ## Example Workflow
 
 ```bash
-# Set your context
-clouder ctx set azure <subscription-id>
+# Set AWS context
+clouder ctx set aws <account-id>
 
 # Create a VM (interactive)
 clouder vm create my-server
@@ -99,9 +162,12 @@ clouder vm create my-server
 # List VMs
 clouder vm ls
 
-# SSH into the VM
-clouder ssh my-server
+# Add HTTPS ALB in front of VM
+clouder vm add-alb my-server --certificate-arn <acm-arn>
 
-# Delete when done
-clouder vm delete my-server
+# SSH into the VM
+clouder aws vm-ssh my-server
+
+# Terminate when done
+clouder vm terminate my-server
 ```

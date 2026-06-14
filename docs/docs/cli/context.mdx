@@ -70,6 +70,11 @@ clouder ctx set <cloud> <context-id>
 | `cloud` | Cloud provider: `ovh`, `azure`, `aws` |
 | `context_id` | The project or subscription ID |
 
+Behavior notes:
+- Switches the active current context to the selected cloud/id.
+- Preserves existing context metadata (name and provider-specific details) if the context already exists locally.
+- Creates a new local entry only when the context id is not present yet.
+
 **Examples:**
 
 ```bash

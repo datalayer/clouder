@@ -66,6 +66,22 @@ Optional region override:
 clouder aws vm-ls --region us-east-1
 ```
 
+### `clouder aws vm-info`
+
+Show detailed information for one EC2 instance by VM Name tag.
+
+```bash
+clouder aws vm-info <vm-name>
+clouder aws vm-info <vm-name> --region us-east-1
+```
+
+Output includes:
+- Instance id, type, state
+- Public/private IP addresses
+- VPC and subnet ids
+- Key pair name
+- Associated ALB details (name, DNS, ARN, target groups)
+
 ### `clouder aws resources`
 
 Show a quick regional inventory summary (EC2 instances, VPCs, subnets, security groups).
@@ -113,15 +129,71 @@ Example output:
 Create an EC2 VM using the same interactive flow as `clouder vm create` on AWS.
 
 ```bash
-clouder aws vm-create --name my-ec2
-clouder aws vm-create --name my-ec2 --region us-east-1 --vm-size t3.large
+clouder aws vm-create my-ec2
+clouder aws vm-create my-ec2 --region us-east-1 --vm-size t3.large
 ```
 
-### `clouder aws vm-delete`
+### `clouder aws vm-terminate`
 
 Terminate an EC2 VM by name (Name tag).
 
 ```bash
-clouder aws vm-delete my-ec2
-clouder aws vm-delete my-ec2 --region us-east-1 --force
+clouder aws vm-terminate my-ec2
+clouder aws vm-terminate my-ec2 --region us-east-1 --force
+```
+
+Behavior notes:
+- Clouder detects whether the instance is associated with one or more ALBs.
+- If ALBs are found, you are prompted to confirm ALB deletion first.
+- On confirmation, Clouder deletes ALB resources before requesting EC2 termination.
+
+### `clouder aws vm-ssh`
+
+SSH into an EC2 VM by Name tag.
+
+```bash
+clouder aws vm-ssh <vm-name> [OPTIONS]
+```
+
+Options:
+- `--user`, `-u` SSH username
+- `--key`, `-i` key file name from `~/.ssh/`
+- `--port`, `-p` SSH port (default: `22`)
+- `--command`, `-c` run a remote command without interactive shell
+
+Key resolution on AWS:
+- If no `--key` is provided, Clouder first discovers the EC2 key pair attached to the VM.
+- It looks for matching local files in `~/.ssh/` (`<key>`, `<key>.pem`, `<key>.key`).
+- If needed, it tries to import `<key>.pem` from common local download paths.
+- If still not found, it stops with guidance instead of silently using an unrelated key.
+
+Examples:
+
+```bash
+clouder aws vm-ssh oss
+clouder aws vm-ssh oss --user ubuntu --key oss-key.pem
+clouder aws vm-ssh oss --command "uname -a"
+```
+
+### `clouder vm add-alb`
+
+Create/reuse an AWS Application Load Balancer in front of an EC2 VM with HTTPS termination.
+
+```bash
+clouder vm add-alb <vm-name> --certificate-arn <acm-certificate-arn> [OPTIONS]
+```
+
+`--certificate-arn` requires a full ACM certificate ARN.
+
+Notes:
+- This command is available under `clouder vm` and requires AWS as current context.
+- ALB name: `<vm-name>-alb`
+- Listener `443/HTTPS` uses the ACM certificate and forwards to target group.
+- Listener `80/HTTP` redirects to HTTPS.
+
+Example:
+
+```bash
+clouder ctx set aws <account-id>
+clouder vm add-alb oss --certificate-arn arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```

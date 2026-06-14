@@ -1,5 +1,7 @@
 """Clouder CLI - Virtual machine management commands."""
 
+import sys
+
 import typer
 from rich import print
 from rich.panel import Panel
@@ -10,6 +12,181 @@ from .ctx import get_current_context
 from ..util.utils import DEFAULT_REGION, SSH_FOLDER
 
 vm_app = typer.Typer(no_args_is_help=True)
+
+
+def _select_running_aws_vm(candidates: list[dict], vm_name: str) -> dict:
+    """Select one running AWS VM from possibly ambiguous name matches."""
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if not sys.stdin.isatty():
+        chosen = candidates[0]
+        print(
+            "[yellow]Multiple running AWS instances share this name. "
+            f"Using first match: {chosen.get('id')} ({chosen.get('region')}).[/yellow]"
+        )
+        return chosen
+
+    table = Table(title=f"Multiple running AWS VMs named '{vm_name}'")
+    table.add_column("#", style="cyan", no_wrap=True)
+    table.add_column("Instance ID", style="green")
+    table.add_column("Region", style="green")
+    table.add_column("State", style="yellow")
+    table.add_column("Public IP", style="yellow")
+    for idx, vm in enumerate(candidates, 1):
+        table.add_row(
+            str(idx),
+            vm.get("id") or "N/A",
+            vm.get("region") or "N/A",
+            vm.get("state") or "N/A",
+            vm.get("public_ip") or "N/A",
+        )
+    print(table)
+
+    choice = Prompt.ask("Select VM number", default="1")
+    if not choice.isdigit() or not (1 <= int(choice) <= len(candidates)):
+        typer.echo(f"Invalid selection: {choice}", err=True)
+        raise typer.Exit(1)
+    return candidates[int(choice) - 1]
+
+
+def _find_aws_vm_by_name(name: str) -> dict | None:
+    """Find an AWS VM by Name tag across current and enabled regions."""
+    from ..cloud.aws.api import list_aws_regions, list_aws_vms
+
+    # First check current/default session region.
+    vms = list_aws_vms()
+    running = [vm for vm in vms if vm.get("name") == name and vm.get("state") == "running"]
+    if running:
+        return _select_running_aws_vm(running, name)
+
+    # Fallback to all enabled regions.
+    running_all_regions: list[dict] = []
+    for region in list_aws_regions():
+        region_name = region.get("name")
+        if not region_name:
+            continue
+        try:
+            region_vms = list_aws_vms(region=region_name)
+        except Exception:
+            continue
+        running = [vm for vm in region_vms if vm.get("name") == name and vm.get("state") == "running"]
+        running_all_regions.extend(running)
+
+    if running_all_regions:
+        return _select_running_aws_vm(running_all_regions, name)
+
+    return None
+
+
+def _delete_aws_vm_with_alb_cleanup(name: str, region: str | None = None, force: bool = False):
+    """Delete an AWS VM, optionally deleting associated ALBs first."""
+    from ..cloud.aws.api import (
+        delete_aws_alb,
+        list_aws_albs_for_instance,
+        list_aws_vms,
+        terminate_aws_vm,
+    )
+
+    vms = list_aws_vms(region=region)
+    match = [vm for vm in vms if (vm.get("name") or "") == name and vm.get("state") == "running"]
+    if not match:
+        typer.echo(f"Running VM '{name}' not found.", err=True)
+        raise typer.Exit(1)
+
+    vm = _select_running_aws_vm(match, name)
+    vm_region = region or vm.get("region")
+    associated_albs = list_aws_albs_for_instance(vm.get("id"), region=vm_region)
+
+    if associated_albs:
+        table = Table(title=f"ALBs Associated with {name}")
+        table.add_column("ALB Name", style="cyan")
+        table.add_column("DNS", style="green")
+        table.add_column("ALB ARN", style="dim")
+        for alb in associated_albs:
+            table.add_row(
+                alb.get("load_balancer_name") or "N/A",
+                alb.get("dns_name") or "N/A",
+                alb.get("load_balancer_arn") or "N/A",
+            )
+        print(table)
+
+        if not Confirm.ask(
+            "Associated ALB(s) found. Delete ALB(s) first, then terminate the EC2 instance?",
+            default=False,
+        ):
+            raise typer.Abort()
+
+        for alb in associated_albs:
+            alb_name = alb.get("load_balancer_name") or alb.get("load_balancer_arn") or "ALB"
+            typer.echo(f"Deleting ALB '{alb_name}'...")
+            delete_aws_alb(alb.get("load_balancer_arn"), region=vm_region)
+
+    if not force:
+        typer.confirm(f"Terminate AWS instance '{name}' (id: {vm.get('id')})?", abort=True)
+
+    terminate_aws_vm(vm.get("id"), region=vm_region)
+    if associated_albs:
+        typer.echo(f"ALB cleanup completed. VM '{name}' termination requested.")
+    else:
+        typer.echo(f"VM '{name}' termination requested.")
+
+
+def _show_aws_vm_info(name: str, region: str | None = None):
+    """Print detailed AWS VM information including associated ALBs."""
+    from ..cloud.aws.api import list_aws_albs_for_instance, list_aws_vms
+
+    if region:
+        vms = list_aws_vms(region=region)
+        vm = next(
+            (
+                item
+                for item in vms
+                if (item.get("name") or "") == name and item.get("state") == "running"
+            ),
+            None,
+        )
+    else:
+        vm = _find_aws_vm_by_name(name)
+
+    if not vm:
+        typer.echo(f"Running VM '{name}' not found in AWS account/regions.", err=True)
+        raise typer.Exit(1)
+
+    vm_region = region or vm.get("region")
+    associated_albs = list_aws_albs_for_instance(vm.get("id"), region=vm_region)
+
+    details = Table(title=f"AWS VM Info: {name}")
+    details.add_column("Field", style="cyan", no_wrap=True)
+    details.add_column("Value", style="green")
+    details.add_row("Name", vm.get("name") or "N/A")
+    details.add_row("Instance ID", vm.get("id") or "N/A")
+    details.add_row("Region", vm.get("region") or "N/A")
+    details.add_row("State", vm.get("state") or "N/A")
+    details.add_row("Instance Type", vm.get("instance_type") or "N/A")
+    details.add_row("Public IP", vm.get("public_ip") or "N/A")
+    details.add_row("Private IP", vm.get("private_ip") or "N/A")
+    details.add_row("VPC ID", vm.get("vpc_id") or "N/A")
+    details.add_row("Subnet ID", vm.get("subnet_id") or "N/A")
+    details.add_row("Key Pair", vm.get("key_name") or "N/A")
+    print(details)
+
+    if associated_albs:
+        albs = Table(title=f"Associated AWS ALBs ({len(associated_albs)})")
+        albs.add_column("ALB Name", style="cyan")
+        albs.add_column("DNS", style="green")
+        albs.add_column("ALB ARN", style="dim")
+        albs.add_column("Target Groups", style="yellow")
+        for alb in associated_albs:
+            albs.add_row(
+                alb.get("load_balancer_name") or "N/A",
+                alb.get("dns_name") or "N/A",
+                alb.get("load_balancer_arn") or "N/A",
+                "\n".join(alb.get("target_group_arns") or []) or "N/A",
+            )
+        print(albs)
+    else:
+        print("[dim]No associated ALB found for this instance.[/dim]")
 
 
 def _create_aws_key_pair_locally(ec2_client, key_name: str) -> str:
@@ -73,6 +250,7 @@ def _create_aws_vm(name: str, region: str | None, vm_size: str | None):
     from ..cloud.aws.api import (
         _client,
         create_aws_vm,
+        list_aws_acm_certificates,
         list_aws_regions,
         resolve_ubuntu_ami,
     )
@@ -196,6 +374,52 @@ def _create_aws_vm(name: str, region: str | None, vm_size: str | None):
         f"  Region:       {result['region']}",
         title="AWS EC2 VM Created",
     ))
+
+    vm_name = result.get("name") or name
+    vm_region = result.get("region") or region
+    if vm_region:
+        try:
+            certs = list_aws_acm_certificates(region=vm_region)
+        except Exception as exc:
+            print(
+                Panel(
+                    "[yellow]Could not list ACM certificates for recommended ALB setup.[/yellow]\n"
+                    f"Reason: {exc}\n\n"
+                    "Manual command template:\n"
+                    f"  clouder vm add-alb {vm_name} --certificate-arn <acm-certificate-arn>",
+                    title="Recommended Next Steps",
+                )
+            )
+            return
+
+        if not certs:
+            print(
+                Panel(
+                    "No ACM certificate found in this region.\n\n"
+                    "Create/import a certificate in ACM first, then run:\n"
+                    f"  clouder vm add-alb {vm_name} --certificate-arn <acm-certificate-arn>",
+                    title="Recommended Next Steps",
+                )
+            )
+            return
+
+        commands = []
+        lines = [
+            f"Found {len(certs)} ACM certificate(s) in region {vm_region}.",
+            "Use one of the exact commands below to attach an HTTPS ALB:",
+            "",
+        ]
+        for cert in certs:
+            arn = cert.get("arn") or ""
+            domain = cert.get("domain_name") or "N/A"
+            status = cert.get("status") or "N/A"
+            cmd = f"clouder vm add-alb {vm_name} --certificate-arn {arn}"
+            commands.append(cmd)
+            lines.append(f"- {domain} [{status}]")
+            lines.append(f"  {cmd}")
+            lines.append("")
+
+        print(Panel("\n".join(lines).rstrip(), title="Recommended Next Steps"))
 
 
 def _create_azure_vm(sub_id, name, region, resource_group, vm_size, admin_username, image):
@@ -410,12 +634,27 @@ def vm_list():
         print(table)
 
 
-@vm_app.command("delete")
-def vm_delete(
+@vm_app.command("info")
+def vm_info(
+    name: str = typer.Argument(..., help="Name of the virtual machine."),
+):
+    """Show detailed VM information for the current context."""
+    cloud, context_id = get_current_context()
+    _ = context_id
+    if cloud == "aws":
+        _show_aws_vm_info(name=name, region=None)
+        return
+
+    typer.echo("`vm info` is currently implemented for AWS contexts only.", err=True)
+    raise typer.Exit(1)
+
+
+@vm_app.command("terminate")
+def vm_terminate(
     name: str = typer.Argument(..., help="Name of the virtual machine to delete."),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
 ):
-    """Delete a virtual machine by name."""
+    """Terminate a virtual machine by name."""
     (cloud, context_id) = get_current_context()
     if cloud == "azure":
         from ..cloud.azure.api import list_azure_vms, delete_azure_vm
@@ -430,17 +669,7 @@ def vm_delete(
         delete_azure_vm(vm["resource_group"], name, subscription_id=context_id)
         typer.echo(f"VM '{name}' deleted (with disks, NIC, IP).")
     elif cloud == "aws":
-        from ..cloud.aws.api import list_aws_vms, terminate_aws_vm
-        vms = list_aws_vms()
-        match = [vm for vm in vms if vm["name"] == name]
-        if not match:
-            typer.echo(f"VM '{name}' not found.", err=True)
-            raise typer.Exit(1)
-        vm = match[0]
-        if not force:
-            typer.confirm(f"Terminate AWS instance '{name}' (id: {vm['id']})?", abort=True)
-        terminate_aws_vm(vm["id"])
-        typer.echo(f"VM '{name}' terminated.")
+        _delete_aws_vm_with_alb_cleanup(name=name, region=None, force=force)
     else:
         from ..cloud.ovh.api import get_ovh_vm, delete_ovh_vm
         vms = get_ovh_vm(context_id)
@@ -453,3 +682,65 @@ def vm_delete(
             typer.confirm(f"Delete OVH VM '{name}' (id: {vm['id']})?", abort=True)
         delete_ovh_vm(context_id, vm["id"])
         typer.echo(f"VM '{name}' deleted.")
+
+
+@vm_app.command("add-alb")
+def vm_add_alb(
+    vm_name: str = typer.Argument(..., help="Name of the AWS VM to attach behind an ALB."),
+    certificate_arn: str = typer.Option(
+        ..., "--certificate-arn", help="ACM certificate ARN for HTTPS listener."
+    ),
+    target_port: int = typer.Option(80, "--target-port", help="Backend VM HTTP port for ALB forwarding."),
+):
+    """Create/reuse an internet-facing AWS ALB for a VM with HTTPS termination.
+
+    Creates ALB named '<vm-name>-alb' and configures:
+    - HTTPS 443 (ACM cert) -> HTTP target group -> EC2 instance
+    - HTTP 80 -> HTTPS redirect
+    """
+    cloud, _context_id = get_current_context()
+    if cloud != "aws":
+        typer.echo("`vm add-alb` is currently supported only for AWS context.", err=True)
+        raise typer.Exit(1)
+
+    vm = _find_aws_vm_by_name(vm_name)
+    if not vm:
+        typer.echo(f"VM '{vm_name}' not found in AWS account/regions.", err=True)
+        raise typer.Exit(1)
+
+    if not vm.get("vpc_id"):
+        typer.echo(f"VM '{vm_name}' has no VPC information.", err=True)
+        raise typer.Exit(1)
+
+    if target_port < 1 or target_port > 65535:
+        typer.echo("Target port must be between 1 and 65535.", err=True)
+        raise typer.Exit(1)
+
+    from ..cloud.aws.api import ensure_aws_alb_for_vm
+
+    try:
+        result = ensure_aws_alb_for_vm(
+            vm_name=vm_name,
+            instance_id=vm["id"],
+            vpc_id=vm["vpc_id"],
+            certificate_arn=certificate_arn,
+            region=vm.get("region") or "",
+            target_port=target_port,
+        )
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    print(
+        Panel(
+            f"[green]ALB is ready for VM '{vm_name}'.[/green]\n\n"
+            f"  ALB Name:         {result['alb_name']}\n"
+            f"  ALB DNS:          {result['alb_dns_name']}\n"
+            f"  Region:           {result['region']}\n"
+            f"  Certificate:      {result['certificate_arn']}\n"
+            f"  Backend Target:   {result['instance_id']}:{result['target_port']}\n"
+            f"  Target Group:     {result['target_group_name']}\n\n"
+            f"  HTTPS URL:        https://{result['alb_dns_name']}",
+            title="AWS ALB Attached",
+        )
+    )

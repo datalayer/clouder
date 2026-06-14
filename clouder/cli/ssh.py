@@ -3,11 +3,13 @@
 import os
 import shutil
 import subprocess
+import sys
 from typing import Optional
 
 import typer
 from rich import print
 from rich.prompt import Prompt
+from rich.table import Table
 
 from .ctx import get_current_context, get_default_ssh_key
 from ..util.utils import SSH_FOLDER
@@ -73,7 +75,19 @@ def ssh_to_vm(
     ssh_cmd = ["ssh"]
     if key_path:
         ssh_cmd.extend(["-i", str(key_path)])
-    ssh_cmd.extend(["-p", str(port), "-o", "StrictHostKeyChecking=accept-new", f"{user}@{ip}"])
+    ssh_cmd.extend(
+        [
+            "-p",
+            str(port),
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+            f"{user}@{ip}",
+        ]
+    )
 
     if command:
         ssh_cmd.append(command)
@@ -104,10 +118,20 @@ def _resolve_vm_ip(cloud: str, context_id: str, vm_name: str) -> str:
         ip = get_azure_vm_public_ip(rg, vm_name, subscription_id=context_id)
         return ip
     elif cloud == "aws":
+        from ..cloud.aws.api import get_aws_vm_elastic_ip
+
         vm = _resolve_aws_vm_record(vm_name)
         if not vm:
             typer.echo(f"VM '{vm_name}' not found.", err=True)
             raise typer.Exit(1)
+
+        vm_region = vm.get("region")
+        vm_id = vm.get("id")
+        if vm_id:
+            eip = get_aws_vm_elastic_ip(vm_id, region=vm_region)
+            if eip:
+                return eip
+
         return vm.get("public_ip")
     else:
         from ..cloud.ovh.api import get_ovh_vm
@@ -128,13 +152,52 @@ def _resolve_aws_vm_record(vm_name: str) -> dict | None:
     """Resolve an AWS VM by name, trying current/default region then all enabled regions."""
     from ..cloud.aws.api import list_aws_regions, list_aws_vms
 
+    def _select(candidates: list[dict]) -> dict:
+        if len(candidates) == 1:
+            return candidates[0]
+
+        if not sys.stdin.isatty():
+            # Non-interactive fallback for scripted usage.
+            chosen = candidates[0]
+            print(
+                "[yellow]Multiple running AWS instances share this name. "
+                f"Using first match: {chosen.get('id')} ({chosen.get('region')}).[/yellow]"
+            )
+            return chosen
+
+        table = Table(title=f"Multiple running AWS VMs named '{vm_name}'")
+        table.add_column("#", style="cyan", no_wrap=True)
+        table.add_column("Instance ID", style="green")
+        table.add_column("Region", style="green")
+        table.add_column("Public IP", style="yellow")
+        table.add_column("Private IP", style="dim")
+        for idx, vm in enumerate(candidates, 1):
+            table.add_row(
+                str(idx),
+                vm.get("id") or "N/A",
+                vm.get("region") or "N/A",
+                vm.get("public_ip") or "N/A",
+                vm.get("private_ip") or "N/A",
+            )
+        print(table)
+
+        choice = Prompt.ask(
+            "Select VM number",
+            default="1",
+        )
+        if not choice.isdigit() or not (1 <= int(choice) <= len(candidates)):
+            typer.echo(f"Invalid selection: {choice}", err=True)
+            raise typer.Exit(1)
+        return candidates[int(choice) - 1]
+
     # First pass: current/default region.
     initial = list_aws_vms()
-    match = next((vm for vm in initial if vm.get("name") == vm_name), None)
-    if match:
-        return match
+    running = [vm for vm in initial if vm.get("name") == vm_name and vm.get("state") == "running"]
+    if running:
+        return _select(running)
 
     # Fallback: scan enabled regions.
+    running_all_regions: list[dict] = []
     for region in list_aws_regions():
         region_name = region.get("name")
         if not region_name:
@@ -143,9 +206,11 @@ def _resolve_aws_vm_record(vm_name: str) -> dict | None:
             vms = list_aws_vms(region=region_name)
         except Exception:
             continue
-        match = next((vm for vm in vms if vm.get("name") == vm_name), None)
-        if match:
-            return match
+        running = [vm for vm in vms if vm.get("name") == vm_name and vm.get("state") == "running"]
+        running_all_regions.extend(running)
+
+    if running_all_regions:
+        return _select(running_all_regions)
     return None
 
 

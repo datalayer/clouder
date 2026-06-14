@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from typing import Optional
 
 import boto3
+from botocore.exceptions import ClientError
 
 from ...util.wait import wait_with_spinner
 
@@ -127,6 +129,44 @@ def get_aws_vm_public_ip(instance_id: str, region: Optional[str] = None) -> Opti
     return reservations[0]["Instances"][0].get("PublicIpAddress")
 
 
+def get_aws_vm_elastic_ip(instance_id: str, region: Optional[str] = None) -> Optional[str]:
+    """Return Elastic IP associated with an EC2 instance, if any."""
+    ec2 = _client("ec2", region=region)
+    response = ec2.describe_addresses(
+        Filters=[
+            {"Name": "instance-id", "Values": [instance_id]},
+        ]
+    )
+    addresses = response.get("Addresses", [])
+    if not addresses:
+        return None
+    # In typical setups there is one EIP per instance primary interface.
+    return addresses[0].get("PublicIp")
+
+
+def list_aws_acm_certificates(region: Optional[str] = None) -> list[dict]:
+    """List ACM certificates for a region with basic metadata."""
+    acm = _client("acm", region=region)
+    certificates: list[dict] = []
+    paginator = acm.get_paginator("list_certificates")
+    for page in paginator.paginate():
+        for summary in page.get("CertificateSummaryList", []) or []:
+            arn = summary.get("CertificateArn") or ""
+            if not arn:
+                continue
+            certificates.append(
+                {
+                    "arn": arn,
+                    "domain_name": summary.get("DomainName") or "",
+                    "status": summary.get("Status") or "",
+                    "type": summary.get("Type") or "",
+                    "key_algorithm": summary.get("KeyAlgorithm") or "",
+                }
+            )
+
+    return sorted(certificates, key=lambda c: (c.get("status") != "ISSUED", c.get("domain_name") or c.get("arn") or ""))
+
+
 def get_aws_vm_instance_profile_arn(instance_id: str, region: Optional[str] = None) -> Optional[str]:
     """Return IAM instance profile ARN attached to an EC2 instance, if any."""
     ec2 = _client("ec2", region=region)
@@ -216,6 +256,123 @@ def terminate_aws_vm(instance_id: str, region: Optional[str] = None):
     """Terminate one EC2 instance."""
     ec2 = _client("ec2", region=region)
     ec2.terminate_instances(InstanceIds=[instance_id])
+
+
+def list_aws_albs_for_instance(instance_id: str, region: Optional[str] = None) -> list[dict]:
+    """List ALBs associated to an EC2 instance via target groups in a region."""
+    elbv2 = _client("elbv2", region=region)
+    found: dict[str, dict] = {}
+
+    paginator = elbv2.get_paginator("describe_target_groups")
+    for page in paginator.paginate():
+        for tg in page.get("TargetGroups", []):
+            tg_arn = tg.get("TargetGroupArn")
+            if not tg_arn:
+                continue
+
+            try:
+                health = elbv2.describe_target_health(TargetGroupArn=tg_arn)
+            except ClientError:
+                continue
+
+            targets = health.get("TargetHealthDescriptions", [])
+            has_instance = any(
+                (desc.get("Target") or {}).get("Id") == instance_id
+                for desc in targets
+            )
+            if not has_instance:
+                continue
+
+            for lb_arn in tg.get("LoadBalancerArns", []) or []:
+                entry = found.setdefault(
+                    lb_arn,
+                    {
+                        "load_balancer_arn": lb_arn,
+                        "load_balancer_name": "",
+                        "dns_name": "",
+                        "target_group_arns": set(),
+                    },
+                )
+                entry["target_group_arns"].add(tg_arn)
+
+    if not found:
+        return []
+
+    lb_arns = list(found.keys())
+    for idx in range(0, len(lb_arns), 20):
+        chunk = lb_arns[idx : idx + 20]
+        response = elbv2.describe_load_balancers(LoadBalancerArns=chunk)
+        for lb in response.get("LoadBalancers", []):
+            lb_arn = lb.get("LoadBalancerArn")
+            if lb_arn in found:
+                found[lb_arn]["load_balancer_name"] = lb.get("LoadBalancerName", "")
+                found[lb_arn]["dns_name"] = lb.get("DNSName", "")
+
+    results = []
+    for value in found.values():
+        value["target_group_arns"] = sorted(value["target_group_arns"])
+        results.append(value)
+
+    return sorted(results, key=lambda item: item.get("load_balancer_name") or item.get("load_balancer_arn") or "")
+
+
+def delete_aws_alb(load_balancer_arn: str, region: Optional[str] = None):
+    """Delete an ALB and its listeners/target groups in the given region."""
+    elbv2 = _client("elbv2", region=region)
+
+    try:
+        listeners = elbv2.describe_listeners(LoadBalancerArn=load_balancer_arn).get("Listeners", [])
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"LoadBalancerNotFound", "LoadBalancerNotFoundException"}:
+            return
+        raise
+
+    target_group_arns: set[str] = set()
+    for listener in listeners:
+        for action in listener.get("DefaultActions", []) or []:
+            tg_arn = action.get("TargetGroupArn")
+            if tg_arn:
+                target_group_arns.add(tg_arn)
+            fwd_cfg = action.get("ForwardConfig") or {}
+            for tg_ref in fwd_cfg.get("TargetGroups", []) or []:
+                tg_ref_arn = tg_ref.get("TargetGroupArn")
+                if tg_ref_arn:
+                    target_group_arns.add(tg_ref_arn)
+        try:
+            elbv2.delete_listener(ListenerArn=listener.get("ListenerArn"))
+        except ClientError:
+            continue
+
+    # Include any additional TGs bound to the LB.
+    paginator = elbv2.get_paginator("describe_target_groups")
+    for page in paginator.paginate(LoadBalancerArn=load_balancer_arn):
+        for tg in page.get("TargetGroups", []):
+            tg_arn = tg.get("TargetGroupArn")
+            if tg_arn:
+                target_group_arns.add(tg_arn)
+
+    try:
+        elbv2.delete_load_balancer(LoadBalancerArn=load_balancer_arn)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code not in {"LoadBalancerNotFound", "LoadBalancerNotFoundException"}:
+            raise
+
+    waiter = elbv2.get_waiter("load_balancers_deleted")
+    try:
+        waiter.wait(LoadBalancerArns=[load_balancer_arn])
+    except Exception:
+        pass
+
+    for tg_arn in sorted(target_group_arns):
+        try:
+            elbv2.delete_target_group(TargetGroupArn=tg_arn)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in {"TargetGroupNotFound", "TargetGroupNotFoundException", "ResourceInUse"}:
+                continue
+            raise
 
 
 def create_aws_kubeadm_network(
@@ -408,3 +565,253 @@ def get_aws_ec2_ondemand_hourly_prices(region: str) -> dict[str, float]:
                         prices[instance_type] = price
 
     return prices
+
+
+def _normalize_aws_resource_name(name: str, suffix: str, max_length: int = 32) -> str:
+    """Normalize a resource name for ELBv2 constraints.
+
+    Keeps lowercase alphanumeric and hyphen, trims duplicate hyphens,
+    and ensures a stable suffix.
+    """
+    base = re.sub(r"[^a-zA-Z0-9-]", "-", (name or "").strip().lower())
+    base = re.sub(r"-+", "-", base).strip("-")
+    if not base:
+        base = "vm"
+    normalized_suffix = suffix.strip("-")
+    reserved = len(normalized_suffix) + 1
+    if len(base) > max_length - reserved:
+        base = base[: max_length - reserved].rstrip("-")
+    if not base:
+        base = "vm"
+    return f"{base}-{normalized_suffix}"
+
+
+def _validate_acm_certificate_arn(certificate_arn: str, region: str) -> str:
+    """Validate that a provided ACM certificate ARN exists in the target region."""
+    cert_value = (certificate_arn or "").strip()
+    if not cert_value:
+        raise RuntimeError("ACM certificate ARN is required.")
+    if not cert_value.startswith("arn:aws:acm:"):
+        raise RuntimeError(
+            "Invalid ACM certificate value. Use --certificate-arn with a full ACM certificate ARN."
+        )
+
+    acm = _client("acm", region=region)
+    try:
+        acm.describe_certificate(CertificateArn=cert_value)
+        return cert_value
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "ResourceNotFoundException":
+            raise RuntimeError(
+                f"ACM certificate ARN '{cert_value}' was not found in region '{region}'. "
+                "ALB certificates must exist in the same region as the load balancer."
+            ) from exc
+        raise RuntimeError(f"Unable to validate ACM certificate ARN '{cert_value}': {exc}") from exc
+
+
+def ensure_aws_alb_for_vm(
+    vm_name: str,
+    instance_id: str,
+    vpc_id: str,
+    certificate_arn: str,
+    region: str,
+    target_port: int = 80,
+) -> dict:
+    """Create or reuse an AWS ALB to expose HTTPS for a VM.
+
+    Creates (or reuses):
+    - ALB named <vm-name>-alb
+    - target group named <vm-name>-tg (HTTP to instance target_port)
+    - HTTPS listener on 443 forwarding to target group with ACM cert
+    - HTTP listener on 80 redirecting to HTTPS 443
+    """
+    ec2 = _client("ec2", region=region)
+    elbv2 = _client("elbv2", region=region)
+    certificate_arn = _validate_acm_certificate_arn(certificate_arn, region)
+
+    alb_name = _normalize_aws_resource_name(vm_name, "alb", max_length=32)
+    tg_name = _normalize_aws_resource_name(vm_name, "tg", max_length=32)
+    sg_name = _normalize_aws_resource_name(vm_name, "alb-sg", max_length=255)
+
+    # 1) Security group for ALB
+    try:
+        existing_sgs = ec2.describe_security_groups(
+            Filters=[
+                {"Name": "group-name", "Values": [sg_name]},
+                {"Name": "vpc-id", "Values": [vpc_id]},
+            ]
+        ).get("SecurityGroups", [])
+        if existing_sgs:
+            alb_sg_id = existing_sgs[0]["GroupId"]
+        else:
+            sg = ec2.create_security_group(
+                GroupName=sg_name,
+                Description=f"ALB security group for {vm_name}",
+                VpcId=vpc_id,
+            )
+            alb_sg_id = sg["GroupId"]
+    except ClientError as exc:
+        raise RuntimeError(f"Unable to prepare ALB security group: {exc}") from exc
+
+    try:
+        ec2.authorize_security_group_ingress(
+            GroupId=alb_sg_id,
+            IpPermissions=[
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 80,
+                    "ToPort": 80,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                },
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                },
+            ],
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "InvalidPermission.Duplicate":
+            raise RuntimeError(f"Unable to authorize ALB security group ingress: {exc}") from exc
+
+    # 2) Allow traffic from ALB SG to instance on target port.
+    instance_desc = ec2.describe_instances(InstanceIds=[instance_id])
+    reservations = instance_desc.get("Reservations", [])
+    instances = reservations[0].get("Instances", []) if reservations else []
+    if not instances:
+        raise RuntimeError(f"EC2 instance '{instance_id}' not found in region '{region}'.")
+    instance = instances[0]
+    instance_sgs = [sg.get("GroupId") for sg in instance.get("SecurityGroups", []) if sg.get("GroupId")]
+    if not instance_sgs:
+        raise RuntimeError(f"EC2 instance '{instance_id}' has no security groups attached.")
+
+    for instance_sg_id in instance_sgs:
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=instance_sg_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": target_port,
+                        "ToPort": target_port,
+                        "UserIdGroupPairs": [{"GroupId": alb_sg_id}],
+                    }
+                ],
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "InvalidPermission.Duplicate":
+                raise RuntimeError(
+                    f"Unable to open instance security group '{instance_sg_id}' for ALB traffic: {exc}"
+                ) from exc
+
+    # 3) Create/reuse ALB in at least two subnets of the VPC.
+    subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get("Subnets", [])
+    subnet_ids = [s.get("SubnetId") for s in subnets if s.get("SubnetId")]
+    if len(subnet_ids) < 2:
+        raise RuntimeError(
+            f"VPC '{vpc_id}' needs at least two subnets to create an ALB (found {len(subnet_ids)})."
+        )
+
+    alb = None
+    try:
+        response = elbv2.describe_load_balancers(Names=[alb_name])
+        lbs = response.get("LoadBalancers", [])
+        if lbs:
+            alb = lbs[0]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "LoadBalancerNotFound":
+            raise RuntimeError(f"Unable to lookup ALB '{alb_name}': {exc}") from exc
+
+    if not alb:
+        created = elbv2.create_load_balancer(
+            Name=alb_name,
+            Subnets=subnet_ids[:2],
+            SecurityGroups=[alb_sg_id],
+            Scheme="internet-facing",
+            Type="application",
+            IpAddressType="ipv4",
+            Tags=[{"Key": "Name", "Value": alb_name}, {"Key": "datalayer.io/component", "Value": "alb"}],
+        )
+        alb = created["LoadBalancers"][0]
+
+    alb_arn = alb["LoadBalancerArn"]
+    alb_dns_name = alb.get("DNSName", "")
+
+    # 4) Create/reuse target group.
+    tg_arn = None
+    try:
+        response = elbv2.describe_target_groups(Names=[tg_name])
+        tgs = response.get("TargetGroups", [])
+        if tgs:
+            tg_arn = tgs[0]["TargetGroupArn"]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "TargetGroupNotFound":
+            raise RuntimeError(f"Unable to lookup target group '{tg_name}': {exc}") from exc
+
+    if not tg_arn:
+        created_tg = elbv2.create_target_group(
+            Name=tg_name,
+            Protocol="HTTP",
+            Port=target_port,
+            VpcId=vpc_id,
+            TargetType="instance",
+            HealthCheckProtocol="HTTP",
+            HealthCheckPath="/",
+            HealthCheckPort="traffic-port",
+            Matcher={"HttpCode": "200-399"},
+            Tags=[{"Key": "Name", "Value": tg_name}],
+        )
+        tg_arn = created_tg["TargetGroups"][0]["TargetGroupArn"]
+
+    elbv2.register_targets(
+        TargetGroupArn=tg_arn,
+        Targets=[{"Id": instance_id, "Port": target_port}],
+    )
+
+    # 5) Ensure listeners.
+    listeners = elbv2.describe_listeners(LoadBalancerArn=alb_arn).get("Listeners", [])
+    has_443 = any(l.get("Port") == 443 for l in listeners)
+    has_80 = any(l.get("Port") == 80 for l in listeners)
+
+    if not has_443:
+        elbv2.create_listener(
+            LoadBalancerArn=alb_arn,
+            Protocol="HTTPS",
+            Port=443,
+            Certificates=[{"CertificateArn": certificate_arn}],
+            DefaultActions=[{"Type": "forward", "TargetGroupArn": tg_arn}],
+            SslPolicy="ELBSecurityPolicy-2016-08",
+        )
+
+    if not has_80:
+        elbv2.create_listener(
+            LoadBalancerArn=alb_arn,
+            Protocol="HTTP",
+            Port=80,
+            DefaultActions=[
+                {
+                    "Type": "redirect",
+                    "RedirectConfig": {
+                        "Protocol": "HTTPS",
+                        "Port": "443",
+                        "StatusCode": "HTTP_301",
+                    },
+                }
+            ],
+        )
+
+    return {
+        "alb_name": alb_name,
+        "alb_arn": alb_arn,
+        "alb_dns_name": alb_dns_name,
+        "target_group_name": tg_name,
+        "target_group_arn": tg_arn,
+        "region": region,
+        "instance_id": instance_id,
+        "instance_security_groups": instance_sgs,
+        "alb_security_group_id": alb_sg_id,
+        "target_port": target_port,
+        "certificate_arn": certificate_arn,
+    }
