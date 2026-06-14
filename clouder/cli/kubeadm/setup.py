@@ -75,6 +75,46 @@ def _wait_for_node_ready(master_ip: str, ssh_user: str, key_path: str, node_name
     return False
 
 
+def _detect_kubernetes_node_name(worker_ip: str, ssh_user: str, key_path: str, fallback: str) -> str:
+    """Detect the node name kubelet will register with Kubernetes."""
+    result = _ssh_cmd(
+        worker_ip,
+        ssh_user,
+        key_path,
+        "hostname -s 2>/dev/null || hostname 2>/dev/null || true",
+        check=False,
+    )
+    detected = (result.stdout or "").strip()
+    return detected or fallback
+
+
+def _print_node_ready_timeout_diagnostics(master_ip: str, ssh_user: str, key_path: str, node_name: str) -> None:
+    """Print Kubernetes diagnostics when node readiness times out."""
+    print("  [yellow]Node readiness timed out. Collecting diagnostics from control-plane...[/yellow]")
+
+    nodes_result = _ssh_cmd(
+        master_ip,
+        ssh_user,
+        key_path,
+        "kubectl get nodes -o wide 2>/dev/null || true",
+        check=False,
+    )
+    if nodes_result.stdout.strip():
+        typer.echo("\n[kubectl get nodes -o wide]")
+        typer.echo(nodes_result.stdout.rstrip())
+
+    describe_result = _ssh_cmd(
+        master_ip,
+        ssh_user,
+        key_path,
+        f"kubectl describe node {node_name} 2>/dev/null || true",
+        check=False,
+    )
+    if describe_result.stdout.strip():
+        typer.echo(f"\n[kubectl describe node {node_name}]")
+        typer.echo(describe_result.stdout.rstrip())
+
+
 def _apply_node_labels(master_ip: str, ssh_user: str, key_path: str, node_name: str, labels: list[str]) -> None:
     """Apply labels to a Kubernetes node using kubectl on the master."""
     for label in labels:
@@ -214,6 +254,17 @@ def register(kubeadm_app: typer.Typer):
         print("\n[bold]Step 5/7: Joining worker nodes...[/bold]")
         for worker in workers:
             print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
+            worker_node_name = _detect_kubernetes_node_name(
+                worker["ip"],
+                resolved_user,
+                key_path,
+                worker["name"],
+            )
+            if worker_node_name != worker["name"]:
+                print(
+                    f"  [dim]Kubernetes node name detected as '{worker_node_name}' "
+                    f"(VM name: '{worker['name']}')[/dim]"
+                )
             # Reset any previous kubeadm state and ensure containerd is ready (idempotent re-runs).
             _ssh_cmd_stream(worker["ip"], resolved_user, key_path,
                 "sudo kubeadm reset -f --cri-socket unix:///var/run/containerd/containerd.sock 2>/dev/null || true; "
@@ -231,13 +282,19 @@ def register(kubeadm_app: typer.Typer):
             print(f"  [green]{worker['name']} joined.[/green]")
 
             print(f"  [cyan]{worker['name']}[/cyan] waiting for node Ready...")
-            if not _wait_for_node_ready(master["ip"], resolved_user, key_path, worker["name"]):
+            if not _wait_for_node_ready(master["ip"], resolved_user, key_path, worker_node_name):
+                _print_node_ready_timeout_diagnostics(
+                    master["ip"],
+                    resolved_user,
+                    key_path,
+                    worker_node_name,
+                )
                 print(f"  [red]{worker['name']} did not become Ready in time.[/red]")
                 raise typer.Exit(1)
             print(f"  [green]{worker['name']} is Ready.[/green]")
 
             print(f"  [cyan]{worker['name']}[/cyan] applying labels...")
-            _apply_node_labels(master["ip"], resolved_user, key_path, worker["name"], resolved_node_labels)
+            _apply_node_labels(master["ip"], resolved_user, key_path, worker_node_name, resolved_node_labels)
             print(f"  [green]{worker['name']} labels applied.[/green]")
 
         # ----- Step 6: Enable CRIU feature gates on all nodes -----

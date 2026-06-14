@@ -89,9 +89,14 @@ def install_loadbalancer(
     key_path: str,
 ) -> bool:
     """Install AWS load balancer components on an initialized cluster."""
-    from ....cloud.aws.api import get_aws_vm_vpc_id
+    from ....cloud.aws.api import (
+        get_aws_session_credentials,
+        get_aws_vm_instance_profile_arn,
+        get_aws_vm_vpc_id,
+    )
     from .._helpers import (
         _build_aws_load_balancer_setup_script,
+        _ssh_cmd,
         _ssh_cmd_stream,
     )
 
@@ -105,6 +110,7 @@ def install_loadbalancer(
 
     vpc_id = ""
     master_instance_id = master.get("instance_id")
+    instance_profile_arn = None
     if master_instance_id:
         try:
             vpc_id = get_aws_vm_vpc_id(
@@ -113,6 +119,13 @@ def install_loadbalancer(
             ) or ""
         except Exception as exc:
             print(f"[yellow]  Could not resolve AWS VPC id: {exc}[/yellow]")
+        try:
+            instance_profile_arn = get_aws_vm_instance_profile_arn(
+                master_instance_id,
+                region=aws_region or None,
+            )
+        except Exception as exc:
+            print(f"[yellow]  Could not detect AWS instance profile: {exc}[/yellow]")
     if not vpc_id and metadata:
         vpc_id = metadata.get("networking", {}).get("vpc_id", "")
 
@@ -121,17 +134,53 @@ def install_loadbalancer(
         print("  Ensure cluster metadata includes networking.vpc_id or use an EC2-backed cluster context.")
         return loadbalancer_ok
 
+    aws_creds = get_aws_session_credentials(region=aws_region or None)
+    use_instance_profile = bool(instance_profile_arn)
+    if use_instance_profile:
+        print(f"  Using EC2 instance profile for ALB controller auth: [dim]{instance_profile_arn}[/dim]")
+    else:
+        print("  No instance profile detected. Falling back to static AWS credentials for ALB controller bootstrap.")
+
     print("  Installing AWS Load Balancer Controller...")
     aws_lb_script = _build_aws_load_balancer_setup_script(
         region=aws_region,
         vpc_id=vpc_id,
         cluster_name=cluster_name,
+        use_instance_profile=use_instance_profile,
+        access_key_id=aws_creds.get("access_key_id") or None,
+        secret_access_key=aws_creds.get("secret_access_key") or None,
+        session_token=aws_creds.get("session_token") or None,
     )
     rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, aws_lb_script)
     if rc != 0:
         print("[red]  AWS Load Balancer Controller installation failed.[/red]")
     else:
+        deployment_status = _ssh_cmd(
+            master["ip"],
+            resolved_user,
+            key_path,
+            (
+                "kubectl -n kube-system get deployment aws-load-balancer-controller "
+                "-o jsonpath='{.status.readyReplicas}/{.status.replicas}' 2>/dev/null || true"
+            ),
+            check=False,
+        ).stdout.strip().strip("'")
+        controller_image = _ssh_cmd(
+            master["ip"],
+            resolved_user,
+            key_path,
+            (
+                "kubectl -n kube-system get deployment aws-load-balancer-controller "
+                "-o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true"
+            ),
+            check=False,
+        ).stdout.strip().strip("'")
+
         print("  [green]AWS Load Balancer Controller installed.[/green]")
+        if deployment_status:
+            print(f"  [bold green]Ready replicas:[/bold green] {deployment_status}")
+        if controller_image:
+            print(f"  [bold green]Controller image:[/bold green] {controller_image}")
         loadbalancer_ok = True
 
     return loadbalancer_ok

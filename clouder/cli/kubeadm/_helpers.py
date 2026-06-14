@@ -874,16 +874,56 @@ def _build_aws_load_balancer_setup_script(
         region: str,
         vpc_id: str,
         cluster_name: str,
+        use_instance_profile: bool = False,
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
+        session_token: str | None = None,
 ) -> str:
         """Return a bash script that installs AWS Load Balancer Controller for kubeadm clusters."""
+        import base64
+
+        access_key_b64 = base64.b64encode((access_key_id or "").encode()).decode()
+        secret_key_b64 = base64.b64encode((secret_access_key or "").encode()).decode()
+        session_token_b64 = base64.b64encode((session_token or "").encode()).decode()
+
+        credential_block = """
+# Ensure static credentials are not forced when using instance profile auth.
+kubectl -n kube-system set env deployment/aws-load-balancer-controller \\
+    AWS_ACCESS_KEY_ID- AWS_SECRET_ACCESS_KEY- AWS_SESSION_TOKEN- || true
+"""
+        if not use_instance_profile:
+            credential_block = f"""
+AWS_ACCESS_KEY_ID=\"$(echo '{access_key_b64}' | base64 -d)\"
+AWS_SECRET_ACCESS_KEY=\"$(echo '{secret_key_b64}' | base64 -d)\"
+AWS_SESSION_TOKEN=\"$(echo '{session_token_b64}' | base64 -d)\"
+
+kubectl -n kube-system create secret generic aws-load-balancer-credentials \\
+    --from-literal=AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\" \\
+    --from-literal=AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\" \\
+    --from-literal=AWS_SESSION_TOKEN=\"$AWS_SESSION_TOKEN\" \\
+    --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n kube-system set env deployment/aws-load-balancer-controller \\
+    --from=secret/aws-load-balancer-credentials
+"""
+
         return f"""set -euo pipefail
 
-# Install Helm if missing
+section() {{
+    printf '\n\033[1;36m==> %s\033[0m\n' "$1"
+}}
+
+ok() {{
+    printf '\033[1;32m[OK]\033[0m %s\n' "$1"
+}}
+
+section "AWS Load Balancer Controller / Sub-step 1: Helm"
 if ! command -v helm >/dev/null 2>&1; then
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 fi
+ok "Helm is available"
 
-# Install cert-manager (required by aws-load-balancer-controller webhook)
+section "AWS Load Balancer Controller / Sub-step 2: cert-manager"
 helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
 helm repo update
 kubectl create namespace cert-manager 2>/dev/null || true
@@ -892,8 +932,9 @@ helm upgrade --install cert-manager jetstack/cert-manager \\
     --version v1.16.1 \\
     --set crds.enabled=true \\
     --wait --timeout 240s
+ok "cert-manager is installed and ready"
 
-# Install AWS Load Balancer Controller (node IAM role / instance profile auth)
+section "AWS Load Balancer Controller / Sub-step 3: controller install"
 helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
 helm repo update
 kubectl create namespace kube-system 2>/dev/null || true
@@ -905,42 +946,12 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set vpcId={vpc_id} \\
     --wait --timeout 300s
 
-kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=240s || true
-echo \"AWS Load Balancer Controller installed.\"
+section "AWS Load Balancer Controller / Sub-step 4: verification"
+{credential_block}
+kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=240s
+kubectl -n kube-system get deployment aws-load-balancer-controller -o wide
+kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
+ok "AWS Load Balancer Controller installed and rollout is healthy"
 """
 
 
-def _build_aws_load_balancer_setup_script(
-        region: str,
-        vpc_id: str,
-        cluster_name: str,
-) -> str:
-        """Return a bash script that installs AWS Load Balancer Controller for kubeadm clusters."""
-        return f"""set -euo pipefail
-
-if ! command -v helm >/dev/null 2>&1; then
-    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-fi
-
-helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
-helm repo update >/dev/null
-
-kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller//crds?ref=master"
-
-helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \\
-    -n kube-system \\
-    --set clusterName={cluster_name} \\
-    --set serviceAccount.create=true \\
-    --set serviceAccount.name=aws-load-balancer-controller \\
-    --set region={region} \\
-    --set vpcId={vpc_id} \\
-    --set replicaCount=1 \\
-    --wait --timeout 10m
-
-kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=300s || true
-
-echo "AWS Load Balancer Controller installed."
-echo "Use Service annotations for NLB when needed:"
-echo "  service.beta.kubernetes.io/aws-load-balancer-type: external"
-echo "  service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip"
-"""
