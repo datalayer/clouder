@@ -1,5 +1,7 @@
 """Clouder CLI - kubeadm enable/disable-ingress-traefik commands."""
 
+import json
+
 import typer
 from rich import print
 from rich.panel import Panel
@@ -126,7 +128,7 @@ run_helm_install() {
         --set providers.kubernetesIngress.enabled=true \\
         --set providers.kubernetesCRD.enabled=true \\
         --set service.annotations."service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"=external \\
-        --set service.annotations."service\\.beta\\.kubernetes\\.io/aws-load-balancer-nlb-target-type"=ip \\
+    --set service.annotations."service\\.beta\\.kubernetes\\.io/aws-load-balancer-nlb-target-type"=instance \\
         --set service.annotations."service\\.beta\\.kubernetes\\.io/aws-load-balancer-scheme"=internet-facing \\
         --wait --timeout "$HELM_TIMEOUT"
 }
@@ -161,6 +163,76 @@ echo "Traefik ingress controller installed (LoadBalancer mode) in datalayer-trae
 echo "Service details:"
 kubectl -n datalayer-traefik get svc traefik -o wide 2>/dev/null || true
 """
+
+
+def _ensure_aws_node_provider_ids(
+    master_ip: str,
+    ssh_user: str,
+    key_path: str,
+    instance_ids: list[str],
+    region: str,
+) -> tuple[int, int, int]:
+    """Patch missing Kubernetes node providerIDs from EC2 instance metadata."""
+    if not instance_ids:
+        return (0, 0, 0)
+
+    from ...cloud.aws.api import get_aws_instances_details
+
+    nodes_result = _ssh_cmd(master_ip, ssh_user, key_path, "kubectl get nodes -o json", check=False)
+    if nodes_result.returncode != 0 or not nodes_result.stdout.strip():
+        return (0, 0, 0)
+
+    nodes_doc = json.loads(nodes_result.stdout)
+    node_items = nodes_doc.get("items", []) or []
+
+    instance_details = get_aws_instances_details(instance_ids=instance_ids, region=region or None)
+    ip_to_instance: dict[str, tuple[str, str]] = {}
+    for instance_id, details in instance_details.items():
+        private_ip = str(details.get("private_ip") or "").strip()
+        availability_zone = str(details.get("availability_zone") or "").strip()
+        if private_ip:
+            ip_to_instance[private_ip] = (instance_id, availability_zone)
+
+    patched = 0
+    already = 0
+    unresolved = 0
+
+    for node in node_items:
+        metadata = node.get("metadata") or {}
+        node_name = str(metadata.get("name") or "").strip()
+        spec = node.get("spec") or {}
+        provider_id = str(spec.get("providerID") or "").strip()
+        if provider_id:
+            already += 1
+            continue
+
+        addresses = (node.get("status") or {}).get("addresses") or []
+        internal_ip = ""
+        for address in addresses:
+            if address.get("type") == "InternalIP":
+                internal_ip = str(address.get("address") or "").strip()
+                break
+
+        if not node_name or not internal_ip or internal_ip not in ip_to_instance:
+            unresolved += 1
+            continue
+
+        instance_id, availability_zone = ip_to_instance[internal_ip]
+        new_provider_id = f"aws:///{availability_zone}/{instance_id}" if availability_zone else f"aws:///{instance_id}"
+        patch_payload = json.dumps({"spec": {"providerID": new_provider_id}})
+        patch_result = _ssh_cmd(
+            master_ip,
+            ssh_user,
+            key_path,
+            f"kubectl patch node {node_name} --type=merge -p '{patch_payload}'",
+            check=False,
+        )
+        if patch_result.returncode == 0:
+            patched += 1
+        else:
+            unresolved += 1
+
+    return (patched, already, unresolved)
 
 
 def register(kubeadm_app: typer.Typer):
@@ -295,6 +367,53 @@ def register(kubeadm_app: typer.Typer):
         https_nodeport = int(ports[1])
         print(f"  HTTP  NodePort: [cyan]{http_nodeport}[/cyan]")
         print(f"  HTTPS NodePort: [cyan]{https_nodeport}[/cyan]")
+
+        if cloud == "aws":
+            # For AWS NLB target-type=instance, health checks hit node ports.
+            # Open required ports on attached instance security groups to avoid target timeouts.
+            aws_region = str(metadata.get("region") or master.get("region") or "")
+            instance_ids = [str(w.get("instance_id") or "").strip() for w in workers]
+            instance_ids = [instance_id for instance_id in instance_ids if instance_id]
+            if instance_ids:
+                try:
+                    from ...cloud.aws.api import ensure_aws_instance_security_group_ingress
+
+                    sg_result = ensure_aws_instance_security_group_ingress(
+                        instance_ids=instance_ids,
+                        ports=[80, 443, http_nodeport, https_nodeport],
+                        cidr="0.0.0.0/0",
+                        region=aws_region or None,
+                    )
+                    print(
+                        "  [green]Ensured worker security-group ingress for AWS LB traffic:[/green] "
+                        f"ports {sg_result.get('ports', [])}"
+                    )
+                except Exception as exc:
+                    print(
+                        "  [yellow]Could not pre-open AWS security-group ingress automatically; "
+                        f"continuing with LB provisioning: {exc}[/yellow]"
+                    )
+
+            cluster_instance_ids = [str(master.get("instance_id") or "").strip()] + instance_ids
+            cluster_instance_ids = [instance_id for instance_id in cluster_instance_ids if instance_id]
+            if cluster_instance_ids:
+                try:
+                    patched, already, unresolved = _ensure_aws_node_provider_ids(
+                        master_ip=master["ip"],
+                        ssh_user=resolved_user,
+                        key_path=key_path,
+                        instance_ids=cluster_instance_ids,
+                        region=aws_region,
+                    )
+                    print(
+                        "  [green]AWS node providerID reconciliation:[/green] "
+                        f"patched={patched}, already_set={already}, unresolved={unresolved}"
+                    )
+                except Exception as exc:
+                    print(
+                        "  [yellow]Could not reconcile Kubernetes node providerIDs automatically; "
+                        f"continuing with LB provisioning: {exc}[/yellow]"
+                    )
 
         if cloud == "aws":
             svc_endpoint = ""

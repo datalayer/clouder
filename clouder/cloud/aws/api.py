@@ -188,6 +188,78 @@ def get_aws_vm_vpc_id(instance_id: str, region: Optional[str] = None) -> Optiona
     return reservations[0]["Instances"][0].get("VpcId")
 
 
+def get_aws_instances_details(instance_ids: list[str], region: Optional[str] = None) -> dict[str, dict]:
+    """Return selected EC2 details indexed by instance id."""
+    if not instance_ids:
+        return {}
+
+    ec2 = _client("ec2", region=region)
+    response = ec2.describe_instances(InstanceIds=instance_ids)
+
+    details: dict[str, dict] = {}
+    for reservation in response.get("Reservations", []) or []:
+        for instance in reservation.get("Instances", []) or []:
+            instance_id = instance.get("InstanceId")
+            if not instance_id:
+                continue
+            details[instance_id] = {
+                "private_ip": instance.get("PrivateIpAddress") or "",
+                "availability_zone": ((instance.get("Placement") or {}).get("AvailabilityZone") or ""),
+            }
+    return details
+
+
+def ensure_aws_instance_security_group_ingress(
+    instance_ids: list[str],
+    ports: list[int],
+    cidr: str = "0.0.0.0/0",
+    region: Optional[str] = None,
+) -> dict:
+    """Ensure inbound TCP ingress rules exist on SGs attached to instances.
+
+    Returns a summary with touched SG IDs and ensured ports.
+    """
+    if not instance_ids or not ports:
+        return {"security_group_ids": [], "ports": []}
+
+    ec2 = _client("ec2", region=region)
+    response = ec2.describe_instances(InstanceIds=instance_ids)
+
+    security_group_ids: set[str] = set()
+    for reservation in response.get("Reservations", []) or []:
+        for instance in reservation.get("Instances", []) or []:
+            for sg in instance.get("SecurityGroups", []) or []:
+                group_id = sg.get("GroupId")
+                if group_id:
+                    security_group_ids.add(group_id)
+
+    for group_id in security_group_ids:
+        for port in ports:
+            try:
+                ec2.authorize_security_group_ingress(
+                    GroupId=group_id,
+                    IpPermissions=[
+                        {
+                            "IpProtocol": "tcp",
+                            "FromPort": int(port),
+                            "ToPort": int(port),
+                            "IpRanges": [{"CidrIp": cidr}],
+                        }
+                    ],
+                )
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "InvalidPermission.Duplicate":
+                    raise RuntimeError(
+                        f"Unable to authorize security group '{group_id}' ingress on port {port}: {exc}"
+                    ) from exc
+
+    return {
+        "security_group_ids": sorted(security_group_ids),
+        "ports": sorted({int(p) for p in ports}),
+        "cidr": cidr,
+    }
+
+
 def create_aws_vm(
     vm_name: str,
     instance_type: str,

@@ -93,7 +93,7 @@ def register(kubeadm_app: typer.Typer):
         # =====================================================================
         ingress_passed = None  # None = skipped
         ingress_type = None
-        lb_public_ip = None
+        lb_public_endpoint = None
 
         print("\n" + "=" * 60)
         print("[bold]Section 1: Ingress + Load Balancer[/bold]")
@@ -122,7 +122,7 @@ def register(kubeadm_app: typer.Typer):
             ingress_type = "traefik" if has_traefik else "nginx"
             print(f"\n  Detected ingress controller: [cyan]{ingress_type}[/cyan]")
 
-            # Discover LB public IP from Azure
+            # Discover LB endpoint
             if cloud == "azure":
                 lb_ip_name = f"{name}-lb-ip"
                 rg = master["resource_group"]
@@ -130,12 +130,31 @@ def register(kubeadm_app: typer.Typer):
                     from ...cloud.azure.api import _get_network_client
                     nc = _get_network_client(context_id)
                     pip = nc.public_ip_addresses.get(rg, lb_ip_name)
-                    lb_public_ip = pip.ip_address
-                    print(f"  LB Public IP: [cyan]{lb_public_ip}[/cyan]")
+                    lb_public_endpoint = pip.ip_address
+                    print(f"  LB Public IP: [cyan]{lb_public_endpoint}[/cyan]")
                 except Exception:
                     print("  [dim]No Azure LB public IP found. Skipping ingress validation.[/dim]")
+            elif cloud == "aws":
+                endpoint_result = _ssh_cmd(
+                    master["ip"],
+                    resolved_user,
+                    key_path,
+                    (
+                        "kubectl -n datalayer-traefik get svc traefik "
+                        "-o jsonpath='{.status.loadBalancer.ingress[0].hostname} {.status.loadBalancer.ingress[0].ip}' "
+                        "2>/dev/null || true"
+                    ),
+                    check=False,
+                )
+                raw_endpoint = endpoint_result.stdout.strip().strip("'")
+                endpoint_parts = [part for part in raw_endpoint.split() if part]
+                if endpoint_parts:
+                    lb_public_endpoint = endpoint_parts[0]
+                    print(f"  LB Endpoint: [cyan]{lb_public_endpoint}[/cyan]")
+                else:
+                    print("  [dim]No AWS LB endpoint assigned yet on Traefik service. Skipping ingress validation.[/dim]")
 
-            if lb_public_ip:
+            if lb_public_endpoint:
                 ingress_passed = True
                 try:
                     # ---- Step 1/4: Deploy test web server ----
@@ -256,22 +275,35 @@ EOF
                                     for line in r.stdout.strip().split("\n"):
                                         print(f"  [dim]{line}[/dim]")
 
-                    # ---- Step 3/4: Validate HTTP through LB from localhost ----
+                    # ---- Step 3/4: Validate HTTP through LB endpoint from localhost ----
                     if ingress_passed:
-                        print("\n[bold]Step 3/4: Validating HTTP through Load Balancer (IP)...[/bold]")
-                        print("  Waiting 15s for ingress rules to propagate...")
-                        time.sleep(15)
+                        print("\n[bold]Step 3/4: Validating HTTP through Load Balancer endpoint...[/bold]")
+                        propagation_wait_seconds = 15
+                        max_attempts = 5
+                        retry_delay_seconds = 10
+                        connect_timeout_seconds = 10
+                        if cloud == "aws":
+                            # AWS NLB target registration and health checks can take longer.
+                            propagation_wait_seconds = 60
+                            max_attempts = 12
+                            retry_delay_seconds = 10
+                            connect_timeout_seconds = 12
+
+                        print(
+                            f"  Waiting {propagation_wait_seconds}s for ingress rules and LB target health to propagate..."
+                        )
+                        time.sleep(propagation_wait_seconds)
 
                         # Try up to 5 times with 10s spacing — curl from localhost, not from master
                         import subprocess as _sp
                         curl_cmd = [
-                            "curl", "-sv", "--connect-timeout", "10",
-                            f"http://{lb_public_ip}/",
+                            "curl", "-sv", "--connect-timeout", str(connect_timeout_seconds),
+                            f"http://{lb_public_endpoint}/",
                         ]
                         print(f"  [dim]$ {' '.join(curl_cmd)}[/dim]")
 
                         curl_ok = False
-                        for attempt in range(1, 6):
+                        for attempt in range(1, max_attempts + 1):
                             try:
                                 curl_result = _sp.run(
                                     curl_cmd,
@@ -317,9 +349,12 @@ EOF
                                         if vline.startswith("* ") and ("connect" in vline.lower() or "refused" in vline.lower() or "timed out" in vline.lower()):
                                             detail = f" ({vline.strip('* ').strip()})"
                                             break
-                                print(f"  Attempt {attempt}: HTTP {http_code or 'timeout'}{detail} — retrying in 10s...")
-                                if attempt < 5:
-                                    time.sleep(10)
+                                print(
+                                    f"  Attempt {attempt}/{max_attempts}: HTTP {http_code or 'timeout'}{detail} "
+                                    f"— retrying in {retry_delay_seconds}s..."
+                                )
+                                if attempt < max_attempts:
+                                    time.sleep(retry_delay_seconds)
 
                         if curl_ok:
                             print("\n  [green]Ingress LB: PASSED[/green]")
@@ -377,8 +412,23 @@ EOF
                                 resolved_ip = dig_result.stdout.strip().split("\n")[0] if dig_result.stdout.strip() else ""
                                 if resolved_ip:
                                     print(f"  DNS resolves {run_host} → [cyan]{resolved_ip}[/cyan]")
-                                    if resolved_ip != lb_public_ip:
-                                        print(f"  [yellow]Warning: DNS resolves to {resolved_ip}, but LB IP is {lb_public_ip}[/yellow]")
+                                    expected_ips = {lb_public_endpoint}
+                                    if "." in lb_public_endpoint and not lb_public_endpoint.replace(".", "").isdigit():
+                                        try:
+                                            endpoint_ip_lines = _sp2.run(
+                                                ["dig", "+short", lb_public_endpoint],
+                                                capture_output=True,
+                                                text=True,
+                                                timeout=10,
+                                            ).stdout.strip().split("\n")
+                                            expected_ips = {ip for ip in endpoint_ip_lines if ip}
+                                        except Exception:
+                                            expected_ips = set()
+                                    if expected_ips and resolved_ip not in expected_ips:
+                                        print(
+                                            f"  [yellow]Warning: DNS resolves to {resolved_ip}, "
+                                            f"but LB endpoint currently resolves to {', '.join(sorted(expected_ips))}[/yellow]"
+                                        )
                                 else:
                                     print(f"  [yellow]DNS does not resolve {run_host} — check your DNS A record.[/yellow]")
                             except Exception:
@@ -444,7 +494,7 @@ EOF
                                 print(f"\n  [green]DNS Ingress ({run_host}): PASSED[/green]")
                             else:
                                 print(f"\n  [yellow]DNS Ingress ({run_host}): FAILED — DNS may not be configured yet.[/yellow]")
-                                print(f"  [dim]Ensure your DNS A record points {run_host} → {lb_public_ip}[/dim]")
+                                print(f"  [dim]Ensure your DNS record points {run_host} → {lb_public_endpoint}[/dim]")
                                 # Don't fail the overall test — DNS might not be configured yet
 
                 except Exception as e:
@@ -461,6 +511,8 @@ EOF
                             check=False,
                         )
                         print("  Ingress cleanup done.")
+            else:
+                ingress_passed = False
 
         # =====================================================================
         # Section 2: CRIU Checkpoint / Restore
@@ -558,10 +610,23 @@ EOF
             )
             node_internal_ip = result.stdout.strip().strip("'")
 
-            # Match to a worker by name
+            # Match to a worker by name / hostname.
             worker = next((w for w in workers if w["name"].lower() == node_name.lower()), None)
             if not worker:
                 worker = next((w for w in workers if node_name in w["name"] or w["name"] in node_name), None)
+            if not worker and cloud == "aws":
+                for candidate in workers:
+                    host_res = _ssh_cmd(
+                        candidate["ip"],
+                        resolved_user,
+                        key_path,
+                        "hostname -s 2>/dev/null || hostname 2>/dev/null || true",
+                        check=False,
+                    )
+                    candidate_host = (host_res.stdout or "").strip().lower()
+                    if candidate_host and candidate_host == node_name.lower():
+                        worker = candidate
+                        break
             if not worker:
                 print(f"[red]Could not match node '{node_name}' to any worker VM.[/red]")
                 print(f"  Workers: {[w['name'] for w in workers]}")
@@ -886,7 +951,7 @@ spec:
             summary_lines.append("[dim]Ingress LB: SKIPPED (no ingress controller)[/dim]")
         elif ingress_passed:
             summary_lines.append(f"[green]Ingress LB: PASSED[/green]")
-            summary_lines.append(f"  LB IP: {lb_public_ip}")
+            summary_lines.append(f"  LB Endpoint: {lb_public_endpoint}")
             summary_lines.append(f"  HTTP 200 from localhost via {ingress_type} ingress → nginx backend")
         else:
             summary_lines.append(f"[red]Ingress LB: FAILED[/red]")
