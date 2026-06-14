@@ -54,6 +54,7 @@ def register(kubeadm_app: typer.Typer):
 
             metadata = _load_cluster_metadata(name) or {}
             aws_region = str(metadata.get("region") or "").strip() or None
+            failures: list[str] = []
 
             vms = list_aws_vms(region=aws_region)
             master_prefix = f"{name}-master"
@@ -63,10 +64,12 @@ def register(kubeadm_app: typer.Typer):
                 or vm["name"].startswith(f"{master_prefix}-")
                 or vm["name"].startswith(f"{name}-node-")
             ]
-            if not cluster_vms:
+
+            has_networking = bool(metadata.get("networking"))
+            if not cluster_vms and not has_networking:
                 region_hint = aws_region or "current-default"
                 typer.echo(
-                    f"No VMs found for cluster '{name}' in AWS region '{region_hint}'.",
+                    f"No VMs found for cluster '{name}' in AWS region '{region_hint}' and no networking metadata to clean up.",
                     err=True,
                 )
                 raise typer.Exit(1)
@@ -86,6 +89,8 @@ def register(kubeadm_app: typer.Typer):
 
             print("\n[bold]Terminating EC2 instances...[/bold]")
             terminated_ids: list[str] = []
+            if not cluster_vms:
+                print("  [dim]No EC2 instances found for this cluster; continuing with networking cleanup.[/dim]")
             for vm in cluster_vms:
                 try:
                     terminate_aws_vm(vm["id"], region=aws_region or vm.get("region"))
@@ -93,12 +98,14 @@ def register(kubeadm_app: typer.Typer):
                     print(f"  [green]Terminated: {vm['name']} ({vm['id']})[/green]")
                 except Exception as e:
                     print(f"  [red]Failed to terminate {vm['name']}: {e}[/red]")
+                    failures.append(f"terminate:{vm['id']}")
 
             if terminated_ids:
                 try:
                     wait_aws_instances_terminated(terminated_ids, region=aws_region)
                 except Exception as e:
                     print(f"  [yellow]Instance termination waiter did not fully complete: {e}[/yellow]")
+                    failures.append("waiter:instance_terminated")
 
             if metadata.get("networking"):
                 print("[bold]Deleting VPC networking...[/bold]")
@@ -114,6 +121,14 @@ def register(kubeadm_app: typer.Typer):
                     print("  [green]Deleted AWS networking resources.[/green]")
                 except Exception as e:
                     print(f"  [yellow]Could not fully delete networking resources: {e}[/yellow]")
+                    failures.append("networking")
+
+            if failures:
+                print(
+                    f"\n[yellow]Cluster '{name}' termination is incomplete ({len(failures)} failure(s)).[/yellow]"
+                )
+                print("[yellow]Keeping local kubeadm files/metadata so you can retry termination.[/yellow]")
+                raise typer.Exit(1)
 
             cluster_folder = kubeadm_cluster_folder(name)
             if cluster_folder.exists():

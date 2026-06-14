@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 
 from typing import Optional
 
@@ -563,6 +564,43 @@ def delete_aws_kubeadm_network(
     """Delete kubeadm network resources in reverse dependency order."""
     ec2 = _client("ec2", region=region)
 
+    def _cleanup_vpc_public_addresses() -> None:
+        # Release Elastic IPs still allocated in this VPC.
+        addresses = ec2.describe_addresses().get("Addresses", [])
+        for address in addresses:
+            allocation_id = address.get("AllocationId")
+            network_interface_id = address.get("NetworkInterfaceId")
+            association_id = address.get("AssociationId")
+            if not allocation_id:
+                continue
+            if network_interface_id:
+                try:
+                    eni = ec2.describe_network_interfaces(NetworkInterfaceIds=[network_interface_id]).get(
+                        "NetworkInterfaces", []
+                    )
+                except ClientError:
+                    eni = []
+                if not eni or eni[0].get("VpcId") != vpc_id:
+                    continue
+            if association_id:
+                try:
+                    ec2.disassociate_address(AssociationId=association_id)
+                except ClientError:
+                    pass
+            try:
+                ec2.release_address(AllocationId=allocation_id)
+            except ClientError:
+                pass
+
+    def _has_mapped_public_addresses() -> bool:
+        # Any ENI in the VPC with a public association can block IGW detachment.
+        enis = ec2.describe_network_interfaces(
+            Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+            ]
+        ).get("NetworkInterfaces", [])
+        return any((eni.get("Association") or {}).get("PublicIp") for eni in enis)
+
     # Delete route table associations (except main)
     route_table = ec2.describe_route_tables(RouteTableIds=[route_table_id])["RouteTables"][0]
     for assoc in route_table.get("Associations", []):
@@ -571,8 +609,40 @@ def delete_aws_kubeadm_network(
             ec2.disassociate_route_table(AssociationId=assoc_id)
 
     ec2.delete_route_table(RouteTableId=route_table_id)
-    ec2.delete_security_group(GroupId=security_group_id)
-    ec2.detach_internet_gateway(InternetGatewayId=internet_gateway_id, VpcId=vpc_id)
+
+    # Security group and IGW detach can race with ENI/public-IP cleanup right after instance termination.
+    for attempt in range(1, 13):
+        try:
+            ec2.delete_security_group(GroupId=security_group_id)
+            break
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "DependencyViolation":
+                raise
+            print(
+                f"  AWS teardown: security group still in use (attempt {attempt}/12); retrying in 5s..."
+            )
+            time.sleep(5)
+
+    _cleanup_vpc_public_addresses()
+    for attempt in range(1, 19):
+        try:
+            ec2.detach_internet_gateway(InternetGatewayId=internet_gateway_id, VpcId=vpc_id)
+            break
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "DependencyViolation":
+                raise
+            _cleanup_vpc_public_addresses()
+            if not _has_mapped_public_addresses():
+                print(
+                    f"  AWS teardown: waiting for ENI/public-IP propagation before IGW detach (attempt {attempt}/18)..."
+                )
+                time.sleep(3)
+            else:
+                print(
+                    f"  AWS teardown: mapped public addresses still present in VPC (attempt {attempt}/18); retrying in 5s..."
+                )
+                time.sleep(5)
+
     ec2.delete_internet_gateway(InternetGatewayId=internet_gateway_id)
     ec2.delete_subnet(SubnetId=subnet_id)
     ec2.delete_vpc(VpcId=vpc_id)

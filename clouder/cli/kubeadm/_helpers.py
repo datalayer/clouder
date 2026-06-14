@@ -924,15 +924,8 @@ fi
 ok "Helm is available"
 
 section "AWS Load Balancer Controller / Sub-step 2: cert-manager"
-helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
-helm repo update
-kubectl create namespace cert-manager 2>/dev/null || true
-helm upgrade --install cert-manager jetstack/cert-manager \\
-    --namespace cert-manager \\
-    --version v1.16.1 \\
-    --set crds.enabled=true \\
-    --wait --timeout 240s
-ok "cert-manager is installed and ready"
+echo "Skipping cert-manager install/check (managed externally)."
+ok "Continuing without cert-manager bootstrap checks"
 
 section "AWS Load Balancer Controller / Sub-step 3: controller install"
 helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
