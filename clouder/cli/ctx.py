@@ -16,6 +16,60 @@ ctx_app = typer.Typer(no_args_is_help=True)
 DEFAULT_BOX_SEPARATOR = ":::"
 
 
+def _new_context_template() -> dict:
+    """Return a default context payload."""
+    return {
+        "clouder": {
+            "version": "1.0.0",
+            "default_context": "",
+            "current_context": "",
+            "contexts": {
+                "ovh": {},
+                "azure": {},
+                "aws": {},
+            },
+        },
+    }
+
+
+def _ensure_context_shape(context: dict | None) -> dict:
+    """Ensure expected keys exist in a context payload."""
+    if not context:
+        return _new_context_template()
+    clouder = context.setdefault("clouder", {})
+    clouder.setdefault("version", "1.0.0")
+    clouder.setdefault("default_context", "")
+    clouder.setdefault("current_context", "")
+    contexts = clouder.setdefault("contexts", {})
+    contexts.setdefault("ovh", {})
+    contexts.setdefault("azure", {})
+    contexts.setdefault("aws", {})
+    return context
+
+
+def _sync_discovered_contexts(context: dict, cloud: str, discovered: dict[str, str]) -> tuple[int, int, int]:
+    """Create/update discovered cloud contexts and return (created, updated, unchanged)."""
+    cloud_contexts = context["clouder"]["contexts"].setdefault(cloud, {})
+    created = 0
+    updated = 0
+    unchanged = 0
+
+    for context_id, name in discovered.items():
+        existing = cloud_contexts.get(context_id)
+        if not existing:
+            cloud_contexts[context_id] = {"name": name}
+            created += 1
+            continue
+
+        if existing.get("name") != name:
+            cloud_contexts[context_id]["name"] = name
+            updated += 1
+        else:
+            unchanged += 1
+
+    return (created, updated, unchanged)
+
+
 def load_context():
     """Load the clouder context from file."""
     if not CLOUDER_CONTEXT_FILE.is_file():
@@ -161,6 +215,53 @@ clouder:
         clouder["clouder"]["contexts"]["aws"] = {}
     save_context(clouder)
     context = load_context()
+    print_context(context)
+
+
+@ctx_app.command("sync")
+def ctx_sync():
+    """Discover Azure/AWS contexts and create or update local entries."""
+    context = load_context() if CLOUDER_CONTEXT_FILE.is_file() else _new_context_template()
+    context = _ensure_context_shape(context)
+
+    provider_summaries: list[tuple[str, int, int, int]] = []
+    discovered_any = False
+
+    try:
+        from ..cloud.azure.api import list_azure_subscriptions
+
+        subscriptions = list_azure_subscriptions()
+        discovered = {sub["id"]: sub["name"] for sub in subscriptions}
+        created, updated, unchanged = _sync_discovered_contexts(context, "azure", discovered)
+        provider_summaries.append(("azure", created, updated, unchanged))
+        if discovered:
+            discovered_any = True
+    except Exception:
+        typer.echo("Could not fetch Azure subscriptions (skipping).", err=True)
+
+    try:
+        from ..cloud.aws.api import list_aws_accounts
+
+        accounts = list_aws_accounts()
+        discovered = {account["id"]: account["name"] for account in accounts}
+        created, updated, unchanged = _sync_discovered_contexts(context, "aws", discovered)
+        provider_summaries.append(("aws", created, updated, unchanged))
+        if discovered:
+            discovered_any = True
+    except Exception:
+        typer.echo("Could not fetch AWS account (skipping).", err=True)
+
+    save_context(context)
+
+    if provider_summaries:
+        for cloud, created, updated, unchanged in provider_summaries:
+            typer.echo(
+                f"Synced {cloud}: {created} created, {updated} updated, {unchanged} unchanged."
+            )
+
+    if not discovered_any:
+        typer.echo("No Azure or AWS contexts discovered.", err=True)
+
     print_context(context)
 
 

@@ -118,6 +118,7 @@ clouder azure vm-ls
 ```bash
 # Initialize and select context
 clouder ctx init
+clouder ctx sync
 clouder ctx set azure <SUBSCRIPTION_ID>
 
 # Create VM set (1 master + 3 workers by default)
@@ -194,6 +195,7 @@ clouder aws vm-ls --region us-east-1
 ```bash
 # Initialize and select context
 clouder ctx init
+clouder ctx sync
 clouder ctx set aws <AWS_ACCOUNT_ID>
 
 # Create VM set (1 master + 3 workers by default)
@@ -228,6 +230,7 @@ clouder --help
 
 ```bash
 clouder ctx init
+clouder ctx sync
 clouder ctx ls
 clouder ctx show
 
