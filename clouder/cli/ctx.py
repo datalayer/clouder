@@ -47,22 +47,43 @@ def _ensure_context_shape(context: dict | None) -> dict:
     return context
 
 
-def _sync_discovered_contexts(context: dict, cloud: str, discovered: dict[str, str]) -> tuple[int, int, int]:
-    """Create/update discovered cloud contexts and return (created, updated, unchanged)."""
+def _sync_discovered_contexts(
+    context: dict,
+    cloud: str,
+    discovered: dict[str, dict[str, str]],
+) -> tuple[int, int, int]:
+    """Upsert discovered contexts and return (created, updated, unchanged).
+
+    Only discovered context IDs are touched. Existing non-discovered entries are
+    preserved as-is.
+    """
     cloud_contexts = context["clouder"]["contexts"].setdefault(cloud, {})
     created = 0
     updated = 0
     unchanged = 0
 
-    for context_id, name in discovered.items():
+    for context_id, discovered_entry in discovered.items():
+        normalized_entry = {"name": str(discovered_entry.get("name") or context_id)}
+        for key, value in discovered_entry.items():
+            if key == "name":
+                continue
+            if value in (None, ""):
+                continue
+            normalized_entry[key] = str(value)
+
         existing = cloud_contexts.get(context_id)
         if not existing:
-            cloud_contexts[context_id] = {"name": name}
+            cloud_contexts[context_id] = normalized_entry
             created += 1
             continue
 
-        if existing.get("name") != name:
-            cloud_contexts[context_id]["name"] = name
+        entry_changed = False
+        for key, value in normalized_entry.items():
+            if existing.get(key) != value:
+                existing[key] = value
+                entry_changed = True
+
+        if entry_changed:
             updated += 1
         else:
             unchanged += 1
@@ -220,7 +241,7 @@ clouder:
 
 @ctx_app.command("sync")
 def ctx_sync():
-    """Discover Azure/AWS contexts and create or update local entries."""
+    """Discover OVH/Azure/AWS contexts and create or update local entries."""
     context = load_context() if CLOUDER_CONTEXT_FILE.is_file() else _new_context_template()
     context = _ensure_context_shape(context)
 
@@ -228,10 +249,35 @@ def ctx_sync():
     discovered_any = False
 
     try:
+        project_ids = get_ovh_projects()
+        discovered = {}
+        for project_id in project_ids:
+            project = get_ovh_project(project_id)
+            iam = project.get("iam") or {}
+            discovered[project["project_id"]] = {
+                "name": project.get("description") or project["project_id"],
+                "iam_id": iam.get("id") or "",
+                "iam_urn": iam.get("urn") or "",
+            }
+        created, updated, unchanged = _sync_discovered_contexts(context, "ovh", discovered)
+        provider_summaries.append(("ovh", created, updated, unchanged))
+        if discovered:
+            discovered_any = True
+    except Exception:
+        typer.echo("Could not fetch OVH projects (skipping).", err=True)
+
+    try:
         from ..cloud.azure.api import list_azure_subscriptions
 
         subscriptions = list_azure_subscriptions()
-        discovered = {sub["id"]: sub["name"] for sub in subscriptions}
+        discovered = {
+            sub["id"]: {
+                "name": sub["name"],
+                "state": sub.get("state", ""),
+                "tenant_id": sub.get("tenant_id", ""),
+            }
+            for sub in subscriptions
+        }
         created, updated, unchanged = _sync_discovered_contexts(context, "azure", discovered)
         provider_summaries.append(("azure", created, updated, unchanged))
         if discovered:
@@ -243,7 +289,13 @@ def ctx_sync():
         from ..cloud.aws.api import list_aws_accounts
 
         accounts = list_aws_accounts()
-        discovered = {account["id"]: account["name"] for account in accounts}
+        discovered = {
+            account["id"]: {
+                "name": account["name"],
+                "arn": account["name"],
+            }
+            for account in accounts
+        }
         created, updated, unchanged = _sync_discovered_contexts(context, "aws", discovered)
         provider_summaries.append(("aws", created, updated, unchanged))
         if discovered:
@@ -260,14 +312,18 @@ def ctx_sync():
             )
 
     if not discovered_any:
-        typer.echo("No Azure or AWS contexts discovered.", err=True)
+        typer.echo("No OVH, Azure, or AWS contexts discovered.", err=True)
 
-    print_context(context)
+    ctx_list()
 
 
 @ctx_app.command("ls")
 def ctx_list():
-    """List available cloud contexts/projects."""
+    """List persisted cloud contexts in a single merged table.
+
+    Data comes from local context file entries discovered/updated by
+    `clouder ctx sync` (or manually set entries).
+    """
     # Print the current context first
     try:
         (cloud, context_id) = get_current_context()
@@ -275,79 +331,59 @@ def ctx_list():
     except SystemExit:
         print("[dim]No current context set.[/dim]\n")
 
-    found_any = False
+    context = _ensure_context_shape(load_context())
+    current = context["clouder"].get("current_context") or context["clouder"].get("default_context", "")
+    contexts = context["clouder"].get("contexts", {})
 
-    # --- OVH ---
-    try:
-        contexts = get_ovh_projects()
-        table = Table(title="OVHcloud Projects")
-        table.add_column("Cloud", justify="left", style="cyan")
-        table.add_column("Context ID (Project)", justify="left", style="cyan")
-        table.add_column("Name", justify="left", style="green")
-        table.add_column("IAM ID", justify="left", style="purple")
-        table.add_column("IAM URN", justify="left", style="purple")
-        for context_id in contexts:
-            context = get_ovh_project(context_id)
-            iam = context["iam"]
-            table.add_row(
-                "ovh",
-                context["project_id"],
-                context["description"],
-                iam["id"],
-                iam["urn"],
-            )
-        print(table)
-        found_any = True
-    except Exception:
-        pass  # OVH not configured, skip silently
+    table = Table(title="Clouder Contexts")
+    table.add_column("Cloud", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Context ID", justify="left", style="green")
+    table.add_column("Name", justify="left", style="green")
+    table.add_column("Details", justify="left", style="yellow")
+    table.add_column("Current", justify="center", style="green")
 
-    # --- Azure ---
-    try:
-        from ..cloud.azure.api import list_azure_subscriptions
-        subs = list_azure_subscriptions()
-        if subs:
-            table = Table(title="Azure Subscriptions")
-            table.add_column("Cloud", justify="left", style="cyan")
-            table.add_column("Context ID (Subscription)", justify="left", style="cyan")
-            table.add_column("Name", justify="left", style="green")
-            table.add_column("State", justify="left", style="yellow")
-            table.add_column("Tenant ID", justify="left", style="purple")
-            for sub in subs:
-                table.add_row(
-                    "azure",
-                    sub["id"],
-                    sub["name"],
-                    sub["state"],
-                    sub.get("tenant_id", ""),
-                )
-            print(table)
-            found_any = True
-    except Exception:
-        pass  # Azure not configured, skip silently
+    rows_added = 0
+    for cloud_name in ("ovh", "azure", "aws"):
+        cloud_contexts = contexts.get(cloud_name, {}) or {}
+        for context_id in sorted(cloud_contexts.keys()):
+            entry = cloud_contexts.get(context_id, {}) or {}
+            name = str(entry.get("name") or context_id)
 
-    # --- AWS ---
-    try:
-        from ..cloud.aws.api import list_aws_accounts
-        accounts = list_aws_accounts()
-        if accounts:
-            table = Table(title="AWS Accounts")
-            table.add_column("Cloud", justify="left", style="cyan")
-            table.add_column("Context ID (Account)", justify="left", style="cyan")
-            table.add_column("Name", justify="left", style="green")
-            for account in accounts:
-                table.add_row(
-                    "aws",
-                    account["id"],
-                    account["name"],
-                )
-            print(table)
-            found_any = True
-    except Exception:
-        pass  # AWS not configured, skip silently
+            details = ""
+            if cloud_name == "ovh":
+                iam_id = str(entry.get("iam_id") or "")
+                iam_urn = str(entry.get("iam_urn") or "")
+                detail_parts = []
+                if iam_id:
+                    detail_parts.append(f"iam_id={iam_id}")
+                if iam_urn:
+                    detail_parts.append(f"iam_urn={iam_urn}")
+                details = ", ".join(detail_parts) if detail_parts else "-"
+            elif cloud_name == "azure":
+                state = str(entry.get("state") or "")
+                tenant_id = str(entry.get("tenant_id") or "")
+                detail_parts = []
+                if state:
+                    detail_parts.append(f"state={state}")
+                if tenant_id:
+                    detail_parts.append(f"tenant={tenant_id}")
+                details = ", ".join(detail_parts) if detail_parts else "-"
+            elif cloud_name == "aws":
+                arn = str(entry.get("arn") or "")
+                details = f"arn={arn}" if arn else "-"
 
-    if not found_any:
-        typer.echo("No cloud providers configured. Configure AWS credentials, run `clouder azure configure`, or configure OVH.", err=True)
+            current_flag = "*" if current == f"{cloud_name}{DEFAULT_BOX_SEPARATOR}{context_id}" else ""
+            table.add_row(cloud_name, context_id, name, details, current_flag)
+            rows_added += 1
+
+    if rows_added == 0:
+        typer.echo(
+            "No contexts found. Run `clouder ctx sync` to discover OVH/Azure/AWS contexts.",
+            err=True,
+        )
         raise typer.Exit(1)
+
+    print(table)
 
 
 @ctx_app.command("show")

@@ -507,6 +507,29 @@ def azure_vm_delete(
     print(f"[green]VM '{name}' deleted (with disks, NIC, IP).[/green]")
 
 
+@azure_app.command("vm-ssh")
+def azure_vm_ssh(
+    vm_name: str = typer.Argument(..., help="Name of the Azure VM to SSH into."),
+    user: Optional[str] = typer.Option(None, "--user", "-u", help="SSH username."),
+    key: Optional[str] = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
+    port: int = typer.Option(22, "--port", "-p", help="SSH port."),
+    command: Optional[str] = typer.Option(None, "--command", "-c", help="Command to run on the remote host (non-interactive)."),
+):
+    """SSH into an Azure VM by name (same behavior as `clouder ssh`)."""
+    from .ssh import ssh_to_vm
+
+    sub_id = _ensure_azure_configured()
+    ssh_to_vm(
+        vm_name=vm_name,
+        user=user,
+        key=key,
+        port=port,
+        command=command,
+        cloud="azure",
+        context_id=sub_id,
+    )
+
+
 @azure_app.command("resource-groups")
 def azure_resource_groups():
     """List Azure resource groups."""

@@ -180,6 +180,14 @@ After `create`, Clouder persists cluster metadata to
 2. Region — only if creating a new resource group
 3. SSH key — pick existing or generate new
 
+**Recent cloud-specific create safeguards:**
+
+- AWS now validates the selected context account against the active AWS credentials before provisioning.
+- AWS create uses deterministic region scoping (defaults to `us-east-1` when `--region` is omitted).
+- AWS validates EC2 key pair selection in-region before provisioning starts.
+- AWS create rolls back VPC/subnet/route table/IGW/security group resources if VM creation fails mid-flight.
+- `--os-disk-size` is validated with a minimum of 30 GB before provisioning starts.
+
 ---
 
 ### `clouder kubeadm setup`
@@ -227,6 +235,12 @@ AWS storage setup prefers EC2 instance profiles on node VMs. If no instance prof
 On AWS, load balancer setup installs AWS Load Balancer Controller and expects node IAM permissions for ELB operations.
 :::
 
+AWS cloud integration details:
+
+- Storage: installs AWS EBS CSI and configures a default `gp3` StorageClass.
+- Load balancer: installs AWS Load Balancer Controller with cluster-aware settings.
+- Authentication preference: EC2 instance profile first, then fallback to active AWS credentials when needed.
+
 **Example:**
 
 ```bash
@@ -273,6 +287,23 @@ clouder kubeadm get-config my-cluster
 #     export KUBELET_CLIENT_KEY=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.key
 #     kubectl get nodes
 ```
+
+---
+
+### `clouder kubeadm terminate`
+
+Terminate all cluster resources for a kubeadm deployment.
+
+```bash
+clouder kubeadm terminate <name>
+```
+
+Cloud-specific behavior:
+
+- Azure: deletes VM-attached resources, load balancer artifacts, NSG/VNet, and optionally the resource group.
+- AWS: uses the cluster metadata region to discover and terminate EC2 instances, then tears down managed VPC networking resources.
+
+This ensures cleanup is scoped to the correct cloud primitives and avoids cross-region drift on AWS.
 
 ---
 

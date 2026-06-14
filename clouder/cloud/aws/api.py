@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from typing import Optional
@@ -103,6 +104,7 @@ def list_aws_vms(region: Optional[str] = None) -> list:
                     {
                         "id": instance.get("InstanceId", ""),
                         "name": name,
+                        "key_name": instance.get("KeyName", ""),
                         "instance_type": instance.get("InstanceType", ""),
                         "state": instance.get("State", {}).get("Name", ""),
                         "public_ip": instance.get("PublicIpAddress"),
@@ -344,3 +346,65 @@ def resolve_ubuntu_ami(region: Optional[str] = None) -> str:
     if not images:
         raise RuntimeError("No Ubuntu 22.04 AMI found in current region")
     return images[0]["ImageId"]
+
+
+def get_aws_ec2_ondemand_hourly_prices(region: str) -> dict[str, float]:
+    """Return On-Demand Linux shared hourly prices by EC2 instance type.
+
+    Uses AWS Pricing API and returns a mapping:
+      {"m7i.large": 0.1008, ...}
+    """
+    pricing = _client("pricing", region="us-east-1")
+
+    paginator = pricing.get_paginator("get_products")
+    pages = paginator.paginate(
+        ServiceCode="AmazonEC2",
+        Filters=[
+            {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
+            {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
+            {"Type": "TERM_MATCH", "Field": "preInstalledSw", "Value": "NA"},
+            {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
+            {"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
+            {"Type": "TERM_MATCH", "Field": "licenseModel", "Value": "No License required"},
+            {"Type": "TERM_MATCH", "Field": "productFamily", "Value": "Compute Instance"},
+        ],
+    )
+
+    prices: dict[str, float] = {}
+    for page in pages:
+        for raw in page.get("PriceList", []):
+            try:
+                entry = json.loads(raw)
+            except Exception:
+                continue
+
+            product = entry.get("product") or {}
+            attrs = product.get("attributes") or {}
+            instance_type = attrs.get("instanceType")
+            if not instance_type:
+                continue
+
+            terms = (entry.get("terms") or {}).get("OnDemand") or {}
+            for term in terms.values():
+                dims = term.get("priceDimensions") or {}
+                for dim in dims.values():
+                    if (dim.get("unit") or "") != "Hrs":
+                        continue
+                    description = str(dim.get("description") or "")
+                    # Keep actual instance usage dimensions and skip add-on/zero dimensions.
+                    if "Instance Hour" not in description and "BoxUsage" not in description:
+                        continue
+                    usd = ((dim.get("pricePerUnit") or {}).get("USD") or "").strip()
+                    if not usd:
+                        continue
+                    try:
+                        price = float(usd)
+                    except ValueError:
+                        continue
+                    if price <= 0:
+                        continue
+                    existing = prices.get(instance_type)
+                    if existing is None or price < existing:
+                        prices[instance_type] = price
+
+    return prices

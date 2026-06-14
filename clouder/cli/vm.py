@@ -7,9 +7,35 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
 from .ctx import get_current_context
-from ..util.utils import DEFAULT_REGION
+from ..util.utils import DEFAULT_REGION, SSH_FOLDER
 
 vm_app = typer.Typer(no_args_is_help=True)
+
+
+def _create_aws_key_pair_locally(ec2_client, key_name: str) -> str:
+    """Create an EC2 key pair and store private key under ~/.ssh.
+
+    Returns the local private key path.
+    """
+    SSH_FOLDER.mkdir(parents=True, exist_ok=True)
+    SSH_FOLDER.chmod(0o700)
+
+    response = ec2_client.create_key_pair(KeyName=key_name)
+    key_material = (response.get("KeyMaterial") or "").strip()
+    if not key_material:
+        raise RuntimeError("AWS did not return private key material for the new key pair.")
+
+    file_stem = key_name[:-4] if key_name.endswith(".pem") else key_name
+    key_path = SSH_FOLDER / f"{file_stem}.pem"
+    if key_path.exists():
+        suffix = 2
+        while (SSH_FOLDER / f"{file_stem}-{suffix}.pem").exists():
+            suffix += 1
+        key_path = SSH_FOLDER / f"{file_stem}-{suffix}.pem"
+
+    key_path.write_text(key_material + "\n")
+    key_path.chmod(0o600)
+    return str(key_path)
 
 
 @vm_app.callback(invoke_without_command=True)
@@ -81,17 +107,42 @@ def _create_aws_vm(name: str, region: str | None, vm_size: str | None):
 
     # Key pair selection
     key_pairs = ec2.describe_key_pairs().get("KeyPairs", [])
+    key_pair_names = {kp.get("KeyName", "") for kp in key_pairs}
     if not key_pairs:
-        typer.echo("No EC2 key pair found in region. Create one first: aws ec2 create-key-pair ...", err=True)
-        raise typer.Exit(1)
-    print("\n[bold]AWS EC2 key pairs:[/bold]")
-    for i, kp in enumerate(key_pairs, 1):
-        typer.echo(f"  {i}. {kp['KeyName']}")
-    choice = Prompt.ask("Select key pair number or type key name", default="1")
-    if choice.isdigit() and 1 <= int(choice) <= len(key_pairs):
-        key_name = key_pairs[int(choice) - 1]["KeyName"]
+        proposed_key_name = f"{name}-key"
+        print("\n[yellow]No EC2 key pair found in this region.[/yellow]")
+        key_name = Prompt.ask("Key pair name to create", default=proposed_key_name)
+        if not Confirm.ask(f"Create EC2 key pair '{key_name}' and save private key locally?", default=True):
+            raise typer.Abort()
+        try:
+            local_key_path = _create_aws_key_pair_locally(ec2, key_name)
+            print(f"[green]Created EC2 key pair '{key_name}'.[/green]")
+            print(f"[green]Private key saved:[/green] {local_key_path}")
+        except Exception as exc:
+            typer.echo(f"Failed to create EC2 key pair '{key_name}': {exc}", err=True)
+            raise typer.Exit(1)
     else:
-        key_name = choice
+        print("\n[bold]AWS EC2 key pairs:[/bold]")
+        for i, kp in enumerate(key_pairs, 1):
+            typer.echo(f"  {i}. {kp['KeyName']}")
+        choice = Prompt.ask("Select key pair number or type key name", default="1")
+        if choice.isdigit() and 1 <= int(choice) <= len(key_pairs):
+            key_name = key_pairs[int(choice) - 1]["KeyName"]
+        else:
+            key_name = choice
+
+        if key_name not in key_pair_names:
+            print(f"\n[yellow]EC2 key pair '{key_name}' does not exist in {region}.[/yellow]")
+            if Confirm.ask(f"Create EC2 key pair '{key_name}' and save private key locally?", default=True):
+                try:
+                    local_key_path = _create_aws_key_pair_locally(ec2, key_name)
+                    print(f"[green]Created EC2 key pair '{key_name}'.[/green]")
+                    print(f"[green]Private key saved:[/green] {local_key_path}")
+                except Exception as exc:
+                    typer.echo(f"Failed to create EC2 key pair '{key_name}': {exc}", err=True)
+                    raise typer.Exit(1)
+            else:
+                raise typer.Abort()
 
     # Networking: default VPC + first subnet
     vpcs = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}]).get("Vpcs", [])

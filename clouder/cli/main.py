@@ -17,6 +17,7 @@ from .kubectl import kubectl_command
 from .helm import helm_command
 from .azure import azure_app
 from .aws import aws_app
+from .ovh import ovh_app
 from .cost import cost_app
 from .criu import criu_app
 from .completion import completion_app
@@ -42,6 +43,7 @@ app.add_typer(kubeadm_app, name="kubeadm", help="Provision and setup kubeadm Kub
 app.add_typer(kubeadm_app, name="k", help="Alias for kubeadm commands.")
 app.add_typer(azure_app, name="azure", help="Azure cloud operations.")
 app.add_typer(aws_app, name="aws", help="AWS cloud operations.")
+app.add_typer(ovh_app, name="ovh", help="OVHcloud operations.")
 app.add_typer(criu_app, name="criu", help="CRIU checkpoint visibility and configuration.")
 app.add_typer(cost_app, name="cost", help="Pricing and cost helpers.")
 app.add_typer(completion_app, name="completion", help="Manage shell autocompletion setup.")

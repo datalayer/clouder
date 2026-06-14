@@ -10,6 +10,7 @@ from rich.table import Table
 
 from ..cloud.aws.api import (
     _client,
+    get_aws_ec2_ondemand_hourly_prices,
     get_aws_identity,
     list_aws_regions,
     list_aws_vms,
@@ -104,6 +105,7 @@ def aws_vm_sizes(
     ec2 = _client("ec2", region=region)
     resolved_region = ec2.meta.region_name
     paginator = ec2.get_paginator("describe_instance_types")
+    hourly_prices = get_aws_ec2_ondemand_hourly_prices(resolved_region)
 
     rows: list[dict] = []
     for page in paginator.paginate(
@@ -146,6 +148,7 @@ def aws_vm_sizes(
                     "family": item.get("InstanceType", "").split(".")[0],
                     "vcpus": int((item.get("VCpuInfo") or {}).get("DefaultVCpus") or 0),
                     "memory_gib": round(memory_mib / 1024, 2),
+                    "price_usd_hr": hourly_prices.get(item.get("InstanceType", "")),
                     "network": (item.get("NetworkInfo") or {}).get("NetworkPerformance") or "N/A",
                     "architecture": ",".join((item.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []) or "N/A",
                     "gpu_available": gpu_count > 0 or bool(accel_items),
@@ -154,16 +157,25 @@ def aws_vm_sizes(
                     "gpu_memory_gib": round(gpu_memory_mib / 1024, 2) if gpu_memory_mib > 0 else None,
                 }
             )
-        if len(rows) >= 150:
-            break
+    def _price_sort_value(value):
+        return value if isinstance(value, (int, float)) else float("inf")
 
-    rows = sorted(rows, key=lambda x: (x["vcpus"], x["memory_gib"], x["instance_type"]))[:100]
+    rows = sorted(
+        rows,
+        key=lambda x: (
+            _price_sort_value(x.get("price_usd_hr")),
+            x["vcpus"],
+            x["memory_gib"],
+            x["instance_type"],
+        ),
+    )
 
     table = Table(title=f"AWS Instance Types ({resolved_region})")
     table.add_column("Instance Type", justify="left", style="cyan")
     table.add_column("Family", justify="left", style="dim")
     table.add_column("vCPUs", justify="right", style="green")
     table.add_column("Memory (GiB)", justify="right", style="green")
+    table.add_column("Price (USD/hr)", justify="right", style="green")
     table.add_column("Network", justify="left", style="yellow")
     table.add_column("Arch", justify="left", style="dim")
     table.add_column("GPU", justify="center", style="magenta")
@@ -177,6 +189,7 @@ def aws_vm_sizes(
             row.get("family") or "N/A",
             str(row["vcpus"]),
             str(row["memory_gib"]),
+            f"{row['price_usd_hr']:.6f}" if isinstance(row.get("price_usd_hr"), (float, int)) else "N/A",
             row.get("network") or "N/A",
             row.get("architecture") or "N/A",
             "Yes" if row.get("gpu_available") else "No",
@@ -247,3 +260,27 @@ def aws_vm_delete(
 
     terminate_aws_vm(vm.get("id"), region=region or vm.get("region"))
     print(f"[green]VM '{name}' termination requested.[/green]")
+
+
+@aws_app.command("vm-ssh")
+def aws_vm_ssh(
+    vm_name: str = typer.Argument(..., help="Name of the AWS VM to SSH into."),
+    user: Optional[str] = typer.Option(None, "--user", "-u", help="SSH username."),
+    key: Optional[str] = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
+    port: int = typer.Option(22, "--port", "-p", help="SSH port."),
+    command: Optional[str] = typer.Option(None, "--command", "-c", help="Command to run on the remote host (non-interactive)."),
+):
+    """SSH into an AWS VM by name (same behavior as `clouder ssh`)."""
+    from .ssh import ssh_to_vm
+    from ..cloud.aws.api import get_aws_identity
+
+    account_id = str(get_aws_identity().get("account_id") or "")
+    ssh_to_vm(
+        vm_name=vm_name,
+        user=user,
+        key=key,
+        port=port,
+        command=command,
+        cloud="aws",
+        context_id=account_id,
+    )

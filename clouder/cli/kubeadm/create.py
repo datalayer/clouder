@@ -102,6 +102,10 @@ def register(kubeadm_app: typer.Typer):
         image: str | None = typer.Option(None, "--image", help="Image: Ubuntu2204, Ubuntu2404, Debian12."),
     ):
         """Create VMs for a kubeadm Kubernetes cluster (1 master + N workers on the same subnet)."""
+        if os_disk_size < 30:
+            typer.echo("--os-disk-size must be at least 30 GB.", err=True)
+            raise typer.Exit(1)
+
         (cloud, context_id) = resolve_kubeadm_cloud_context(cloud=cloud)
         if cloud not in {"azure", "aws"}:
             typer.echo("Kubeadm VM provisioning is currently supported for Azure and AWS.", err=True)
@@ -604,10 +608,17 @@ def _create_kubeadm_aws(
     for i, kp in enumerate(key_pairs, 1):
         typer.echo(f"  {i}. {kp['KeyName']}")
     choice = Prompt.ask("Select EC2 key pair number or type key name", default="1")
+    key_pair_names = {kp["KeyName"] for kp in key_pairs}
     if choice.isdigit() and 1 <= int(choice) <= len(key_pairs):
         ssh_key_name = key_pairs[int(choice) - 1]["KeyName"]
     else:
         ssh_key_name = choice
+    if ssh_key_name not in key_pair_names:
+        typer.echo(
+            f"EC2 key pair '{ssh_key_name}' was not found in region '{region}'.",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     vpc_cidr = "10.0.0.0/16"
     subnet_cidr = "10.0.0.0/24"
@@ -644,25 +655,45 @@ def _create_kubeadm_aws(
     )
 
     results = []
-    for role, vm_name, vm_type in [("master", master_name, master_size)] + [("node", wn, node_size) for wn in worker_names]:
-        typer.echo(f"\nCreating {role}: {vm_name} ({vm_type})...")
-        result = create_aws_vm(
-            vm_name=vm_name,
-            instance_type=vm_type,
-            key_name=ssh_key_name,
-            subnet_id=network["subnet_id"],
-            security_group_id=network["security_group_id"],
-            ami_id=ami_id,
-            root_volume_size_gb=os_disk_size_gb,
-            tags={
-                "datalayer.io/cluster": cluster_name,
-                "datalayer.io/role": role,
-                "datalayer.io/component": "kubeadm",
-            },
-            region=region,
-        )
-        typer.echo(f"  {role.capitalize()} created: {result['name']} - IP: {result.get('public_ip', 'N/A')}")
-        results.append((role, result))
+    try:
+        for role, vm_name, vm_type in [("master", master_name, master_size)] + [("node", wn, node_size) for wn in worker_names]:
+            typer.echo(f"\nCreating {role}: {vm_name} ({vm_type})...")
+            result = create_aws_vm(
+                vm_name=vm_name,
+                instance_type=vm_type,
+                key_name=ssh_key_name,
+                subnet_id=network["subnet_id"],
+                security_group_id=network["security_group_id"],
+                ami_id=ami_id,
+                root_volume_size_gb=os_disk_size_gb,
+                tags={
+                    "datalayer.io/cluster": cluster_name,
+                    "datalayer.io/role": role,
+                    "datalayer.io/component": "kubeadm",
+                },
+                region=region,
+            )
+            typer.echo(f"  {role.capitalize()} created: {result['name']} - IP: {result.get('public_ip', 'N/A')}")
+            results.append((role, result))
+    except Exception as exc:
+        print(f"[red]Failed while creating AWS kubeadm VMs: {exc}[/red]")
+        print("[yellow]Rolling back created AWS networking resources...[/yellow]")
+        try:
+            from ...cloud.aws.api import delete_aws_kubeadm_network
+
+            delete_aws_kubeadm_network(
+                vpc_id=network["vpc_id"],
+                subnet_id=network["subnet_id"],
+                internet_gateway_id=network["internet_gateway_id"],
+                route_table_id=network["route_table_id"],
+                security_group_id=network["security_group_id"],
+                region=region,
+            )
+            print("[green]AWS networking rollback complete.[/green]")
+        except Exception as rollback_exc:
+            print(f"[red]Rollback failed: {rollback_exc}[/red]")
+            print("[yellow]You may need to manually delete the partially created VPC resources.[/yellow]")
+        raise typer.Exit(1)
 
     table = Table(title=f"Kubeadm Cluster: {cluster_name} (AWS)")
     table.add_column("Role", style="bold")
