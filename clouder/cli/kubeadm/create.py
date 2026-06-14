@@ -585,7 +585,7 @@ def _create_kubeadm_azure(
     print(table)
 
     print(
-        Panel.fit(
+        Panel(
             f"[bold cyan]clouder kubeadm setup {cluster_name}[/bold cyan]",
             title="Next Step",
             border_style="yellow",
@@ -820,7 +820,7 @@ def _create_kubeadm_aws(
     print(table)
 
     print(
-        Panel.fit(
+        Panel(
             f"[bold cyan]clouder kubeadm setup {cluster_name}[/bold cyan]",
             title="Next Step",
             border_style="yellow",
