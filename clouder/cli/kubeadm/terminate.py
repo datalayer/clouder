@@ -45,7 +45,12 @@ def register(kubeadm_app: typer.Typer):
                 raise typer.Abort()
 
         if cloud == "aws":
-            from ...cloud.aws.api import delete_aws_kubeadm_network, list_aws_vms, terminate_aws_vm
+            from ...cloud.aws.api import (
+                delete_aws_kubeadm_network,
+                list_aws_vms,
+                terminate_aws_vm,
+                wait_aws_instances_terminated,
+            )
 
             metadata = _load_cluster_metadata(name) or {}
             aws_region = str(metadata.get("region") or "").strip() or None
@@ -80,12 +85,20 @@ def register(kubeadm_app: typer.Typer):
                 _require_cluster_name_confirmation()
 
             print("\n[bold]Terminating EC2 instances...[/bold]")
+            terminated_ids: list[str] = []
             for vm in cluster_vms:
                 try:
                     terminate_aws_vm(vm["id"], region=aws_region or vm.get("region"))
+                    terminated_ids.append(vm["id"])
                     print(f"  [green]Terminated: {vm['name']} ({vm['id']})[/green]")
                 except Exception as e:
                     print(f"  [red]Failed to terminate {vm['name']}: {e}[/red]")
+
+            if terminated_ids:
+                try:
+                    wait_aws_instances_terminated(terminated_ids, region=aws_region)
+                except Exception as e:
+                    print(f"  [yellow]Instance termination waiter did not fully complete: {e}[/yellow]")
 
             if metadata.get("networking"):
                 print("[bold]Deleting VPC networking...[/bold]")

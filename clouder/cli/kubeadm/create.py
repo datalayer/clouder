@@ -49,6 +49,29 @@ def _ensure_local_ssh_keypair(key_name: str, comment: str) -> tuple[str, str]:
     return key_name, pub_path.read_text().strip()
 
 
+def _create_aws_key_pair_locally(ec2_client, key_name: str) -> str:
+    """Create an EC2 key pair and save private key under ~/.ssh as .pem."""
+    SSH_FOLDER.mkdir(parents=True, exist_ok=True)
+    SSH_FOLDER.chmod(0o700)
+
+    response = ec2_client.create_key_pair(KeyName=key_name)
+    key_material = (response.get("KeyMaterial") or "").strip()
+    if not key_material:
+        raise RuntimeError("AWS did not return private key material for the new key pair.")
+
+    file_stem = key_name[:-4] if key_name.endswith(".pem") else key_name
+    key_path = SSH_FOLDER / f"{file_stem}.pem"
+    if key_path.exists():
+        suffix = 2
+        while (SSH_FOLDER / f"{file_stem}-{suffix}.pem").exists():
+            suffix += 1
+        key_path = SSH_FOLDER / f"{file_stem}-{suffix}.pem"
+
+    key_path.write_text(key_material + "\n")
+    key_path.chmod(0o600)
+    return str(key_path)
+
+
 def _build_name_with_slug(base_name: str, existing_names: set[str]) -> str:
     """Build a unique VM name by appending a short slug suffix."""
     for _ in range(16):
@@ -59,6 +82,47 @@ def _build_name_with_slug(base_name: str, existing_names: set[str]) -> str:
     candidate = f"{base_name}-{uuid.uuid4().hex[:8]}"
     existing_names.add(candidate)
     return candidate
+
+
+def _select_supported_aws_availability_zone(ec2_client, instance_types: list[str]) -> str | None:
+    """Return an AZ in the current region that supports all requested instance types."""
+    if not instance_types:
+        return None
+
+    az_response = ec2_client.describe_availability_zones(
+        Filters=[{"Name": "state", "Values": ["available"]}]
+    )
+    available_azs = {
+        az.get("ZoneName")
+        for az in az_response.get("AvailabilityZones", [])
+        if az.get("ZoneName") and az.get("ZoneType", "availability-zone") == "availability-zone"
+    }
+    if not available_azs:
+        return None
+
+    common_azs: set[str] | None = None
+    for instance_type in instance_types:
+        pager = ec2_client.get_paginator("describe_instance_type_offerings")
+        supported: set[str] = set()
+        for page in pager.paginate(
+            LocationType="availability-zone",
+            Filters=[
+                {"Name": "instance-type", "Values": [instance_type]},
+            ],
+        ):
+            for offering in page.get("InstanceTypeOfferings", []):
+                location = offering.get("Location")
+                if location in available_azs:
+                    supported.add(location)
+
+        if not supported:
+            return None
+
+        common_azs = supported if common_azs is None else (common_azs & supported)
+        if not common_azs:
+            return None
+
+    return sorted(common_azs)[0] if common_azs else None
 
 
 def _cluster_exists(cloud: str, context_id: str, cluster_name: str, region: str | None = None) -> bool:
@@ -590,35 +654,72 @@ def _create_kubeadm_aws(
     if not region:
         region = "us-east-1"
 
-    # AWS instance type defaults equivalent to Azure defaults
+    # AWS instance type selection
+    common_sizes = ["t3.large", "m5.xlarge", "m6i.xlarge"]
+
     if not master_size or master_size == "Standard_B4ms":
-        master_size = "t3.large"
+        print("\n[bold]Master instance type options:[/bold]")
+        for i, size_name in enumerate(common_sizes, 1):
+            default_suffix = " (default)" if size_name == "t3.large" else ""
+            typer.echo(f"  {i}. {size_name}{default_suffix}")
+        choice = Prompt.ask("Select master instance type number or type value", default="1")
+        if choice.isdigit() and 1 <= int(choice) <= len(common_sizes):
+            master_size = common_sizes[int(choice) - 1]
+        else:
+            master_size = choice
+
     if not node_size or node_size == "Standard_B4ms":
-        node_size = "t3.large"
+        print("\n[bold]Worker instance type options:[/bold]")
+        for i, size_name in enumerate(common_sizes, 1):
+            default_suffix = " (default)" if size_name == "t3.large" else ""
+            typer.echo(f"  {i}. {size_name}{default_suffix}")
+        choice = Prompt.ask("Select worker instance type number or type value", default="1")
+        if choice.isdigit() and 1 <= int(choice) <= len(common_sizes):
+            node_size = common_sizes[int(choice) - 1]
+        else:
+            node_size = choice
 
     ec2 = _client("ec2", region=region)
 
     # Key pair selection
     key_pairs = ec2.describe_key_pairs().get("KeyPairs", [])
-    if not key_pairs:
-        typer.echo("No EC2 key pair found in this region. Create one first with AWS CLI or console.", err=True)
-        raise typer.Exit(1)
-
-    print("\n[bold]AWS EC2 key pairs:[/bold]")
-    for i, kp in enumerate(key_pairs, 1):
-        typer.echo(f"  {i}. {kp['KeyName']}")
-    choice = Prompt.ask("Select EC2 key pair number or type key name", default="1")
     key_pair_names = {kp["KeyName"] for kp in key_pairs}
-    if choice.isdigit() and 1 <= int(choice) <= len(key_pairs):
-        ssh_key_name = key_pairs[int(choice) - 1]["KeyName"]
+
+    if not key_pairs:
+        default_key_name = f"{cluster_name}-key"
+        print("\n[yellow]No EC2 key pair found in this region.[/yellow]")
+        ssh_key_name = Prompt.ask("Key pair name to create", default=default_key_name)
+        if not Confirm.ask(f"Create EC2 key pair '{ssh_key_name}' and save private key locally?", default=True):
+            raise typer.Abort()
+        try:
+            local_key_path = _create_aws_key_pair_locally(ec2, ssh_key_name)
+            print(f"[green]Created EC2 key pair '{ssh_key_name}'.[/green]")
+            print(f"[green]Private key saved:[/green] {local_key_path}")
+        except Exception as exc:
+            typer.echo(f"Failed to create EC2 key pair '{ssh_key_name}': {exc}", err=True)
+            raise typer.Exit(1)
     else:
-        ssh_key_name = choice
-    if ssh_key_name not in key_pair_names:
-        typer.echo(
-            f"EC2 key pair '{ssh_key_name}' was not found in region '{region}'.",
-            err=True,
-        )
-        raise typer.Exit(1)
+        print("\n[bold]AWS EC2 key pairs:[/bold]")
+        for i, kp in enumerate(key_pairs, 1):
+            typer.echo(f"  {i}. {kp['KeyName']}")
+        choice = Prompt.ask("Select EC2 key pair number or type key name", default="1")
+        if choice.isdigit() and 1 <= int(choice) <= len(key_pairs):
+            ssh_key_name = key_pairs[int(choice) - 1]["KeyName"]
+        else:
+            ssh_key_name = choice
+
+        if ssh_key_name not in key_pair_names:
+            print(f"\n[yellow]EC2 key pair '{ssh_key_name}' was not found in region '{region}'.[/yellow]")
+            if Confirm.ask(f"Create EC2 key pair '{ssh_key_name}' and save private key locally?", default=True):
+                try:
+                    local_key_path = _create_aws_key_pair_locally(ec2, ssh_key_name)
+                    print(f"[green]Created EC2 key pair '{ssh_key_name}'.[/green]")
+                    print(f"[green]Private key saved:[/green] {local_key_path}")
+                except Exception as exc:
+                    typer.echo(f"Failed to create EC2 key pair '{ssh_key_name}': {exc}", err=True)
+                    raise typer.Exit(1)
+            else:
+                raise typer.Abort()
 
     vpc_cidr = "10.0.0.0/16"
     subnet_cidr = "10.0.0.0/24"
@@ -639,18 +740,31 @@ def _create_kubeadm_aws(
     typer.echo(f"  Subnet CIDR:    {subnet_cidr}")
     typer.echo(f"  Admin User:     {admin_username}")
     typer.echo(f"  EC2 Key Pair:   {ssh_key_name}")
-    typer.echo(f"  Masters:         {master_name} ({master_size})")
+    typer.echo(f"  Master:         {master_name} ({master_size})")
     for wn in worker_names:
         typer.echo(f"  Worker:         {wn} ({node_size})")
 
     if not Confirm.ask("\nProceed?", default=True):
         raise typer.Abort()
 
+    preferred_az = _select_supported_aws_availability_zone(
+        ec2,
+        [master_size, node_size],
+    )
+    if preferred_az:
+        typer.echo(f"Selected availability zone for subnet: {preferred_az}")
+    else:
+        typer.echo(
+            "Could not determine a common availability zone for selected instance types; using AWS default subnet placement.",
+            err=True,
+        )
+
     network = create_aws_kubeadm_network(
         cluster_name=cluster_name,
         vpc_cidr=vpc_cidr,
         subnet_cidr=subnet_cidr,
         allowed_ssh_cidrs=["0.0.0.0/0"],
+        availability_zone=preferred_az,
         region=region,
     )
 
@@ -750,6 +864,7 @@ def _create_kubeadm_aws(
         "networking": {
             "vpc_id": network["vpc_id"],
             "subnet_id": network["subnet_id"],
+            "subnet_availability_zone": network.get("subnet_availability_zone", ""),
             "security_group_id": network["security_group_id"],
             "internet_gateway_id": network["internet_gateway_id"],
             "route_table_id": network["route_table_id"],

@@ -212,6 +212,20 @@ def _resolve_ssh_key_for_cluster(cluster_name: str) -> str:
     cluster_key = SSH_FOLDER / f"{cluster_name}-key"
     if cluster_key.exists():
         return str(cluster_key)
+
+    # Try key names from cluster metadata (e.g. AWS key pairs often stored as *.pem locally)
+    metadata = _load_cluster_metadata(cluster_name) or {}
+    metadata_key = metadata.get("ssh_key_name")
+    if metadata_key:
+        metadata_candidates = [metadata_key]
+        if not metadata_key.endswith(".pem"):
+            metadata_candidates.append(f"{metadata_key}.pem")
+        for candidate in metadata_candidates:
+            candidate_path = SSH_FOLDER / candidate
+            if candidate_path.exists():
+                print(f"[dim]Using cluster SSH key: {candidate_path}[/dim]")
+                return str(candidate_path)
+
     # Try configured default key
     default_key = get_default_ssh_key()
     if default_key:

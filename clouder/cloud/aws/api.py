@@ -258,6 +258,19 @@ def terminate_aws_vm(instance_id: str, region: Optional[str] = None):
     ec2.terminate_instances(InstanceIds=[instance_id])
 
 
+def wait_aws_instances_terminated(instance_ids: list[str], region: Optional[str] = None):
+    """Wait until the given EC2 instances are terminated."""
+    if not instance_ids:
+        return
+
+    ec2 = _client("ec2", region=region)
+    waiter = ec2.get_waiter("instance_terminated")
+    wait_with_spinner(
+        lambda: waiter.wait(InstanceIds=instance_ids),
+        f"Waiting for {len(instance_ids)} EC2 instance(s) to terminate",
+    )
+
+
 def list_aws_albs_for_instance(instance_id: str, region: Optional[str] = None) -> list[dict]:
     """List ALBs associated to an EC2 instance via target groups in a region."""
     elbv2 = _client("elbv2", region=region)
@@ -380,6 +393,7 @@ def create_aws_kubeadm_network(
     vpc_cidr: str,
     subnet_cidr: str,
     allowed_ssh_cidrs: list[str],
+    availability_zone: Optional[str] = None,
     region: Optional[str] = None,
 ) -> dict:
     """Create VPC, subnet, IGW, route table, and SG for a kubeadm cluster."""
@@ -396,8 +410,16 @@ def create_aws_kubeadm_network(
         Tags=[{"Key": "Name", "Value": f"{cluster_name}-vpc"}],
     )
 
-    subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock=subnet_cidr)
+    subnet_kwargs = {
+        "VpcId": vpc_id,
+        "CidrBlock": subnet_cidr,
+    }
+    if availability_zone:
+        subnet_kwargs["AvailabilityZone"] = availability_zone
+
+    subnet = ec2.create_subnet(**subnet_kwargs)
     subnet_id = subnet["Subnet"]["SubnetId"]
+    subnet_az = subnet["Subnet"].get("AvailabilityZone", availability_zone or "")
 
     ec2.modify_subnet_attribute(SubnetId=subnet_id, MapPublicIpOnLaunch={"Value": True})
     ec2.create_tags(
@@ -450,6 +472,7 @@ def create_aws_kubeadm_network(
     return {
         "vpc_id": vpc_id,
         "subnet_id": subnet_id,
+        "subnet_availability_zone": subnet_az,
         "internet_gateway_id": igw_id,
         "route_table_id": route_table_id,
         "security_group_id": security_group_id,
