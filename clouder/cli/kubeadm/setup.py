@@ -1,5 +1,7 @@
 """Clouder CLI - kubeadm setup command."""
 
+import shlex
+
 import typer
 from rich import print
 from rich.panel import Panel
@@ -82,6 +84,26 @@ def _detect_kubernetes_node_name(worker_ip: str, ssh_user: str, key_path: str, f
     return detected or fallback
 
 
+def _set_remote_hostname(node_ip: str, ssh_user: str, key_path: str, desired_hostname: str) -> bool:
+    """Set the Linux hostname to the VM name before kubeadm registration.
+
+    kubelet uses the host hostname by default when registering the node. On AWS,
+    that defaults to internal DNS-style names like ip-10-0-0-x. We force the VM
+    name here so node names are stable and human-friendly.
+    """
+    safe_hostname = shlex.quote(desired_hostname)
+    rc = _ssh_cmd_stream(
+        node_ip,
+        ssh_user,
+        key_path,
+        (
+            f"sudo hostnamectl set-hostname {safe_hostname} && "
+            "hostname -s"
+        ),
+    )
+    return rc == 0
+
+
 def _print_node_ready_timeout_diagnostics(master_ip: str, ssh_user: str, key_path: str, node_name: str) -> None:
     """Print Kubernetes diagnostics when node readiness times out."""
     print("  [yellow]Node readiness timed out. Collecting diagnostics from control-plane...[/yellow]")
@@ -119,6 +141,12 @@ def _apply_node_labels(master_ip: str, ssh_user: str, key_path: str, node_name: 
             f"kubectl label node {node_name} {label} --overwrite",
             check=False,
         )
+
+
+def _print_node_operation_banner(action: str, node_name: str, node_ip: str) -> None:
+    """Print a visually separated per-node operation header."""
+    print(f"\n  [bold cyan]{action} {node_name} ({node_ip})...[/bold cyan]")
+    print("  [dim]------------------------------------------------------------[/dim]")
 
 
 def register(kubeadm_app: typer.Typer):
@@ -179,9 +207,15 @@ def register(kubeadm_app: typer.Typer):
         total_steps = 8
 
         # ----- Step 1: Upgrade kubelet on ALL nodes (master first) -----
-        _print_step_header(1, total_steps, "Upgrading kubelet/kubeadm/kubectl on all nodes (master first)")
+        _print_step_header(1, total_steps, "Configuring node hostnames and upgrading kubelet/kubeadm/kubectl")
         for node in all_nodes:
-            print(f"  [cyan]{node['name']}[/cyan] ({node['ip']})...")
+            _print_node_operation_banner("Configuring", node["name"], node["ip"])
+
+            print(f"  [dim]Setting hostname to VM name: {node['name']}[/dim]")
+            if not _set_remote_hostname(node["ip"], resolved_user, key_path, node["name"]):
+                print(f"  [red]Failed to set hostname on {node['name']}[/red]")
+                raise typer.Exit(1)
+
             rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_UPGRADE_KUBELET)
             if rc != 0:
                 print(f"  [red]kubelet upgrade failed on {node['name']}[/red]")
@@ -191,7 +225,7 @@ def register(kubeadm_app: typer.Typer):
         # ----- Step 2: Install prerequisites on ALL nodes -----
         _print_step_header(2, total_steps, "Installing prerequisites on all nodes")
         for node in all_nodes:
-            print(f"  [cyan]{node['name']}[/cyan] ({node['ip']})...")
+            _print_node_operation_banner("Setting up", node["name"], node["ip"])
             rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_PREREQS)
             if rc != 0:
                 print(f"  [red]Failed on {node['name']}[/red]")
@@ -308,7 +342,7 @@ def register(kubeadm_app: typer.Typer):
         if cloud == "aws":
             from .aws.setup import install_loadbalancer, install_storage
 
-            print("  [bold cyan]Storage Provider (AWS EBS CSI)[/bold cyan]")
+            print("  [bold cyan]Storage Provider (AWS EBS CSI + EFS aws-efs)[/bold cyan]")
             storage_ok = install_storage(
                 cluster_name=name,
                 metadata=metadata,

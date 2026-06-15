@@ -9,9 +9,102 @@ import TabItem from '@theme/TabItem';
 
 Datalayer user data is stored on a Shared File System. The File System Storage can be implemented as a:
 
-- [Azure Files NFS](https://learn.microsoft.com/en-us/azure/storage/files/files-nfs-protocol).
 - [AWS EFS](https://docs.aws.amazon.com/efs) mounted through the EFS CSI driver.
-- [Ceph](https://docs.ceph.com) Filesystem deployed and managed by [Rook](https://rook.io).
+- [Azure Files NFS](https://learn.microsoft.com/en-us/azure/storage/files/files-nfs-protocol).
+- [Ceph](https://docs.ceph.com/) Filesystem deployed and managed by [Rook](https://rook.io/).
+
+## AWS EFS
+
+Define the storage provider as `aws`.
+
+```bash
+DATALAYER_STORAGE_PROVIDER=aws
+```
+
+### Prerequisites
+
+The `aws-efs` StorageClass and the backing EFS infrastructure must be provisioned by platform automation before running `plane up datalayer-shared-filesystem`.
+
+Users should not have to manually create an EFS file system or manually manage an EFS file system ID for this flow.
+
+You need:
+
+- The AWS EFS CSI driver installed in the cluster.
+- An automation-managed `aws-efs` StorageClass.
+
+<Tabs>
+<TabItem value="Kubeadm" label="Kubeadm (Clouder)" default>
+
+Validate the StorageClass is available:
+
+```bash
+# Verify the StorageClass exists
+kubectl get storageclass aws-efs
+```
+
+</TabItem>
+<TabItem value="eks" label="EKS / Terraform">
+
+Use your Terraform/cluster automation workflow to provision EFS and `aws-efs` before deploying `datalayer-shared-filesystem`.
+
+</TabItem>
+</Tabs>
+
+### Deploy
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-shared-filesystem
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-shared-filesystem.sh
+```
+  </TabItem>
+</Tabs>
+
+You can check the AWS EFS-backed shared filesystem with the following commands.
+
+```bash
+kubectl get pvc -n datalayer-runtimes
+# NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+# shared-fs-pvc       Bound    pvc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   100Gi      RWX            aws-efs        <unset>                 70s
+kubectl get pv | grep datalayer-runtimes
+# pvc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx   100Gi          RWX            Delete           Bound      datalayer-runtimes/shared-fs-pvc       aws-efs
+kubectl get storageclass aws-efs
+```
+
+A `shared-fs-prepare` Pod is launched to create the initial folders in the shared filesystem. The volume is mounted on `/mnt/shared-fs`.
+
+```bash
+kubectl logs shared-fs-prepare -n datalayer-runtimes
+# + mkdir -p /mnt/shared-fs/home
+# + chown 1000:100 /mnt/shared-fs/home
+# + mkdir -p /mnt/shared-fs/public
+# + chown 1000:100 /mnt/shared-fs/public
+# + mkdir -p /mnt/shared-fs/datasets
+# + chown 1000:100 /mnt/shared-fs/datasets
+# + mkdir -p /mnt/shared-fs/tmp
+# + chown 1000:100 /mnt/shared-fs/tmp
+kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- mount | grep /mnt/shared-fs
+# fs-xxxxxx.efs.<region>.amazonaws.com:/ on /mnt/shared-fs type nfs4 (...)
+kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- ls /mnt/shared-fs
+kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
+kubectl delete pod shared-fs-prepare -n datalayer-runtimes
+```
+
+Tear down when you don't need the Shared Filesystem anymore.
+
+```bash
+plane down datalayer-shared-filesystem
+```
 
 ## Azure Files NFS
 
@@ -70,98 +163,6 @@ EOF
 plane up datalayer-shared-filesystem
 ```
   </TabItem>
-  <TabItem value="terraform" label="Terraform">
-```bash
-cd terraform
-terraform init
-terraform apply
-./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
-./generated/services/deploy-datalayer-shared-filesystem.sh
-```
-  </TabItem>
-</Tabs>
-
-You can check the Azure NFS Filesystem with the following command.
-
-```bash
-kubectl get pvc -n datalayer-runtimes
-# NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-# shared-fs-pvc       Bound    pvc-916cfe94-f0dd-49d8-92c5-7b7ebef43160   100Gi      RWX            azure-nfs      <unset>                 70s
-kubectl get pv | grep datalayer-runtimes
-# pvc-b6a66bd4-39db-4649-9bf7-a71203a8e52d   100Gi          RWX            Delete           Bound      datalayer-runtimes/shared-fs-pvc       azure-nfs
-```
-
-A `shared-fs-prepare` Pod has been launched and is responsible to create the storage initial folders. The Ceph storage is mounted on `/mnt/sharedfs`.
-
-```bash
-kubectl logs shared-fs-prepare -n datalayer-runtimes
-# + mkdir -p /mnt/sharedfs/home
-# + chown 1000:100 /mnt/sharedfs/home
-# + mkdir -p /mnt/sharedfs/public
-# + chown 1000:100 /mnt/sharedfs/public
-# + mkdir -p /mnt/sharedfs/datasets
-# + chown 1000:100 /mnt/sharedfs/datasets
-# + mkdir -p /mnt/sharedfs/tmp
-# + chown 1000:100 /mnt/sharedfs/tmp
-kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- mount | grep /mnt/sharedfs
-# 10.0.110.3:6789,10.0.202.233:6789,10.0.44.146:6789:/volumes/csi/csi-vol-a66fdf1a-7046-4bed-8d21-846d9b84f4df/23dde9c7-67f3-40a1-8329-49d93cd6a8de on /mnt/sharedfs type ceph (rw,relatime,name=csi-cephfs-node,secret=<hidden>,fsid=00000000-0000-0000-0000-000000000000,acl,mds_namespace=shared-filesystem)
-kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- ls /mnt/sharedfs
-kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
-kubectl delete pod shared-fs-prepare -n datalayer-runtimes
-```
-
-Tear down when you don't need the Shared Filesystem anymore.
-
-```bash
-plane down datalayer-shared-filesystem
-```
-
-## AWS EFS
-
-Define the storage provider as `aws`.
-
-```bash
-DATALAYER_STORAGE_PROVIDER=aws
-```
-
-### Prerequisites
-
-The `aws-efs` StorageClass must exist **before** running `plane up datalayer-shared-filesystem`.
-The shared-filesystem chart creates PVCs only and expects a pre-provisioned EFS-backed StorageClass.
-
-You also need:
-
-- The AWS EFS CSI driver installed in the cluster.
-- An existing EFS file system ID.
-
-Create the StorageClass (example):
-
-```bash
-cat <<'EOF' | kubectl apply -f -
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: aws-efs
-provisioner: efs.csi.aws.com
-parameters:
-  provisioningMode: efs-ap
-  fileSystemId: fs-xxxxxxxxxxxxxxxxx
-  directoryPerms: "775"
-allowVolumeExpansion: true
-reclaimPolicy: Delete
-volumeBindingMode: Immediate
-EOF
-```
-
-### Deploy
-
-<Tabs groupId="k8s">
-  <TabItem value="plane" label="Plane" default>
-```bash
-plane up datalayer-shared-filesystem
-```
-  </TabItem>
 </Tabs>
 
 Verify:
@@ -169,7 +170,7 @@ Verify:
 ```bash
 kubectl get pvc -n datalayer-runtimes
 kubectl get pv | grep datalayer-runtimes
-kubectl get storageclass aws-efs
+kubectl get storageclass azure-nfs
 kubectl logs shared-fs-prepare -n datalayer-runtimes
 ```
 
@@ -254,20 +255,20 @@ kubectl get cephfilesystem shared-filesystem -n datalayer-storage
 kubectl get cephfilesystemsubvolumegroups shared-filesystem-csi -n datalayer-storage
 ```
 
-A `shared-fs-prepare` Pod has been launched and is responsible to create the storage initial folders. The Ceph storage is mounted on `/mnt/sharedfs`.
+A `shared-fs-prepare` Pod has been launched and is responsible to create the storage initial folders. The shared filesystem is mounted on `/mnt/shared-fs`.
 
 ```bash
 kubectl logs shared-fs-prepare -n datalayer-runtimes
-# + mkdir -p /mnt/sharedfs/home
-# + chown 1000:100 /mnt/sharedfs/home
-# + mkdir -p /mnt/sharedfs/public
-# + chown 1000:100 /mnt/sharedfs/public
-# + mkdir -p /mnt/sharedfs/datasets
-# + chown 1000:100 /mnt/sharedfs/datasets
-# + mkdir -p /mnt/sharedfs/tmp
-# + chown 1000:100 /mnt/sharedfs/tmp
-kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- mount | grep ceph
-# 10.0.110.3:6789,10.0.202.233:6789,10.0.44.146:6789:/volumes/csi/csi-vol-a66fdf1a-7046-4bed-8d21-846d9b84f4df/23dde9c7-67f3-40a1-8329-49d93cd6a8de on /mnt/sharedfs type ceph (rw,relatime,name=csi-cephfs-node,secret=<hidden>,fsid=00000000-0000-0000-0000-000000000000,acl,mds_namespace=shared-filesystem)
+# + mkdir -p /mnt/shared-fs/home
+# + chown 1000:100 /mnt/shared-fs/home
+# + mkdir -p /mnt/shared-fs/public
+# + chown 1000:100 /mnt/shared-fs/public
+# + mkdir -p /mnt/shared-fs/datasets
+# + chown 1000:100 /mnt/shared-fs/datasets
+# + mkdir -p /mnt/shared-fs/tmp
+# + chown 1000:100 /mnt/shared-fs/tmp
+kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- mount | grep /mnt/shared-fs
+# 10.0.110.3:6789,10.0.202.233:6789,10.0.44.146:6789:/volumes/csi/csi-vol-a66fdf1a-7046-4bed-8d21-846d9b84f4df/23dde9c7-67f3-40a1-8329-49d93cd6a8de on /mnt/shared-fs type ceph (rw,relatime,name=csi-cephfs-node,secret=<hidden>,fsid=00000000-0000-0000-0000-000000000000,acl,mds_namespace=shared-filesystem)
 kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
 kubectl delete pod shared-fs-prepare -n datalayer-runtimes
 ```

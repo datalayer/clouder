@@ -900,6 +900,31 @@ kubectl get storageclass
 """
 
 
+def _build_aws_efs_storageclass_script(file_system_id: str) -> str:
+        """Return a bash script that creates or updates the aws-efs StorageClass."""
+        return f"""set -euo pipefail
+
+cat <<'SCEOF' | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+    name: aws-efs
+provisioner: efs.csi.aws.com
+parameters:
+    provisioningMode: efs-ap
+    fileSystemId: {file_system_id}
+    directoryPerms: \"700\"
+    basePath: \"/datalayer-dynamic\"
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+SCEOF
+
+echo \"StorageClass 'aws-efs' created.\"
+kubectl get storageclass aws-efs
+"""
+
+
 def _build_aws_load_balancer_setup_script(
         region: str,
         vpc_id: str,
