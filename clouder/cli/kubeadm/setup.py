@@ -283,7 +283,7 @@ def register(kubeadm_app: typer.Typer):
         # ----- Step 5: Join workers -----
         _print_step_header(5, total_steps, "Joining worker nodes")
         for worker in workers:
-            print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
+            _print_node_operation_banner("Joining", worker["name"], worker["ip"])
             worker_node_name = _detect_kubernetes_node_name(
                 worker["ip"],
                 resolved_user,

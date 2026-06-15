@@ -36,11 +36,11 @@ export RELEASE=datalayer-solr-operator
 export NAMESPACE=datalayer-solr-operator
 kubectl create \
   -n $NAMESPACE \
-  -f https://solr.apache.org/operator/downloads/crds/v0.8.0/all-with-dependencies.yaml
+  -f https://solr.apache.org/operator/downloads/crds/v0.9.1/all-with-dependencies.yaml
 helm upgrade \
   --install $RELEASE \
   apache-solr/solr-operator \
-  --version 0.8.0 \
+  --version 0.9.1 \
   --create-namespace \
   --namespace $NAMESPACE \
   --values /tmp/values.yaml \
@@ -157,7 +157,7 @@ spec:
               storage: "200Gi"
   replicas: 3
   solrImage:
-    tag: 9.0.0
+    tag: 10.0.0
   solrJavaMem: "-Xms1g -Xmx5g"
   solrModules:
     - s3-repository
@@ -542,7 +542,7 @@ export NAMESPACE=datalayer-solr-operator
 helm delete $RELEASE --namespace $NAMESPACE
 kubectl delete \
   -n $NAMESPACE \
-  -f https://solr.apache.org/operator/downloads/crds/v0.8.0/all-with-dependencies.yaml
+  -f https://solr.apache.org/operator/downloads/crds/v0.9.1/all-with-dependencies.yaml
 ```
   </TabItem>
 </Tabs>
