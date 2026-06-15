@@ -120,26 +120,47 @@ def register(kubeadm_app: typer.Typer):
                     )
                     print("  [green]Deleted AWS networking resources.[/green]")
                 except Exception as e:
-                    print(f"  [yellow]Could not fully delete networking resources: {e}[/yellow]")
+                    from ...cloud.aws.api import _client
+
                     net = metadata.get("networking", {}) or {}
                     cmd_region = str(metadata.get("region") or aws_region or "")
-                    vpc_id = net.get("vpc_id") or "<vpc-id>"
-                    subnet_id = net.get("subnet_id") or "<subnet-id>"
-                    igw_id = net.get("internet_gateway_id") or "<igw-id>"
-                    route_table_id = net.get("route_table_id") or "<route-table-id>"
-                    sg_id = net.get("security_group_id") or "<security-group-id>"
-                    print("  [yellow]Manual cleanup commands (run if retries keep failing):[/yellow]")
-                    typer.echo(f"    aws elbv2 describe-load-balancers --region {cmd_region} --query \"LoadBalancers[?VpcId=='{vpc_id}'].LoadBalancerArn\" --output text")
-                    typer.echo(f"    aws elbv2 describe-target-groups --region {cmd_region} --query \"TargetGroups[?VpcId=='{vpc_id}'].TargetGroupArn\" --output text")
-                    typer.echo(f"    aws ec2 describe-network-interfaces --region {cmd_region} --filters Name=vpc-id,Values={vpc_id}")
-                    typer.echo(f"    aws ec2 describe-addresses --region {cmd_region}")
-                    typer.echo(f"    aws ec2 detach-internet-gateway --region {cmd_region} --internet-gateway-id {igw_id} --vpc-id {vpc_id}")
-                    typer.echo(f"    aws ec2 delete-internet-gateway --region {cmd_region} --internet-gateway-id {igw_id}")
-                    typer.echo(f"    aws ec2 delete-route-table --region {cmd_region} --route-table-id {route_table_id}")
-                    typer.echo(f"    aws ec2 delete-security-group --region {cmd_region} --group-id {sg_id}")
-                    typer.echo(f"    aws ec2 delete-subnet --region {cmd_region} --subnet-id {subnet_id}")
-                    typer.echo(f"    aws ec2 delete-vpc --region {cmd_region} --vpc-id {vpc_id}")
-                    failures.append("networking")
+                    vpc_id = net.get("vpc_id") or ""
+
+                    # If the VPC is already gone, treat networking cleanup as successful.
+                    if vpc_id:
+                        try:
+                            ec2 = _client("ec2", region=cmd_region or None)
+                            ec2.describe_vpcs(VpcIds=[vpc_id])
+                        except Exception as exists_exc:
+                            exists_msg = str(exists_exc)
+                            if "InvalidVpcID.NotFound" in exists_msg or "does not exist" in exists_msg:
+                                print("  [green]AWS networking already deleted (VPC not found).[/green]")
+                                e = None
+
+                    if e is None:
+                        pass
+                    else:
+                        print(f"  [yellow]Could not fully delete networking resources: {e}[/yellow]")
+                        vpc_id = net.get("vpc_id") or "<vpc-id>"
+                        subnet_id = net.get("subnet_id") or "<subnet-id>"
+                        igw_id = net.get("internet_gateway_id") or "<igw-id>"
+                        route_table_id = net.get("route_table_id") or "<route-table-id>"
+                        sg_id = net.get("security_group_id") or "<security-group-id>"
+                        print("  [yellow]Manual cleanup commands (run if retries keep failing):[/yellow]")
+                        typer.echo(f"    aws elbv2 describe-load-balancers --region {cmd_region} --query \"LoadBalancers[?VpcId=='{vpc_id}'].LoadBalancerArn\" --output text")
+                        typer.echo(f"    aws elbv2 describe-target-groups --region {cmd_region} --query \"TargetGroups[?VpcId=='{vpc_id}'].TargetGroupArn\" --output text")
+                        typer.echo(f"    aws ec2 describe-network-interfaces --region {cmd_region} --filters Name=vpc-id,Values={vpc_id}")
+                        typer.echo(f"    aws efs describe-file-systems --region {cmd_region}")
+                        typer.echo(f"    # For each fs-xxxx above: aws efs describe-mount-targets --region {cmd_region} --file-system-id fs-xxxx")
+                        typer.echo(f"    # Delete VPC mount targets first: aws efs delete-mount-target --region {cmd_region} --mount-target-id fsmt-xxxx")
+                        typer.echo(f"    aws ec2 describe-addresses --region {cmd_region}")
+                        typer.echo(f"    aws ec2 detach-internet-gateway --region {cmd_region} --internet-gateway-id {igw_id} --vpc-id {vpc_id}")
+                        typer.echo(f"    aws ec2 delete-internet-gateway --region {cmd_region} --internet-gateway-id {igw_id}")
+                        typer.echo(f"    aws ec2 delete-route-table --region {cmd_region} --route-table-id {route_table_id}")
+                        typer.echo(f"    aws ec2 delete-security-group --region {cmd_region} --group-id {sg_id}")
+                        typer.echo(f"    aws ec2 delete-subnet --region {cmd_region} --subnet-id {subnet_id}")
+                        typer.echo(f"    aws ec2 delete-vpc --region {cmd_region} --vpc-id {vpc_id}")
+                        failures.append("networking")
 
             if failures:
                 print(

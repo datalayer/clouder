@@ -481,6 +481,44 @@ plane solr-status iam
 
 If the S3 path is empty for a failed collection (for example `datalayer-solr-collection-backups-iam/iam/index/`), that confirms the backup artifact was not produced, even when no explicit root-cause string is present in `SolrBackup.status`.
 
+### Clean Stale Backup Async Tasks
+
+When Solr Operator logs show `Task with the same requestid already exists` for a collection backup, clear the stored async task response for the affected collection(s).
+
+Use `plane solr-backups-clean-tasks` to clean request IDs for a selected scope (core, runtimes, all, or a single collection).
+
+```bash
+# Prompt for scope (core / runtimes / all / single collection).
+plane solr-backups-clean-tasks
+
+# Clean by predefined set.
+plane solr-backups-clean-tasks core
+plane solr-backups-clean-tasks runtimes
+plane solr-backups-clean-tasks all
+
+# Clean one collection.
+plane solr-backups-clean-tasks collection library
+# or shorthand:
+plane solr-backups-clean-tasks library
+```
+
+Equivalent direct Solr API command for a single collection:
+
+```bash
+COLLECTION=library
+kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -c solrcloud-node -- \
+  curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
+  "http://localhost:8983/solr/admin/collections?action=DELETESTATUS&requestid=datalayer-solr-collection-backups-${COLLECTION}&wt=json"
+```
+
+If needed, flush all stored async statuses:
+
+```bash
+kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -c solrcloud-node -- \
+  curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
+  "http://localhost:8983/solr/admin/collections?action=DELETESTATUS&flush=true&wt=json"
+```
+
 ### Stop (Remove) Backup Schedules
 
 Use `plane solr-backups-stop` to delete the `SolrBackup` definitions with the same collection-set menu (core, runtimes, all).

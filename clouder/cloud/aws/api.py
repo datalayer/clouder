@@ -564,6 +564,7 @@ def delete_aws_kubeadm_network(
     """Delete kubeadm network resources in reverse dependency order."""
     ec2 = _client("ec2", region=region)
     elbv2 = _client("elbv2", region=region)
+    efs = _client("efs", region=region)
 
     def _cleanup_vpc_public_addresses() -> None:
         # Unmap ENI public IP associations in this VPC (includes non-EIP public IPv4 mappings).
@@ -670,9 +671,69 @@ def delete_aws_kubeadm_network(
         except ClientError:
             pass
 
+    def _delete_vpc_efs_mount_targets() -> None:
+        # EFS mount targets create requester-managed ENIs that block subnet/SG/VPC deletion.
+        try:
+            subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get("Subnets", [])
+        except ClientError:
+            subnets = []
+
+        vpc_subnet_ids = {subnet.get("SubnetId") for subnet in subnets if subnet.get("SubnetId")}
+        if not vpc_subnet_ids:
+            return
+
+        try:
+            file_systems = efs.describe_file_systems().get("FileSystems", [])
+        except ClientError:
+            file_systems = []
+
+        mount_target_ids: list[str] = []
+        for fs in file_systems:
+            fs_id = fs.get("FileSystemId")
+            if not fs_id:
+                continue
+            try:
+                paginator = efs.get_paginator("describe_mount_targets")
+                for page in paginator.paginate(FileSystemId=fs_id):
+                    for mt in page.get("MountTargets", []) or []:
+                        if mt.get("SubnetId") in vpc_subnet_ids:
+                            mt_id = mt.get("MountTargetId")
+                            if mt_id:
+                                mount_target_ids.append(mt_id)
+            except ClientError:
+                continue
+
+        for mt_id in mount_target_ids:
+            try:
+                efs.delete_mount_target(MountTargetId=mt_id)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "MountTargetNotFound":
+                    pass
+
+        if not mount_target_ids:
+            return
+
+        # Wait briefly for deletion propagation so dependent ENIs can disappear.
+        deadline = time.time() + 180
+        pending = set(mount_target_ids)
+        while pending and time.time() < deadline:
+            done: set[str] = set()
+            for mt_id in pending:
+                try:
+                    state = efs.describe_mount_targets(MountTargetId=mt_id).get("MountTargets", [{}])[0].get("LifeCycleState")
+                    if state == "deleted":
+                        done.add(mt_id)
+                except ClientError as exc:
+                    if exc.response.get("Error", {}).get("Code") == "MountTargetNotFound":
+                        done.add(mt_id)
+            pending -= done
+            if pending:
+                time.sleep(5)
+
     def _force_cleanup_vpc_dependencies() -> None:
         print("  AWS teardown: running force dependency cleanup for VPC resources...")
         _delete_vpc_load_balancers()
+        _delete_vpc_efs_mount_targets()
 
         # 2) Release public address associations and EIPs in this VPC.
         _cleanup_vpc_public_addresses()
@@ -750,6 +811,7 @@ def delete_aws_kubeadm_network(
 
     # Delete load balancers first to release ELB-managed ENIs/public mappings.
     _delete_vpc_load_balancers()
+    _delete_vpc_efs_mount_targets()
 
     # Delete route table associations/tables (except main). If a specific id is stale,
     # fall back to VPC discovery so termination remains retryable.
@@ -918,11 +980,26 @@ def delete_aws_kubeadm_network(
             }:
                 raise
 
-    try:
-        ec2.delete_vpc(VpcId=vpc_id)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "InvalidVpcID.NotFound":
-            raise
+    for attempt in range(1, 7):
+        try:
+            ec2.delete_vpc(VpcId=vpc_id)
+            return
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code == "InvalidVpcID.NotFound":
+                return
+            if code != "DependencyViolation":
+                raise
+            _force_cleanup_vpc_dependencies()
+            if attempt < 6:
+                print(
+                    f"  AWS teardown: VPC still has dependencies after force cleanup (attempt {attempt}/6); retrying in 5s..."
+                )
+                time.sleep(5)
+
+    raise RuntimeError(
+        f"Unable to delete VPC {vpc_id} after retries. Remaining dependencies still exist."
+    )
 
 
 def resolve_ubuntu_ami(region: Optional[str] = None) -> str:
