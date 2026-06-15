@@ -8,6 +8,13 @@ import { Label, Stack } from '@primer/react-brand';
 
 # Solr
 
+## Known Limitations
+
+- Solr Operator `SolrBackup.status` may mark collection backups as failed without exposing a concrete per-collection root-cause message.
+- In that case, treat `plane solr-backups-status` as the operational source of truth for failure detection and use the reported `s3Prefix` values to verify artifact presence in S3.
+- An empty prefix (for example `s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/`) confirms artifact creation failed even when the CR status reason is generic.
+- For root-cause investigation, use the `failedProcessDebug` command from `plane solr-backups-status` and inspect collection health with `plane solr-status <collection>`.
+
 ## Apache Solr Operator
 
 To deploy Solr, you first need to deploy the [Solr Operator](https://solr.apache.org/operator).
@@ -132,6 +139,12 @@ You are now ready to create a Solr cluster. ensure the `DATALAYER_SOLR_BACKUP_S3
 
 You can also configure the size of the cluster, a 3 nodes replica cluster is what is defined in the following spec.
 
+> **Version compatibility note**
+> Use Solr `9.10.0` with Solr Operator `0.9.1` in this setup.
+> Solr `10.x` currently fails to start with the operator-generated `solr.xml` due to the
+> `genericCoreNodeNames` parameter in the `<solrcloud>` section, which causes startup probe failures and pod restart loops.
+> If you previously deployed with `10.x`, patch the `SolrCloud` back to `9.10.0` and wait for the StatefulSet rollout to complete.
+
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
@@ -157,7 +170,7 @@ spec:
               storage: "200Gi"
   replicas: 3
   solrImage:
-    tag: 10.0.0
+    tag: 9.10.0
   solrJavaMem: "-Xms1g -Xmx5g"
   solrModules:
     - s3-repository
@@ -232,7 +245,7 @@ Check the creation of the Solr Cluster Pods. It may take multiple minutes to get
 ```bash
 kubectl get solrclouds -n datalayer-solr -w
 # NAME             VERSION   TARGETVERSION   DESIREDNODES   NODES   READYNODES   UPTODATENODES   AGE
-# solr-datalayer   9.0.0                     3              3       3            3               79s
+# solr-datalayer   9.10.0                    3              3       3            3               79s
 kubectl get pods -n datalayer-solr -w
 kubectl describe pods -n datalayer-solr | grep Node
 ```
@@ -351,11 +364,11 @@ Three backup definitions are available, matching the collection sets:
 
 | File | Scope | CR Name |
 |------|-------|---------|
-| `datalayer-backup-s3.yaml` | All 19 collections | `datalayer-solr-collection-backup` |
-| `datalayer-backup-s3-core.yaml` | 17 core collections | `datalayer-solr-collection-backup-core` |
-| `datalayer-backup-s3-runtimes.yaml` | 2 runtimes collections | `datalayer-solr-collection-backup-runtimes` |
+| `datalayer-backup-s3.yaml` | All 19 collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-core.yaml` | 17 core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-runtimes.yaml` | 2 runtimes collections | `datalayer-solr-collection-backups` |
 
-All backups run daily at 1:00 AM UTC and retain up to 200 snapshots.
+All backups run every 10 minutes and retain up to 200 snapshots.
 
 ### Prerequisites
 
@@ -368,11 +381,11 @@ All backups run daily at 1:00 AM UTC and retain up to 200 snapshots.
   <TabItem value="plane" label="Plane" default>
 ```bash
 # Prompt for backup set (core / runtimes / all).
-plane solr-backup
+plane solr-backups-apply
 # Apply a specific backup spec directly.
-plane solr-backup core
-plane solr-backup runtimes
-plane solr-backup all
+plane solr-backups-apply core
+plane solr-backups-apply runtimes
+plane solr-backups-apply all
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -382,7 +395,7 @@ cat <<EOF | kubectl apply -f -
 apiVersion: solr.apache.org/v1beta1
 kind: SolrBackup
 metadata:
-  name: datalayer-solr-collection-backup
+  name: datalayer-solr-collection-backups
   namespace: datalayer-solr
 spec:
   repositoryName: s3
@@ -408,12 +421,24 @@ spec:
     - tool-approvals
     - usage
   recurrence:
-    schedule: "0 1 * * *" # every day at 1:00 AM
+    schedule: "*/10 * * * *" # every 10 minutes
     maxSaved: 200
 EOF
 ```
   </TabItem>
 </Tabs>
+
+### Inspect Solr Collection and Shard Health
+
+Use the Solr status command to inspect available collections and list shard and replica details directly from the Solr API (`localhost:8983`) through the Solr pod.
+
+```bash
+# Inspect all collections.
+plane solr-status
+
+# Inspect one collection.
+plane solr-status iam
+```
 
 ### Monitor Backups
 
@@ -421,22 +446,54 @@ EOF
 # List all backups.
 kubectl get solrbackups -n datalayer-solr
 # Describe a specific backup for detailed status.
-kubectl describe solrbackup datalayer-solr-collection-backup -n datalayer-solr
+kubectl describe solrbackup datalayer-solr-collection-backups -n datalayer-solr
+# Plane summary command (analyzes command outputs and prints a summary).
+plane solr-backups-status
 ```
+
+### Diagnose Failed Backups
+
+When a backup fails, `plane solr-backups-status` reports:
+
+- top-level backup status (`running`, `completed`, `failed`)
+- per-collection status (`running`, `successful`, `failed`)
+- per-collection S3 prefix (`s3Prefix`) to verify whether backup artifacts exist
+- a `failedProcessDebug` command to inspect Solr Operator logs
+
+In some runs, `SolrBackup` status does not expose a detailed root-cause message for failed collections. In that case the failure reason can remain generic even though the failure is real.
+
+Practical verification workflow:
+
+```bash
+# 1) Confirm failed collections in the backup summary.
+plane solr-backups-status
+
+# 2) Check whether expected S3 backup content exists for a failed collection.
+# Example for iam:
+aws s3 ls s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/
+
+# 3) Inspect Solr operator logs for additional context.
+kubectl logs -n datalayer-solr-operator $(kubectl get pods -n datalayer-solr-operator -o name | grep datalayer-solr-operator- | grep -v zookeeper | head -n 1 | sed 's#pod/##') --since=2h | grep -E 'datalayer-solr-collection-backups|error|failed|exception' -i
+
+# 4) Inspect collection/shard/replica state.
+plane solr-status iam
+```
+
+If the S3 path is empty for a failed collection (for example `datalayer-solr-collection-backups-iam/iam/index/`), that confirms the backup artifact was not produced, even when no explicit root-cause string is present in `SolrBackup.status`.
 
 ### Stop (Remove) Backup Schedules
 
-Use `plane solr-backup-stop` to delete the `SolrBackup` definitions with the same collection-set menu (core, runtimes, all).
+Use `plane solr-backups-stop` to delete the `SolrBackup` definitions with the same collection-set menu (core, runtimes, all).
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
 # Prompt for backup set to remove (core / runtimes / all).
-plane solr-backup-stop
+plane solr-backups-stop
 # Remove a specific backup definition directly.
-plane solr-backup-stop core
-plane solr-backup-stop runtimes
-plane solr-backup-stop all
+plane solr-backups-stop core
+plane solr-backups-stop runtimes
+plane solr-backups-stop all
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -462,7 +519,7 @@ When restoring multiple collections, the script prompts which collection set to 
 
 ### Restore Collections
 
-The default backup name is `datalayer-solr-collection-backup` (matching the `SolrBackup` CRD name).
+The default backup name is `datalayer-solr-collection-backups` (matching the `SolrBackup` CRD name).
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
@@ -470,7 +527,7 @@ The default backup name is `datalayer-solr-collection-backup` (matching the `Sol
 # Restore collections (prompts for set: core / runtimes / all).
 plane solr-restore
 # Restore only a specific collection (no prompt).
-plane solr-restore datalayer-solr-collection-backup iam
+plane solr-restore datalayer-solr-collection-backups iam
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -479,7 +536,7 @@ plane solr-restore datalayer-solr-collection-backup iam
 # The backup name per collection is: <backup-name>-<collection>
 kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -- \
   curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
-  "http://localhost:8983/solr/admin/collections?action=RESTORE&name=datalayer-solr-collection-backup-iam&collection=iam&location=/&repository=s3&async=iam-restore"
+  "http://localhost:8983/solr/admin/collections?action=RESTORE&name=datalayer-solr-collection-backups-iam&collection=iam&location=/&repository=s3&async=iam-restore"
 ```
   </TabItem>
 </Tabs>

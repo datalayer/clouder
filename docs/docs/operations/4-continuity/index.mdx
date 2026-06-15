@@ -17,19 +17,37 @@ Take recurring backups with a S3 SolrBackup.
 ```bash
 kubectl apply -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml
 kubectl get solrbackups -n datalayer-solr -w
-# NAMESPACE        NAME                               CLOUD            STARTED   FINISHED   SUCCESSFUL   NEXTBACKUP   AGE
-# datalayer-solr   datalayer-solr-collection-backup   solr-datalayer   44s                                            44s
+# NAMESPACE        NAME                                CLOUD            STARTED   FINISHED   SUCCESSFUL   NEXTBACKUP   AGE
+# datalayer-solr   datalayer-solr-collection-backups  solr-datalayer   44s                                            44s
 kubectl describe solrbackups -n datalayer-solr
+# Backup schedule is every 10 minutes (*/10 * * * *), maxSaved=200.
 ```
 
 ```bash
-aws s3 ls s3://datalayer-backups-solr/datalayer-solr-collection-backup-accounts/accounts/
-curl http://localhost:8983/solr/accounts/replication?command=details
+# Example check for a collection backup artifact path.
+aws s3 ls s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/
+# If empty while the collection is reported as failed, backup artifact creation failed.
+
+# Backup status summary with failed collections and S3 prefixes.
+plane solr-backups-status
+
+# Solr shard/replica status for one collection.
+plane solr-status iam
 ```
 
 ```bash
 kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml
 ```
+
+### Troubleshooting Note
+
+In some failed backup runs, `SolrBackup.status` does not include a specific root-cause message for each failed collection.
+When this happens:
+
+1. Use `plane solr-backups-status` to identify failed collections and their `s3Prefix` values.
+2. Verify the S3 prefix content directly (empty prefix confirms artifact was not written).
+3. Use the `failedProcessDebug` command printed by `plane solr-backups-status` to inspect operator logs.
+4. Use `plane solr-status <collection>` to inspect current shard and replica health.
 
 ## Simulate a Disaster
 
@@ -73,7 +91,7 @@ action=RESTORE&
 repository=s3&
 collection='"$COLLECTION"'&
 location=s3:/&
-name=datalayer-solr-collection-backup-'"$COLLECTION"''
+name=datalayer-solr-collection-backups-'"$COLLECTION"''
 done
 #
 curl http://localhost:8983/solr/accounts/select?q=*:*
