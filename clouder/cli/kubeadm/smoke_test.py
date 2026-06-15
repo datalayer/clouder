@@ -11,6 +11,8 @@ from rich.prompt import Prompt
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    _print_section_header,
+    _print_step_header,
     resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
@@ -95,9 +97,7 @@ def register(kubeadm_app: typer.Typer):
         ingress_type = None
         lb_public_endpoint = None
 
-        print("\n" + "=" * 60)
-        print("[bold]Section 1: Ingress + Load Balancer[/bold]")
-        print("=" * 60)
+        _print_section_header("Ingress + Load Balancer")
 
         # Detect ingress controller (nginx or traefik)
         result = _ssh_cmd(
@@ -158,7 +158,7 @@ def register(kubeadm_app: typer.Typer):
                 ingress_passed = True
                 try:
                     # ---- Step 1/4: Deploy test web server ----
-                    print("\n[bold]Step 1/4: Deploying test web server...[/bold]")
+                    _print_step_header(1, 4, "Deploying test web server")
                     ingress_deploy_script = """\
 cat <<'EOF' | kubectl apply -f -
 apiVersion: apps/v1
@@ -229,7 +229,7 @@ EOF
 
                     # ---- Step 2/4: Create Ingress resource ----
                     if ingress_passed:
-                        print("\n[bold]Step 2/4: Creating Ingress resource...[/bold]")
+                        _print_step_header(2, 4, "Creating Ingress resource")
                         ingress_class = "datalayer-nginx" if ingress_type == "nginx" else "datalayer-traefik"
 
                         ingress_yaml = f"""\
@@ -277,7 +277,7 @@ EOF
 
                     # ---- Step 3/4: Validate HTTP through LB endpoint from localhost ----
                     if ingress_passed:
-                        print("\n[bold]Step 3/4: Validating HTTP through Load Balancer endpoint...[/bold]")
+                        _print_step_header(3, 4, "Validating HTTP through Load Balancer endpoint")
                         propagation_wait_seconds = 15
                         max_attempts = 5
                         retry_delay_seconds = 10
@@ -384,7 +384,7 @@ EOF
                         )
 
                         if not run_host:
-                            print("\n[bold]Step 4/4: Configure public hostname for DNS validation...[/bold]")
+                            _print_step_header(4, 4, "Configure public hostname for DNS validation")
                             prompt_text = "Public hostname for ingress validation"
                             if env_host:
                                 run_host = Prompt.ask(prompt_text, default=env_host).strip()
@@ -396,11 +396,11 @@ EOF
                                 print(f"  [green]Saved public hostname in kubeadm metadata:[/green] {run_host}")
 
                         if not run_host:
-                            print("\n[bold]Step 4/4: Validating HTTP through public hostname...[/bold]")
+                            _print_step_header(4, 4, "Validating HTTP through public hostname")
                             print("  [dim]No public hostname configured — skipping DNS validation.[/dim]")
                             print("  [dim]Re-run and provide a hostname, or set DATALAYER_RUN_URL as a default suggestion.[/dim]")
                         else:
-                            print(f"\n[bold]Step 4/4: Validating HTTP through {run_host}...[/bold]")
+                            _print_step_header(4, 4, f"Validating HTTP through {run_host}")
 
                             # Check DNS resolution first
                             import subprocess as _sp2
@@ -524,13 +524,11 @@ EOF
         counter_before = "?"
         token_before = None
 
-        print("\n" + "=" * 60)
-        print("[bold]Section 2: CRIU Checkpoint / Restore[/bold]")
-        print("=" * 60)
+        _print_section_header("CRIU Checkpoint / Restore")
 
         try:
             # ---- Step 1/8: Deploy test pod ----
-            print("\n[bold]Step 1/8: Deploying counter pod...[/bold]")
+            _print_step_header(1, 8, "Deploying counter pod")
             deploy_cmd = f"cat <<'EOFPOD' | kubectl apply -f -\n{_SMOKE_POD_YAML}EOFPOD"
             result = _ssh_cmd(master["ip"], resolved_user, key_path, deploy_cmd, check=False)
             if result.returncode != 0:
@@ -539,7 +537,7 @@ EOF
             print("  Pod created.")
 
             # ---- Step 2/8: Wait for Running ----
-            print("\n[bold]Step 2/8: Waiting for pod to be ready...[/bold]")
+            _print_step_header(2, 8, "Waiting for pod to be ready")
             result = _ssh_cmd(
                 master["ip"], resolved_user, key_path,
                 "kubectl wait --for=condition=Ready pod/clouder-smoke-test --timeout=120s",
@@ -551,7 +549,7 @@ EOF
             print("  Pod is running.")
 
             # ---- Step 3/8: Accumulate state ----
-            print("\n[bold]Step 3/8: Letting counter accumulate state (15s)...[/bold]")
+            _print_step_header(3, 8, "Letting counter accumulate state (15s)")
             time.sleep(15)
             result = _ssh_cmd(
                 master["ip"], resolved_user, key_path,
@@ -597,7 +595,7 @@ EOF
                 print(f"  [dim]Container: {result.stdout.strip()}[/dim]")
 
             # ---- Step 4/8: Identify node ----
-            print("\n[bold]Step 4/8: Identifying pod node...[/bold]")
+            _print_step_header(4, 8, "Identifying pod node")
             result = _ssh_cmd(
                 master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='{.spec.nodeName}'",
@@ -635,7 +633,7 @@ EOF
             print(f"  Pod is on node: [cyan]{node_name}[/cyan] (internal: {node_internal_ip}, public: {worker_ip})")
 
             # ---- Step 5/8: Checkpoint via kubelet API ----
-            print("\n[bold]Step 5/8: Checkpointing via kubelet API...[/bold]")
+            _print_step_header(5, 8, "Checkpointing via kubelet API")
             checkpoint_cmd = (
                 f"sudo curl -sk -X POST "
                 f"'https://{node_internal_ip}:10250/checkpoint/default/clouder-smoke-test/counter' "
@@ -673,7 +671,7 @@ EOF
             # Continue only if checkpoint was created
             if criu_passed and checkpoint_path:
                 # ---- Step 6/8: Verify checkpoint on worker ----
-                print("\n[bold]Step 6/8: Verifying checkpoint on worker node...[/bold]")
+                _print_step_header(6, 8, "Verifying checkpoint on worker node")
                 result = _ssh_cmd(
                     worker_ip, resolved_user, key_path,
                     f"sudo ls -lh {checkpoint_path} && echo 'CHECKPOINT_EXISTS'",
@@ -702,7 +700,7 @@ EOF
 
             if criu_passed and checkpoint_path:
                 # ---- Step 7/8: Delete original pod ----
-                print("\n[bold]Step 7/8: Deleting original pod...[/bold]")
+                _print_step_header(7, 8, "Deleting original pod")
                 _ssh_cmd(
                     master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-test --grace-period=0 --force 2>/dev/null",
@@ -712,7 +710,7 @@ EOF
                 print("  Original pod deleted.")
 
                 # ---- Step 8/8: Import checkpoint and restore ----
-                print("\n[bold]Step 8/8: Importing checkpoint and restoring pod...[/bold]")
+                _print_step_header(8, 8, "Importing checkpoint and restoring pod")
 
                 # The kubelet checkpoint tar is NOT an OCI image — it contains
                 # CRIU dump files, config, and a rootfs-diff.tar with filesystem

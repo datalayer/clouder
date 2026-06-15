@@ -9,6 +9,7 @@ from ...util.wait import wait_with_spinner
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    _print_step_header,
     resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
@@ -147,14 +148,14 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Exit(1)
 
         # ----- Step 1: Deploy ingress-nginx on the cluster -----
-        print("\n[bold]Step 1/4: Deploying ingress-nginx controller...[/bold]")
+        _print_step_header(1, 4, "Deploying ingress-nginx controller")
         rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_INGRESS_NGINX)
         if rc != 0:
             print("[red]Failed to deploy ingress-nginx.[/red]")
             raise typer.Exit(1)
 
         # ----- Step 2: Get the NodePort assignments -----
-        print("\n[bold]Step 2/4: Reading NodePort assignments...[/bold]")
+        _print_step_header(2, 4, "Reading NodePort assignments")
         result = _ssh_cmd(
             master["ip"], resolved_user, key_path,
             f"kubectl -n {_NGINX_NAMESPACE} get svc ingress-nginx-controller "
@@ -176,7 +177,7 @@ def register(kubeadm_app: typer.Typer):
         print(f"  HTTPS NodePort: [cyan]{https_nodeport}[/cyan]")
 
         # ----- Step 3: Create Azure Load Balancer -----
-        print("\n[bold]Step 3/4: Creating Azure Load Balancer...[/bold]")
+        _print_step_header(3, 4, "Creating Azure Load Balancer")
         from ...cloud.azure.api import create_azure_load_balancer
 
         # Get location from one of the VMs
@@ -295,7 +296,7 @@ def register(kubeadm_app: typer.Typer):
         print(f"  Rules:          80 → :{http_nodeport},  443 → :{https_nodeport}")
 
         # ----- Step 4: Add worker NICs to backend pool -----
-        print("\n[bold]Step 4/4: Adding worker NICs to backend pool...[/bold]")
+        _print_step_header(4, 4, "Adding worker NICs to backend pool")
         from ...cloud.azure.api import add_nic_to_lb_backend_pool
 
         for worker in workers:

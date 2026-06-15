@@ -563,8 +563,32 @@ def delete_aws_kubeadm_network(
 ):
     """Delete kubeadm network resources in reverse dependency order."""
     ec2 = _client("ec2", region=region)
+    elbv2 = _client("elbv2", region=region)
 
     def _cleanup_vpc_public_addresses() -> None:
+        # Unmap ENI public IP associations in this VPC (includes non-EIP public IPv4 mappings).
+        try:
+            eni_paginator = ec2.get_paginator("describe_network_interfaces")
+            eni_pages = eni_paginator.paginate(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        except ClientError:
+            eni_pages = []
+
+        for page in eni_pages:
+            for eni in page.get("NetworkInterfaces", []) or []:
+                association = eni.get("Association") or {}
+                association_id = association.get("AssociationId")
+                allocation_id = association.get("AllocationId")
+                if association_id:
+                    try:
+                        ec2.disassociate_address(AssociationId=association_id)
+                    except ClientError:
+                        pass
+                if allocation_id:
+                    try:
+                        ec2.release_address(AllocationId=allocation_id)
+                    except ClientError:
+                        pass
+
         # Release Elastic IPs still allocated in this VPC.
         addresses = ec2.describe_addresses().get("Addresses", [])
         for address in addresses:
@@ -601,51 +625,304 @@ def delete_aws_kubeadm_network(
         ).get("NetworkInterfaces", [])
         return any((eni.get("Association") or {}).get("PublicIp") for eni in enis)
 
-    # Delete route table associations (except main)
-    route_table = ec2.describe_route_tables(RouteTableIds=[route_table_id])["RouteTables"][0]
-    for assoc in route_table.get("Associations", []):
-        assoc_id = assoc.get("RouteTableAssociationId")
-        if assoc_id and not assoc.get("Main"):
-            ec2.disassociate_route_table(AssociationId=assoc_id)
+    def _delete_vpc_load_balancers() -> None:
+        # Delete ELBv2 load balancers in this VPC first: they own service ENIs/public mappings.
+        try:
+            lbs = elbv2.describe_load_balancers().get("LoadBalancers", [])
+        except ClientError:
+            lbs = []
 
-    ec2.delete_route_table(RouteTableId=route_table_id)
+        lb_arns: list[str] = []
+        for lb in lbs:
+            if lb.get("VpcId") != vpc_id:
+                continue
+            lb_arn = lb.get("LoadBalancerArn")
+            if not lb_arn:
+                continue
+            try:
+                elbv2.delete_load_balancer(LoadBalancerArn=lb_arn)
+                lb_arns.append(lb_arn)
+            except ClientError:
+                pass
+
+        for lb_arn in lb_arns:
+            try:
+                waiter = elbv2.get_waiter("load_balancers_deleted")
+                waiter.wait(LoadBalancerArns=[lb_arn], WaiterConfig={"Delay": 5, "MaxAttempts": 24})
+            except Exception:
+                pass
+
+        # Best-effort cleanup of orphan target groups in the same VPC.
+        try:
+            paginator = elbv2.get_paginator("describe_target_groups")
+            for page in paginator.paginate():
+                for tg in page.get("TargetGroups", []) or []:
+                    if tg.get("VpcId") != vpc_id:
+                        continue
+                    if tg.get("LoadBalancerArns"):
+                        continue
+                    tg_arn = tg.get("TargetGroupArn")
+                    if tg_arn:
+                        try:
+                            elbv2.delete_target_group(TargetGroupArn=tg_arn)
+                        except ClientError:
+                            pass
+        except ClientError:
+            pass
+
+    def _force_cleanup_vpc_dependencies() -> None:
+        print("  AWS teardown: running force dependency cleanup for VPC resources...")
+        _delete_vpc_load_balancers()
+
+        # 2) Release public address associations and EIPs in this VPC.
+        _cleanup_vpc_public_addresses()
+
+        # 3) Remove non-main route table associations/tables in this VPC.
+        try:
+            route_tables = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
+                "RouteTables", []
+            )
+        except ClientError:
+            route_tables = []
+        for rt in route_tables:
+            for assoc in rt.get("Associations", []) or []:
+                assoc_id = assoc.get("RouteTableAssociationId")
+                if assoc_id and not assoc.get("Main"):
+                    try:
+                        ec2.disassociate_route_table(AssociationId=assoc_id)
+                    except ClientError:
+                        pass
+            if any(assoc.get("Main") for assoc in rt.get("Associations", []) or []):
+                continue
+            rt_id = rt.get("RouteTableId")
+            if rt_id:
+                try:
+                    ec2.delete_route_table(RouteTableId=rt_id)
+                except ClientError:
+                    pass
+
+        # 4) Delete available ENIs in this VPC.
+        try:
+            enis = ec2.describe_network_interfaces(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
+                "NetworkInterfaces", []
+            )
+        except ClientError:
+            enis = []
+        for eni in enis:
+            if eni.get("Status") != "available":
+                continue
+            eni_id = eni.get("NetworkInterfaceId")
+            if eni_id:
+                try:
+                    ec2.delete_network_interface(NetworkInterfaceId=eni_id)
+                except ClientError:
+                    pass
+
+        # 5) Best-effort subnet deletion in this VPC.
+        try:
+            subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get("Subnets", [])
+        except ClientError:
+            subnets = []
+        for subnet in subnets:
+            subnet_id_local = subnet.get("SubnetId")
+            if subnet_id_local:
+                try:
+                    ec2.delete_subnet(SubnetId=subnet_id_local)
+                except ClientError:
+                    pass
+
+        # 6) Best-effort non-default SG deletion in this VPC.
+        try:
+            security_groups = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
+                "SecurityGroups", []
+            )
+        except ClientError:
+            security_groups = []
+        for sg in security_groups:
+            if sg.get("GroupName") == "default":
+                continue
+            sg_id_local = sg.get("GroupId")
+            if sg_id_local:
+                try:
+                    ec2.delete_security_group(GroupId=sg_id_local)
+                except ClientError:
+                    pass
+
+    # Delete load balancers first to release ELB-managed ENIs/public mappings.
+    _delete_vpc_load_balancers()
+
+    # Delete route table associations/tables (except main). If a specific id is stale,
+    # fall back to VPC discovery so termination remains retryable.
+    route_tables: list[dict] = []
+    if route_table_id:
+        try:
+            route_tables = ec2.describe_route_tables(RouteTableIds=[route_table_id]).get("RouteTables", [])
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "InvalidRouteTableID.NotFound":
+                raise
+    if not route_tables:
+        route_tables = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
+            "RouteTables", []
+        )
+
+    for route_table in route_tables:
+        for assoc in route_table.get("Associations", []):
+            assoc_id = assoc.get("RouteTableAssociationId")
+            if assoc_id and not assoc.get("Main"):
+                try:
+                    ec2.disassociate_route_table(AssociationId=assoc_id)
+                except ClientError:
+                    pass
+        if any(a.get("Main") for a in route_table.get("Associations", []) or []):
+            continue
+        rt_id = route_table.get("RouteTableId")
+        if rt_id:
+            try:
+                ec2.delete_route_table(RouteTableId=rt_id)
+            except ClientError:
+                pass
 
     # Security group and IGW detach can race with ENI/public-IP cleanup right after instance termination.
-    for attempt in range(1, 13):
+    security_group_targets: list[str] = []
+    if security_group_id:
+        security_group_targets.append(security_group_id)
+    else:
         try:
-            ec2.delete_security_group(GroupId=security_group_id)
-            break
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "DependencyViolation":
-                raise
-            print(
-                f"  AWS teardown: security group still in use (attempt {attempt}/12); retrying in 5s..."
+            discovered_sgs = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
+                "SecurityGroups", []
             )
-            time.sleep(5)
+        except ClientError:
+            discovered_sgs = []
+        security_group_targets.extend(
+            sg.get("GroupId")
+            for sg in discovered_sgs
+            if sg.get("GroupId") and sg.get("GroupName") != "default"
+        )
+
+    security_group_deleted = False
+    for sg_target in security_group_targets:
+        for attempt in range(1, 13):
+            try:
+                ec2.delete_security_group(GroupId=sg_target)
+                security_group_deleted = True
+                break
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code == "InvalidGroup.NotFound":
+                    security_group_deleted = True
+                    break
+                if code != "DependencyViolation":
+                    raise
+                print(
+                    f"  AWS teardown: security group still in use (attempt {attempt}/12); retrying in 5s..."
+                )
+                time.sleep(5)
+        if not security_group_deleted:
+            break
+
+    if not security_group_deleted and security_group_targets:
+        _force_cleanup_vpc_dependencies()
+        try:
+            ec2.delete_security_group(GroupId=security_group_targets[0])
+            security_group_deleted = True
+        except ClientError:
+            pass
 
     _cleanup_vpc_public_addresses()
-    for attempt in range(1, 19):
-        try:
-            ec2.detach_internet_gateway(InternetGatewayId=internet_gateway_id, VpcId=vpc_id)
-            break
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "DependencyViolation":
-                raise
-            _cleanup_vpc_public_addresses()
-            if not _has_mapped_public_addresses():
+    igw_ids: list[str] = []
+    if internet_gateway_id:
+        igw_ids.append(internet_gateway_id)
+    attached_igws = ec2.describe_internet_gateways(
+        Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
+    ).get("InternetGateways", [])
+    for igw in attached_igws:
+        igw_id = igw.get("InternetGatewayId")
+        if igw_id and igw_id not in igw_ids:
+            igw_ids.append(igw_id)
+
+    igw_detached = False
+    detached_igw_ids: list[str] = []
+    for igw_id in igw_ids:
+        for attempt in range(1, 19):
+            try:
+                ec2.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+                igw_detached = True
+                detached_igw_ids.append(igw_id)
+                break
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code in {"Gateway.NotAttached", "InvalidInternetGatewayID.NotFound"}:
+                    igw_detached = True
+                    break
+                if code != "DependencyViolation":
+                    raise
+                _cleanup_vpc_public_addresses()
+                if not _has_mapped_public_addresses():
+                    print(
+                        f"  AWS teardown: waiting for ENI/public-IP propagation before IGW detach (attempt {attempt}/18)..."
+                    )
+                    time.sleep(3)
+                else:
+                    print(
+                        f"  AWS teardown: mapped public addresses still present in VPC (attempt {attempt}/18); retrying in 5s..."
+                    )
+                    time.sleep(5)
+
+    if not igw_detached:
+        _force_cleanup_vpc_dependencies()
+        _cleanup_vpc_public_addresses()
+        for attempt in range(1, 7):
+            try:
+                ec2.detach_internet_gateway(InternetGatewayId=igw_ids[0], VpcId=vpc_id)
+                igw_detached = True
+                detached_igw_ids.append(igw_ids[0])
+                break
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") != "DependencyViolation":
+                    raise
                 print(
-                    f"  AWS teardown: waiting for ENI/public-IP propagation before IGW detach (attempt {attempt}/18)..."
-                )
-                time.sleep(3)
-            else:
-                print(
-                    f"  AWS teardown: mapped public addresses still present in VPC (attempt {attempt}/18); retrying in 5s..."
+                    f"  AWS teardown: force cleanup done but IGW still attached (attempt {attempt}/6); retrying in 5s..."
                 )
                 time.sleep(5)
 
-    ec2.delete_internet_gateway(InternetGatewayId=internet_gateway_id)
-    ec2.delete_subnet(SubnetId=subnet_id)
-    ec2.delete_vpc(VpcId=vpc_id)
+    if not igw_detached:
+        raise RuntimeError(
+            f"Unable to detach internet gateway from VPC {vpc_id} after force cleanup."
+        )
+
+    for igw_id in set(detached_igw_ids or igw_ids):
+        try:
+            ec2.delete_internet_gateway(InternetGatewayId=igw_id)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") not in {
+                "InvalidInternetGatewayID.NotFound",
+                "DependencyViolation",
+            }:
+                raise
+
+    subnet_ids: list[str] = []
+    if subnet_id:
+        subnet_ids.append(subnet_id)
+    discovered_subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get("Subnets", [])
+    for subnet in discovered_subnets:
+        sid = subnet.get("SubnetId")
+        if sid and sid not in subnet_ids:
+            subnet_ids.append(sid)
+    for sid in subnet_ids:
+        try:
+            ec2.delete_subnet(SubnetId=sid)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") not in {
+                "InvalidSubnetID.NotFound",
+                "DependencyViolation",
+            }:
+                raise
+
+    try:
+        ec2.delete_vpc(VpcId=vpc_id)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "InvalidVpcID.NotFound":
+            raise
 
 
 def resolve_ubuntu_ami(region: Optional[str] = None) -> str:

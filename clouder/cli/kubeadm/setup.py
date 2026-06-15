@@ -8,7 +8,9 @@ from rich.prompt import Confirm
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    DEFAULT_NODE_LABELS,
     K8S_VERSION,
+    _print_step_header,
     resolve_kubeadm_cluster_name,
     _SCRIPT_INSTALL_CNI,
     _SCRIPT_KUBEADM_INIT,
@@ -23,14 +25,6 @@ from ._helpers import (
     _ssh_cmd_stream,
     _update_cluster_metadata,
 )
-
-
-DEFAULT_NODE_LABELS = [
-    "role.datalayer.io/runtime=true",
-    "node.datalayer.io/variant=medium",
-    "xpu.datalayer.io/cpu=true",
-]
-
 
 def _resolve_node_labels(raw_labels: list[str] | None) -> list[str]:
     """Resolve node labels, supporting repeated flags and comma-separated values."""
@@ -182,8 +176,10 @@ def register(kubeadm_app: typer.Typer):
         if not Confirm.ask("\nProceed with cluster setup?", default=True):
             raise typer.Abort()
 
+        total_steps = 8
+
         # ----- Step 1: Upgrade kubelet on ALL nodes (master first) -----
-        print("\n[bold]Step 1/7: Upgrading kubelet/kubeadm/kubectl on all nodes (master first)...[/bold]")
+        _print_step_header(1, total_steps, "Upgrading kubelet/kubeadm/kubectl on all nodes (master first)")
         for node in all_nodes:
             print(f"  [cyan]{node['name']}[/cyan] ({node['ip']})...")
             rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_UPGRADE_KUBELET)
@@ -193,7 +189,7 @@ def register(kubeadm_app: typer.Typer):
             print(f"  [green]{node['name']} kubelet upgraded.[/green]")
 
         # ----- Step 2: Install prerequisites on ALL nodes -----
-        print("\n[bold]Step 2/7: Installing prerequisites on all nodes...[/bold]")
+        _print_step_header(2, total_steps, "Installing prerequisites on all nodes")
         for node in all_nodes:
             print(f"  [cyan]{node['name']}[/cyan] ({node['ip']})...")
             rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_PREREQS)
@@ -203,7 +199,7 @@ def register(kubeadm_app: typer.Typer):
             print(f"  [green]{node['name']} done.[/green]")
 
         # ----- Step 3: kubeadm init on master -----
-        print("\n[bold]Step 3/7: Initializing control plane on master...[/bold]")
+        _print_step_header(3, total_steps, "Initializing control plane on master")
         init_script = _SCRIPT_KUBEADM_INIT.replace("PUBLIC_IP_PLACEHOLDER", master["ip"])
         result = _ssh_cmd(master["ip"], resolved_user, key_path, init_script, check=False)
         if result.returncode != 0:
@@ -243,7 +239,7 @@ def register(kubeadm_app: typer.Typer):
         print(f"  [dim]Join command: {join_command}[/dim]")
 
         # ----- Step 4: Install CNI on master -----
-        print("\n[bold]Step 4/7: Installing Calico CNI...[/bold]")
+        _print_step_header(4, total_steps, "Installing Calico CNI")
         rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_CNI)
         if rc != 0:
             print("[red]CNI installation failed.[/red]")
@@ -251,7 +247,7 @@ def register(kubeadm_app: typer.Typer):
         print("  [green]CNI installed.[/green]")
 
         # ----- Step 5: Join workers -----
-        print("\n[bold]Step 5/7: Joining worker nodes...[/bold]")
+        _print_step_header(5, total_steps, "Joining worker nodes")
         for worker in workers:
             print(f"  [cyan]{worker['name']}[/cyan] ({worker['ip']})...")
             worker_node_name = _detect_kubernetes_node_name(
@@ -298,7 +294,7 @@ def register(kubeadm_app: typer.Typer):
             print(f"  [green]{worker['name']} labels applied.[/green]")
 
         # ----- Step 6: Enable CRIU feature gates on all nodes -----
-        print("\n[bold]Step 6/7: Enabling CRIU feature gates on all nodes...[/bold]")
+        _print_step_header(6, total_steps, "Enabling CRIU feature gates on all nodes")
         for node in all_nodes:
             print(f"  [cyan]{node['name']}[/cyan]...")
             rc = _ssh_cmd_stream(node["ip"], resolved_user, key_path, _SCRIPT_WORKER_FEATURE_GATE)
@@ -306,20 +302,14 @@ def register(kubeadm_app: typer.Typer):
                 print(f"  [red]Feature gate setup failed on {node['name']}[/red]")
                 # Non-fatal — continue
 
-        # ----- Step 7: Install cloud-specific storage and load balancer providers -----
-        print("\n[bold]Step 7/7: Installing cloud storage and load balancer providers...[/bold]")
+        # ----- Step 7: Install cloud-specific storage provider -----
+        _print_step_header(7, total_steps, "Installing cloud storage provider")
 
         if cloud == "aws":
             from .aws.setup import install_loadbalancer, install_storage
 
+            print("  [bold cyan]Storage Provider (AWS EBS CSI)[/bold cyan]")
             storage_ok = install_storage(
-                cluster_name=name,
-                metadata=metadata,
-                master=master,
-                resolved_user=resolved_user,
-                key_path=key_path,
-            )
-            loadbalancer_ok = install_loadbalancer(
                 cluster_name=name,
                 metadata=metadata,
                 master=master,
@@ -329,6 +319,7 @@ def register(kubeadm_app: typer.Typer):
         else:
             from .azure.setup import install_loadbalancer, install_storage
 
+            print("  [bold cyan]Storage Provider (Azure Disk CSI)[/bold cyan]")
             storage_ok = install_storage(
                 cluster_name=name,
                 metadata=metadata,
@@ -338,6 +329,21 @@ def register(kubeadm_app: typer.Typer):
                 resolved_user=resolved_user,
                 key_path=key_path,
             )
+
+        # ----- Step 8: Install cloud-specific load balancer provider -----
+        _print_step_header(8, total_steps, "Installing cloud load balancer provider")
+
+        if cloud == "aws":
+            print("  [bold cyan]Load Balancer Provider (AWS LB Controller)[/bold cyan]")
+            loadbalancer_ok = install_loadbalancer(
+                cluster_name=name,
+                metadata=metadata,
+                master=master,
+                resolved_user=resolved_user,
+                key_path=key_path,
+            )
+        else:
+            print("  [bold cyan]Load Balancer Provider (Azure LB)[/bold cyan]")
             loadbalancer_ok = install_loadbalancer(
                 cluster_name=name,
                 metadata=metadata,

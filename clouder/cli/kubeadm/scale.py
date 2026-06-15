@@ -17,6 +17,9 @@ from rich.prompt import Confirm
 from ...util.utils import SSH_FOLDER, kubeadm_kubeconfig_path
 
 from ._helpers import (
+    DEFAULT_NODE_LABELS,
+    _print_section_header,
+    _print_step_header,
     _SCRIPT_PREREQS,
     _SCRIPT_UPGRADE_KUBELET,
     _SCRIPT_WORKER_FEATURE_GATE,
@@ -30,13 +33,6 @@ from ._helpers import (
     _ssh_cmd_stream,
     _update_cluster_metadata,
 )
-
-
-DEFAULT_NODE_LABELS = [
-    "role.datalayer.io/runtime=true",
-    "node.datalayer.io/variant=medium",
-    "xpu.datalayer.io/cpu=true",
-]
 
 DEFAULT_PROTECTED_NAMESPACES = {
     "kube-system",
@@ -1207,7 +1203,7 @@ def _scale_down(
         k8s_node_name = victims_sorted[0]
         running_pods = pod_counts.get(k8s_node_name, 0)
 
-        print(f"\n[bold]Node removal {iteration}/{nodes_to_remove}[/bold]")
+        _print_section_header(f"Node removal {iteration}/{nodes_to_remove}")
         print("  Candidate running pod counts:")
         for node_name in sorted(candidate_names, key=_worker_number):
             print(f"    - {node_name}: {pod_counts.get(node_name, 0)} pod(s)")
@@ -1219,7 +1215,7 @@ def _scale_down(
         node_exists = True
 
         # --- Step 1: Mark unschedulable ---
-        print(f"\n  [bold]Step 1/4:[/bold] Mark node as unschedulable ({k8s_node_name})")
+        _print_step_header(1, 4, f"Mark node as unschedulable ({k8s_node_name})")
         cordon_result = _ssh_cmd(
             master["ip"], user, key_path,
             f"kubectl cordon {k8s_node_name}",
@@ -1258,7 +1254,7 @@ def _scale_down(
 
         if node_exists:
             # --- Step 2: Delete all pods on the node ---
-            print(f"\n  [bold]Step 2/4:[/bold] Delete all pods from {k8s_node_name}")
+            _print_step_header(2, 4, f"Delete all pods from {k8s_node_name}")
             _ssh_cmd(
                 master["ip"], user, key_path,
                 (
@@ -1270,7 +1266,7 @@ def _scale_down(
 
         if node_exists:
             # --- Step 3: Wait until evictable pods are gone, then remove K8s node object ---
-            print(f"\n  [bold]Step 3/4:[/bold] Wait for pod termination and remove Kubernetes node object")
+            _print_step_header(3, 4, "Wait for pod termination and remove Kubernetes node object")
             pods_gone = False
             last_other_pods_signature: tuple[str, ...] = tuple()
             unchanged_polls = 0
@@ -1409,7 +1405,7 @@ def _scale_down(
             )
 
         # --- Step 4: Delete VM and wait for Azure completion ---
-        print(f"\n  [bold]Step 4/4:[/bold] Delete virtual machine node {k8s_node_name}")
+        _print_step_header(4, 4, f"Delete virtual machine node {k8s_node_name}")
         vm_names = {
             vm["name"]
             for vm in list_azure_vms(resource_group=resource_group, subscription_id=context_id)

@@ -11,6 +11,7 @@ from ...util.wait import wait_with_spinner
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    _print_step_header,
     resolve_kubeadm_cloud_context,
     resolve_kubeadm_cluster_name,
     _load_cluster_metadata,
@@ -339,7 +340,7 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Exit(1)
 
         # ----- Step 1: Deploy Traefik on the cluster -----
-        print("\n[bold]Step 1/4: Deploying Traefik ingress controller...[/bold]")
+        _print_step_header(1, 4, "Deploying Traefik ingress controller")
         install_script = _SCRIPT_INSTALL_TRAEFIK if cloud == "azure" else _SCRIPT_INSTALL_TRAEFIK_AWS
         rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, install_script)
         if rc != 0:
@@ -347,7 +348,7 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Exit(1)
 
         # ----- Step 2: Resolve Traefik service endpoint details -----
-        print("\n[bold]Step 2/4: Reading Traefik service details...[/bold]")
+        _print_step_header(2, 4, "Reading Traefik service details")
         result = _ssh_cmd(
             master["ip"], resolved_user, key_path,
             f"kubectl -n {_TRAEFIK_NAMESPACE} get svc traefik "
@@ -417,7 +418,7 @@ def register(kubeadm_app: typer.Typer):
 
         if cloud == "aws":
             svc_endpoint = ""
-            print("\n[bold]Step 3/4: Waiting for AWS LoadBalancer endpoint...[/bold]")
+            _print_step_header(3, 4, "Waiting for AWS LoadBalancer endpoint")
             for _ in range(90):
                 endpoint_res = _ssh_cmd(
                     master["ip"],
@@ -455,7 +456,7 @@ def register(kubeadm_app: typer.Typer):
 
         # ----- Step 3: Create Azure Load Balancer -----
         if cloud == "azure":
-            print("\n[bold]Step 3/4: Creating Azure Load Balancer...[/bold]")
+            _print_step_header(3, 4, "Creating Azure Load Balancer")
 
             # Get location from one of the VMs
             from ...cloud.azure.api import list_azure_vms as _list_vms
@@ -572,7 +573,7 @@ def register(kubeadm_app: typer.Typer):
             print(f"  Rules:          80 → :{http_nodeport},  443 → :{https_nodeport}")
 
             # ----- Step 4: Add worker NICs to backend pool -----
-            print("\n[bold]Step 4/4: Adding worker NICs to backend pool...[/bold]")
+            _print_step_header(4, 4, "Adding worker NICs to backend pool")
             from ...cloud.azure.api import add_nic_to_lb_backend_pool
 
             for worker in workers:
@@ -601,7 +602,7 @@ def register(kubeadm_app: typer.Typer):
 
         # ----- Step 4/4 on AWS is endpoint verification (already done) -----
         if cloud == "aws":
-            print("\n[bold]Step 4/4: Finalizing ingress endpoint metadata...[/bold]")
+            _print_step_header(4, 4, "Finalizing ingress endpoint metadata")
 
         # ----- Done -----
         run_url = _os.environ.get("DATALAYER_RUN_URL", "")

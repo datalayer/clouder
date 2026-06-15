@@ -12,6 +12,7 @@ from rich.panel import Panel
 
 from ...util.utils import SSH_FOLDER
 from ._helpers import (
+    DEFAULT_NODE_LABELS,
     resolve_kubeadm_cloud_context,
     _SCRIPT_PREREQS,
     _SCRIPT_UPGRADE_KUBELET,
@@ -23,14 +24,6 @@ from ._helpers import (
     _ssh_cmd_stream,
     resolve_kubeadm_cluster_name,
 )
-
-
-DEFAULT_NODE_LABELS = [
-    "role.datalayer.io/runtime=true",
-    "node.datalayer.io/variant=medium",
-    "xpu.datalayer.io/cpu=true",
-]
-
 
 def _resolve_node_labels(raw_labels: list[str] | None) -> list[str]:
     if not raw_labels:

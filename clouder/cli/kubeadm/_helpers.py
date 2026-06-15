@@ -13,6 +13,36 @@ from ...util.utils import kubeadm_metadata_path, SSH_FOLDER
 # Kubernetes version to install
 K8S_VERSION = "1.32"
 
+# Keep in sync with plane/datalayer_plane/sbin/k8s-label-nodes.sh
+DEFAULT_NODE_LABELS = [
+    "role.datalayer.io/router=true",
+    "role.datalayer.io/system=true",
+    "role.datalayer.io/api=true",
+    "role.datalayer.io/solr=true",
+    "role.datalayer.io/runtime=true",
+    "node.datalayer.io/variant=medium",
+    "xpu.datalayer.io/cpu=true",
+]
+
+
+def _print_step_header(step: int, total: int, title: str) -> None:
+    """Render a high-contrast, separated step header for multi-step actions."""
+    separator = "=" * 78
+    print(f"\n[bold bright_blue]{separator}[/bold bright_blue]")
+    print(
+        f"[bold bright_magenta]STEP {step}/{total}[/bold bright_magenta] "
+        f"[bold bright_cyan]{title}[/bold bright_cyan]"
+    )
+    print(f"[bold bright_blue]{separator}[/bold bright_blue]")
+
+
+def _print_section_header(title: str) -> None:
+    """Render a high-contrast, separated section header for phase blocks."""
+    separator = "=" * 78
+    print(f"\n[bold bright_blue]{separator}[/bold bright_blue]")
+    print(f"[bold bright_magenta]SECTION[/bold bright_magenta] [bold bright_cyan]{title}[/bold bright_cyan]")
+    print(f"[bold bright_blue]{separator}[/bold bright_blue]")
+
 
 # ---------------------------------------------------------------------------
 # SSH helpers

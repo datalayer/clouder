@@ -174,8 +174,10 @@ def register(kubeadm_app: typer.Typer):
 
         # --- Plane setup steps ---
         plane_lines = [
-            "After retrieving the kubeconfig, run the following plane commands",
+            "Start by retrieving the kubeconfig, then run the following commands",
             "to complete the platform setup:\n",
+            f"  Get kubeconfig:    [cyan]clouder kubeadm get-config {name}[/cyan]",
+            "",
             f"  [cyan]clouder kubeadm enable-ingress-traefik {name}[/cyan]",
             f"  [cyan]clouder kubeadm smoke-test {name}[/cyan]",
             "",
