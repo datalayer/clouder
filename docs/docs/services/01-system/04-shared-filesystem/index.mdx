@@ -10,6 +10,7 @@ import TabItem from '@theme/TabItem';
 Datalayer user data is stored on a Shared File System. The File System Storage can be implemented as a:
 
 - [Azure Files NFS](https://learn.microsoft.com/en-us/azure/storage/files/files-nfs-protocol).
+- [AWS EFS](https://docs.aws.amazon.com/efs) mounted through the EFS CSI driver.
 - [Ceph](https://docs.ceph.com) Filesystem deployed and managed by [Rook](https://rook.io).
 
 ## Azure Files NFS
@@ -108,6 +109,68 @@ kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- mount | grep /mnt/sh
 kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- ls /mnt/sharedfs
 kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
 kubectl delete pod shared-fs-prepare -n datalayer-runtimes
+```
+
+Tear down when you don't need the Shared Filesystem anymore.
+
+```bash
+plane down datalayer-shared-filesystem
+```
+
+## AWS EFS
+
+Define the storage provider as `aws`.
+
+```bash
+DATALAYER_STORAGE_PROVIDER=aws
+```
+
+### Prerequisites
+
+The `aws-efs` StorageClass must exist **before** running `plane up datalayer-shared-filesystem`.
+The shared-filesystem chart creates PVCs only and expects a pre-provisioned EFS-backed StorageClass.
+
+You also need:
+
+- The AWS EFS CSI driver installed in the cluster.
+- An existing EFS file system ID.
+
+Create the StorageClass (example):
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: aws-efs
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: fs-xxxxxxxxxxxxxxxxx
+  directoryPerms: "775"
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+EOF
+```
+
+### Deploy
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-shared-filesystem
+```
+  </TabItem>
+</Tabs>
+
+Verify:
+
+```bash
+kubectl get pvc -n datalayer-runtimes
+kubectl get pv | grep datalayer-runtimes
+kubectl get storageclass aws-efs
+kubectl logs shared-fs-prepare -n datalayer-runtimes
 ```
 
 Tear down when you don't need the Shared Filesystem anymore.
