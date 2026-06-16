@@ -8,7 +8,7 @@ import { Label, Stack } from '@primer/react-brand';
 
 # ☰ ⛁ Datalayer Datashim
 
-[Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Jupyter Content` features.
+[Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Runtime Content` features.
 
 ```bash
 helm repo add datashim https://datashim-io.github.io/datashim
@@ -38,16 +38,24 @@ export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 Check the Datashim Pods.
 
 ```bash
-kubectl get pods -n datalayer-datashim
-# NAME                                READY   STATUS              RESTARTS   AGE
-# csi-attacher-s3-0                   1/1     Running             0          8s
-# csi-provisioner-s3-0                1/1     Running             0          8s
-# csi-s3-2rllf                        2/2     Running             0          8s
-# ...
-# csi-s3-bkbkr                        2/2     Running             0          8s
-# csi-s3-c4xv5                        2/2     Running             0          8s
-# dataset-operator-7b55b587d4-xtd6q   1/1     Running   0          2m25s
+kubectl get pods -n datalayer-runtimes | grep -E 'dataset-operator|csi-s3|csi-nfs|datashim'
+# csi-s3-xxxxx                        2/2     Running   0          30s
+# csi-s3-yyyyy                        2/2     Running   0          30s
+# dataset-operator-zzzzz              1/1     Running   0          20s
+
+# release information
+helm list -A | grep datalayer-datashim
+# datalayer-datashim   datalayer-runtimes   ...   deployed
+
+# webhook resources
+kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations | grep -i datashim
 ```
+
+:::note
+`plane up datalayer-datashim` deploys the release in the `datalayer-runtimes` namespace.
+
+If you run `kubectl get pods -n datalayer-datashim`, you may see no resources and incorrectly conclude Datashim is down.
+:::
 
 ## S3 Secret
 

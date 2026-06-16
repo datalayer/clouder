@@ -138,13 +138,16 @@ for PV in $(kubectl get pv -o jsonpath='{range .items[?(@.spec.claimRef.name=="d
 done
 kubectl delete storageclass aws-efs --ignore-not-found
 
-# 3) Delete old EFS file system (mount targets must be removed first)
+# 3) Delete old EFS file system (delete access points and mount targets first)
 EFS_ID=<old-fs-id>
+for AP in $(aws efs describe-access-points --file-system-id "$EFS_ID" --query 'AccessPoints[].AccessPointId' --output text); do
+  aws efs delete-access-point --access-point-id "$AP"
+done
 for MT in $(aws efs describe-mount-targets --file-system-id "$EFS_ID" --query 'MountTargets[].MountTargetId' --output text); do
   aws efs delete-mount-target --mount-target-id "$MT"
 done
-aws efs wait file-system-deleted --file-system-id "$EFS_ID" || true
 aws efs delete-file-system --file-system-id "$EFS_ID"
+aws efs wait file-system-deleted --file-system-id "$EFS_ID"
 
 # 4) Reprovision from plane automation
 plane up datalayer-shared-filesystem
@@ -358,7 +361,7 @@ flowchart TB
     subgraph "node (datalayer-runtimes)"
     subgraph pod
     rk[Remote Runtimes]
-    oc[Jupyter Companion]
+    oc[Runtime Companion]
     end
     end
     rk-- mount -->userfs
