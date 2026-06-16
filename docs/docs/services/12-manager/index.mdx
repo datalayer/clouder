@@ -2,6 +2,8 @@
 title: Datalayer Manager
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
 # ☰ 🎛️ Datalayer Manager
@@ -11,9 +13,23 @@ import { Label, Stack } from '@primer/react-brand';
   <Label color="red">REST API</Label>
 </Stack>
 
-`Datalayer Manager` is an API and UI (User Interface) to manage the Datalayer services.
+`Datalayer Manager` is an API and UI (User Interface) to manage the Datalayer services. It is also responsible for the observability of the services. The observed metrics are used for the monitoring, alerting and billing.
 
-It is also responsible for the observability of the services. The observed metrics are used for the monitoring, alerting and billing.
+## Deploy Datalayer Manager
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-manager
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
 
 ## OpenAPI Specification
 

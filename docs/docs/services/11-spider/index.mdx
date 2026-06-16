@@ -2,6 +2,8 @@
 title: Datalayer Spider
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
 # 🕷️ Datalayer Spider
@@ -12,3 +14,19 @@ import { Label, Stack } from '@primer/react-brand';
 </Stack>
 
 `Datalayer Spider` crawls and indexes useful content for data analysis from GitHub.
+
+## Deploy Datalayer Spider
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-spider
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>

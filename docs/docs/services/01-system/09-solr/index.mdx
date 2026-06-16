@@ -8,13 +8,6 @@ import { Label, Stack } from '@primer/react-brand';
 
 # Solr
 
-## Known Limitations
-
-- Solr Operator `SolrBackup.status` may mark collection backups as failed without exposing a concrete per-collection root-cause message.
-- In that case, treat `plane solr-backups-status` as the operational source of truth for failure detection and use the reported `s3Prefix` values to verify artifact presence in S3.
-- An empty prefix (for example `s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/`) confirms artifact creation failed even when the CR status reason is generic.
-- For root-cause investigation, use the `failedProcessDebug` command from `plane solr-backups-status` and inspect collection health with `plane solr-status <collection>`.
-
 ## Apache Solr Operator
 
 To deploy Solr, you first need to deploy the [Solr Operator](https://solr.apache.org/operator).
@@ -641,3 +634,10 @@ kubectl delete \
 ```
   </TabItem>
 </Tabs>
+
+## Known Limitations
+
+- Solr Operator `SolrBackup.status` may mark collection backups as failed without exposing a concrete per-collection root-cause message.
+- In that case, treat `plane solr-backups-status` as the operational source of truth for failure detection and use the reported `s3Prefix` values to verify artifact presence in S3.
+- An empty prefix (for example `s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/`) confirms artifact creation failed even when the CR status reason is generic.
+- For root-cause investigation, use the `failedProcessDebug` command from `plane solr-backups-status` and inspect collection health with `plane solr-status <collection>`.

@@ -15,9 +15,13 @@ import { Label, Stack } from '@primer/react-brand';
 
 `Datalayer Operator` ensures that the requested services and resources are available. Datalayer Operator is a Kubernetes operator that constantly monitors the system and takes action so that the desired state is met on the Kubernetes cluster. It is responsible for managing the state of the Datalayer services.
 
-- Manage the defined 🛣️ Routes to secure and direct the incoming request to the correct service or pod.
-- Manage the defined 🐋 Docker Images building and publication in the Docker registry.
-- Manage the defined 💼 Runtime Contents, 🌳 Runtime Environments and 🎱 Runtime Pools.
+```
+- 🛣️ Manages the Routes to secure and direct the incoming request to the correct service or pod.
+- 🐋 Manages the Docker Images building and publication in the Docker registry.
+- 💼 Manages the Runtime Contents.
+- 🌳 Manages the Runtime Environments
+- 🎱 Manages the Runtime Pools.
+```
 
 Please note that the [Jupyter Service](/services/runtimes/) is responsible to deliver the ⚪ Runtimes to the user, so it is not the duty of the Datalayer Operator to serve Runtimes.
 

@@ -15,11 +15,13 @@ import { Label, Stack } from '@primer/react-brand';
 
 `Datalayer Library` provides a searchable index of artifacts useful for data analysis.
 
+```
 - Dataset.
 - Cell.
 - Notebook.
 - Environment.
 - Runtime.
+```
 
 ## Deploy Datalayer Library
 
@@ -32,11 +34,7 @@ plane up datalayer-library
   <TabItem value="terraform" label="Terraform">
 ```bash
 cd terraform
-terraform init
-terraform apply
-./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
-./generated/services/deploy-datalayer-library.sh
+...
 ```
   </TabItem>
 </Tabs>

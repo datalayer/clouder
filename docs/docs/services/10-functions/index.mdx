@@ -2,6 +2,8 @@
 title: Datalayer Functions
 ---
 
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
 # 🔨 Datalayer Functions
@@ -11,6 +13,21 @@ import { Label, Stack } from '@primer/react-brand';
   <Label color="red">Service</Label>
 </Stack>
 
-`Datalayer Functions` receives job submission sent by other services.
+`Datalayer Functions` receives job submission sent by other services. It schedules, executes and reports results of those submissions.
 
-It schedules, executes and reports results of those submissions.
+## Deploy Datalayer Functions
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-functions
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
+
