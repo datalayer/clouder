@@ -6,7 +6,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import ModalImage from "react-modal-image";
 
-# OTEL
+# 🔭 OTEL
 
 `Datalayer OTEL` service provides long-term observability storage and querying for the Datalayer Platform. It collects traces, metrics and logs via Apache Pulsar, stores them as Parquet files using Apache DataFusion, and exposes a REST + WebSocket API for querying.
 
@@ -43,7 +43,7 @@ The `datalayer-otel` Helm chart deploys two components into the `datalayer-otel`
 This is separate from the `datalayer-observer` stack (deployed in the `datalayer-observer` namespace) which runs Tempo, Prometheus and Loki for Grafana-based dashboards. The `datalayer-otel` service provides a dedicated Datalayer-native API for observability data, with SQL query capabilities via DataFusion.
 :::
 
-## Deployment
+## Deploy Datalayer OTEL
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>

@@ -6,14 +6,14 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# Home
+# 🏠 Home
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
   <Label color="red">Service</Label>
 </Stack>
 
-## Deploy
+## Deploy Datalayer Home
 
 <Tabs groupId="k8s">
   <TabItem value="plane-cert-up" label="Plane" default>
@@ -37,7 +37,7 @@ export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
   </TabItem>
 </Tabs>
 
-## Remove
+## Tear Down Datalayer Home
 
 ```bash
 plane down datalayer-home

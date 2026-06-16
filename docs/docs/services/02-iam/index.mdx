@@ -176,10 +176,10 @@ sequenceDiagram title Authenticate from JupyterLab with a 3rd Party Token
     IAM-->>JupyterLab: Datalayer JWT Token
 ```
 
-### Access a Datalayer Service from JupyterLab
+### Access a Datalayer Runtime from JupyterLab
 
 ```mermaid
-sequenceDiagram title Access a Datalayer Service from JupyterLab
+sequenceDiagram title Access a Datalayer Runtime from JupyterLab
     JupyterLab->>IAM Middleware: Request with JWT Token (and 3rd Party Token)
     activate IAM Middleware
     IAM Middleware->>IAM Middleware: Check JWT validity for Authn
@@ -205,32 +205,32 @@ sequenceDiagram title Access a Datalayer Service from JupyterLab
     IAM Middleware-->>JupyterLab: Response
 ```
 
-### Create a Jupyter Runtime from JupyterLab
+### Create a Runtimes Runtime from JupyterLab
 
 ```mermaid
-sequenceDiagram title Create a Jupyter Runtime from JupyterLab
-    JupyterLab->>Jupyter Service: Request a Jupyter Runtime
-    activate Jupyter Service
-    Jupyter Service->>Jupyter Service: Check JWT validity for Authn
-    Jupyter Service->>Jupyter Service: Check Authz with OpenFGA
-    Jupyter Service->>Operator: Request a Runtime
+sequenceDiagram title Create a Runtimes Runtime from JupyterLab
+    JupyterLab->>Runtimes Service: Request a Runtimes Runtime
+    activate Runtimes Service
+    Runtimes Service->>Runtimes Service: Check JWT validity for Authn
+    Runtimes Service->>Runtimes Service: Check Authz with OpenFGA
+    Runtimes Service->>Operator: Request a Runtime
     Operator->>Operator: Authn with Secret Key
-    Operator->>Jupyter Runtime: Create a Runtime Pod and Ingress
-    Operator-->>Jupyter Service: Response (Jupyter Token and URL)
-    Jupyter Service-->>JupyterLab: Response (Jupyter Token and URL)
+    Operator->>Runtimes Runtime: Create a Runtime Pod and Ingress
+    Operator-->>Runtimes Service: Response (Runtimes Token and URL)
+    Runtimes Service-->>JupyterLab: Response (Runtimes Token and URL)
 ```
 
-### Access a Jupyter Runtime from JupyterLab
+### Access a Runtimes Runtime from JupyterLab
 
 ```mermaid
-sequenceDiagram title Access a Jupyter Runtime from JupyterLab
-    JupyterLab->>Jupyter Runtime: Access a Jupyter Runtime (URL + Token)
-    Jupyter Runtime-->>Jupyter Runtime: Check Jupyter Token
+sequenceDiagram title Access a Runtimes Runtime from JupyterLab
+    JupyterLab->>Runtimes Runtime: Access a Runtimes Runtime (URL + Token)
+    Runtimes Runtime-->>Runtimes Runtime: Check Runtimes Token
     break if token invalid
-      Jupyter Runtime-->>JupyterLab: Invalid
+      Runtimes Runtime-->>JupyterLab: Invalid
     end
-    Jupyter Runtime-->>Jupyter Runtime: Execute request
-    Jupyter Runtime-->>JupyterLab: Response
+    Runtimes Runtime-->>Runtimes Runtime: Execute request
+    Runtimes Runtime-->>JupyterLab: Response
 ```
 
 ### IAM at Ingress Level
