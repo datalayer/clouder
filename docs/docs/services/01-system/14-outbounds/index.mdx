@@ -1,17 +1,17 @@
 ---
-title: Mailer
+title: Outbounds
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# Mailer
+# Outbounds
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-plane up datalayer-mailer
+plane up datalayer-outbounds
 ```
   </TabItem>
   <TabItem value="helm" label="Helm">
@@ -19,11 +19,11 @@ plane up datalayer-mailer
 cat << 'EOF' > /tmp/values.yaml
 ...
 EOF
-export RELEASE=datalayer-mailer
-export NAMESPACE=datalayer-mailer
+export RELEASE=datalayer-outbounds
+export NAMESPACE=datalayer-outbounds
 helm upgrade \
     --install $RELEASE \
-    datalayer/mailer \
+    datalayer/outbounds \
     --create-namespace \
     --namespace $NAMESPACE \
     --values /tmp/values.yaml \
@@ -33,36 +33,32 @@ helm upgrade \
   <TabItem value="terraform" label="Terraform">
 ```bash
 cd terraform
-terraform init
-terraform apply
-./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
-./generated/services/deploy-datalayer-mailer.sh
+...
 ```
   </TabItem>
 </Tabs>
 
-Check the availability of the Mailer Pods.
+Check the availability of the Outbounds Pods.
 
 ```bash
-kubectl get pods -n datalayer-mailer
+kubectl get pods -n datalayer-outbounds
 
 # NAME                                 READY   STATUS      RESTARTS   AGE
 ...
 ```
 
-Tear down Mailer if needed.
+Tear down outbounds if needed.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-plane down datalayer-mailer
+plane down datalayer-outbounds
 ```
   </TabItem>
   <TabItem value="helm" label="Helm">
 ```bash
-export RELEASE=datalayer-mailer
-export NAMESPACE=datalayer-mailer
+export RELEASE=datalayer-outbounds
+export NAMESPACE=datalayer-outbounds
 helm delete $RELEASE --namespace $NAMESPACE
 ```
   </TabItem>
