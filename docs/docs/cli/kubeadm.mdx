@@ -225,12 +225,14 @@ Default worker labels applied after each node becomes Ready:
 | 3. Install CNI | Master | Install Flannel CNI for pod networking |
 | 4. Kubeadm join | Workers | Join all worker nodes to the cluster |
 | 5. CRIU feature gates | All nodes | Enable `ContainerCheckpoint` feature gate on all kubelets (master + workers) |
-| 6. Cloud storage and load balancer bootstrap | Cloud-specific | Azure: deploy cloud config, install Azure Disk CSI (`managed-csi`) and Azure File CSI (`azure-nfs`). AWS: install AWS EBS CSI with default `gp3` StorageClass and install AWS Load Balancer Controller (instance profile preferred, static credentials fallback). |
+| 6. Cloud storage and load balancer bootstrap | Cloud-specific | Azure: deploy cloud config, install Azure Disk CSI (`managed-csi`) and Azure File CSI (`azure-nfs`). AWS: align node IAM profile usage, attach CSI IAM policies (`AmazonEBSCSIDriverPolicy`, `AmazonEFSCSIDriverPolicy`), set IMDS hop limit to `2`, install AWS EBS CSI (`gp3` default) and AWS EFS CSI (`aws-efs` StorageClass), then install AWS Load Balancer Controller. |
 
 :::note
 Azure storage setup requires a service principal. If `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` are set, they are used. Otherwise, Clouder attempts to create a scoped SP automatically.
 
-AWS storage setup prefers EC2 instance profiles on node VMs. If no instance profile is attached, Clouder falls back to the active AWS credentials in the current session.
+AWS storage setup prefers EC2 instance profiles on node VMs. During setup, Clouder aligns the instance profile across kubeadm nodes (when discoverable), ensures CSI policies are attached to the instance profile role, and updates IMDSv2 hop limit to `2` for metadata access from CSI controllers.
+
+If no instance profile is attached, Clouder falls back to the active AWS credentials in the current session for CSI bootstrap.
 
 On AWS, load balancer setup installs AWS Load Balancer Controller and expects node IAM permissions for ELB operations.
 :::
@@ -238,6 +240,7 @@ On AWS, load balancer setup installs AWS Load Balancer Controller and expects no
 AWS cloud integration details:
 
 - Storage: installs AWS EBS CSI and configures a default `gp3` StorageClass.
+- Shared FS storage: installs AWS EFS CSI and configures `aws-efs` StorageClass.
 - Load balancer: installs AWS Load Balancer Controller with cluster-aware settings.
 - Authentication preference: EC2 instance profile first, then fallback to active AWS credentials when needed.
 

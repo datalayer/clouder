@@ -6,7 +6,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# 🛣️ Ingress
+# ☰ 🛣️ Datalayer Ingress
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
@@ -25,7 +25,7 @@ You will need to choose one of the following options to implement the Ingress:
 - Ingress Traefik.
 - Ingress Nginx - This is deprecated as suffering from IP availability latency.
 
-## Deploy Ingress Traefik
+## Deploy Datalayer Ingress Traefik
 
 ```bash
 helm repo add traefik https://traefik.github.io/charts
@@ -99,8 +99,7 @@ kubectl get ingressclass
 
 :::warning
 
-
-## [DEPRECATED] Deploy Ingress Nginx
+## [DEPRECATED] Deploy Datalayer Ingress Nginx
 
 Instead of Traefik, you may deploy Nginx (watch out for potential latency for the creation of the Ingress Kubernetes objects, impacting the [Datalayer Runtimes](/services/runtimes/) service).
 
@@ -220,7 +219,7 @@ nslookup $DATALAYER_RUN_HOST
 
 :::
 
-## Tear Down Ingress
+## Tear Down Datalayer Ingress
 
 If needed, tear down the Ingress.
 

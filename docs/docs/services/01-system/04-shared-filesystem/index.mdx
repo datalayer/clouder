@@ -5,7 +5,7 @@ title: Shared File System
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# 📂 Shared File System
+# ☰ 📂 Datalayer Shared File System
 
 Datalayer user data is stored on a Shared File System. The File System Storage can be implemented as a:
 
@@ -35,11 +35,30 @@ You need:
 <Tabs>
 <TabItem value="Kubeadm" label="Kubeadm (Clouder)" default>
 
-Validate the StorageClass is available:
+On Kubeadm clusters created with Clouder, `clouder kubeadm setup` now bakes all AWS EFS prerequisites:
+
+- Ensures node IAM profile usage is aligned across kubeadm nodes.
+- Ensures required managed policies are attached to the node role:
+  - `AmazonEBSCSIDriverPolicy`
+  - `AmazonEFSCSIDriverPolicy`
+- Ensures IMDSv2 hop limit is set to `2` on kubeadm nodes.
+- Installs AWS EFS CSI driver and creates the `aws-efs` StorageClass.
+
+Validate the resulting objects:
 
 ```bash
 # Verify the StorageClass exists
 kubectl get storageclass aws-efs
+
+# Verify EFS CSI driver objects
+kubectl -n kube-system get deployment efs-csi-controller
+kubectl -n kube-system get daemonset efs-csi-node
+
+# Verify node IMDS settings and IAM profile on EC2 (run from an AWS-authenticated shell)
+aws ec2 describe-instances \
+  --instance-ids <instance-id> \
+  --query 'Reservations[].Instances[].{Hop:MetadataOptions.HttpPutResponseHopLimit,Profile:IamInstanceProfile.Arn}' \
+  --output table
 ```
 
 </TabItem>
@@ -86,19 +105,17 @@ A `shared-fs-prepare` Pod is launched to create the initial folders in the share
 ```bash
 kubectl logs shared-fs-prepare -n datalayer-runtimes
 # + mkdir -p /mnt/shared-fs/home
-# + chown 1000:100 /mnt/shared-fs/home
 # + mkdir -p /mnt/shared-fs/public
-# + chown 1000:100 /mnt/shared-fs/public
 # + mkdir -p /mnt/shared-fs/datasets
-# + chown 1000:100 /mnt/shared-fs/datasets
 # + mkdir -p /mnt/shared-fs/tmp
-# + chown 1000:100 /mnt/shared-fs/tmp
 kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- mount | grep /mnt/shared-fs
 # fs-xxxxxx.efs.<region>.amazonaws.com:/ on /mnt/shared-fs type nfs4 (...)
 kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- ls /mnt/shared-fs
 kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
 kubectl delete pod shared-fs-prepare -n datalayer-runtimes
 ```
+
+On AWS/EFS, `chown` is intentionally skipped in `shared-fs-prepare` to avoid noisy `Operation not permitted` errors from EFS access point ownership semantics.
 
 Tear down when you don't need the Shared Filesystem anymore.
 

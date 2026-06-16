@@ -8,6 +8,126 @@ from botocore.exceptions import ClientError
 from rich import print
 
 
+def _parse_instance_profile_name(profile_arn: str | None) -> str:
+    """Extract instance profile name from an ARN."""
+    if not profile_arn:
+        return ""
+    marker = "instance-profile/"
+    if marker not in profile_arn:
+        return ""
+    return profile_arn.split(marker, 1)[1]
+
+
+def _ensure_aws_node_permissions(
+    metadata: dict,
+    region: str,
+    seed_instance_profile_arn: str | None,
+) -> str | None:
+    """Ensure kubeadm AWS nodes have an instance profile, CSI policies, and IMDS hop limit."""
+    from ....cloud.aws.api import _client
+
+    if not metadata:
+        return seed_instance_profile_arn
+
+    master = metadata.get("master", {}) or {}
+    workers = metadata.get("workers", []) or []
+
+    node_instance_ids: list[str] = []
+    master_id = str(master.get("instance_id") or "").strip()
+    if master_id:
+        node_instance_ids.append(master_id)
+    for worker in workers:
+        worker_id = str((worker or {}).get("instance_id") or "").strip()
+        if worker_id:
+            node_instance_ids.append(worker_id)
+
+    if not node_instance_ids:
+        print("[yellow]  No node instance IDs found in metadata - skipping IAM/IMDS alignment.[/yellow]")
+        return seed_instance_profile_arn
+
+    ec2 = _client("ec2", region=region)
+    iam = _client("iam", region=region)
+
+    profile_arn = seed_instance_profile_arn
+    if not profile_arn:
+        try:
+            desc = ec2.describe_instances(InstanceIds=node_instance_ids)
+            for reservation in desc.get("Reservations", []) or []:
+                for instance in reservation.get("Instances", []) or []:
+                    current_profile = (instance.get("IamInstanceProfile") or {}).get("Arn")
+                    if current_profile:
+                        profile_arn = current_profile
+                        break
+                if profile_arn:
+                    break
+        except Exception as exc:
+            print(f"[yellow]  Could not discover node instance profile: {exc}[/yellow]")
+
+    profile_name = _parse_instance_profile_name(profile_arn)
+    if not profile_name:
+        print("[yellow]  No EC2 instance profile found on kubeadm nodes - skipping automatic policy/profile propagation.[/yellow]")
+        print("  Attach one profile to at least one node before running setup for full AWS CSI automation.")
+        return profile_arn
+
+    role_name = ""
+    try:
+        profile = iam.get_instance_profile(InstanceProfileName=profile_name).get("InstanceProfile", {})
+        roles = profile.get("Roles", []) or []
+        if roles:
+            role_name = roles[0].get("RoleName") or ""
+    except Exception as exc:
+        print(f"[yellow]  Could not read IAM instance profile '{profile_name}': {exc}[/yellow]")
+
+    if role_name:
+        required_policy_arns = [
+            "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+            "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy",
+        ]
+        for policy_arn in required_policy_arns:
+            try:
+                iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+            except ClientError as exc:
+                print(f"[yellow]  Could not attach policy {policy_arn} to role {role_name}: {exc}[/yellow]")
+
+    for instance_id in node_instance_ids:
+        try:
+            instance_desc = ec2.describe_instances(InstanceIds=[instance_id])
+            reservations = instance_desc.get("Reservations", [])
+            instances = reservations[0].get("Instances", []) if reservations else []
+            current_profile_arn = ""
+            if instances:
+                current_profile_arn = ((instances[0].get("IamInstanceProfile") or {}).get("Arn") or "")
+            if not current_profile_arn:
+                ec2.associate_iam_instance_profile(
+                    IamInstanceProfile={"Name": profile_name},
+                    InstanceId=instance_id,
+                )
+            elif current_profile_arn != profile_arn:
+                assoc = ec2.describe_iam_instance_profile_associations(
+                    Filters=[{"Name": "instance-id", "Values": [instance_id]}],
+                )
+                associations = assoc.get("IamInstanceProfileAssociations", []) or []
+                if associations:
+                    ec2.replace_iam_instance_profile_association(
+                        AssociationId=associations[0]["AssociationId"],
+                        IamInstanceProfile={"Name": profile_name},
+                    )
+        except ClientError as exc:
+            print(f"[yellow]  Could not align instance profile on {instance_id}: {exc}[/yellow]")
+
+        try:
+            ec2.modify_instance_metadata_options(
+                InstanceId=instance_id,
+                HttpEndpoint="enabled",
+                HttpTokens="required",
+                HttpPutResponseHopLimit=2,
+            )
+        except ClientError as exc:
+            print(f"[yellow]  Could not set IMDS options on {instance_id}: {exc}[/yellow]")
+
+    return profile_arn
+
+
 def _ensure_aws_efs_ready(
     cluster_name: str,
     region: str,
@@ -114,6 +234,7 @@ def install_storage(
     )
     from .._helpers import (
         _build_aws_ebs_csi_setup_script,
+        _build_aws_efs_csi_setup_script,
         _build_aws_efs_storageclass_script,
         _ssh_cmd_stream,
         _update_cluster_metadata,
@@ -158,6 +279,19 @@ def install_storage(
     else:
         print("  No instance profile detected. Falling back to static AWS credentials for EBS CSI bootstrap.")
 
+    # Ensure all kubeadm nodes have consistent IAM/IMDS configuration for CSI controllers.
+    instance_profile_arn = _ensure_aws_node_permissions(
+        metadata=metadata,
+        region=aws_region,
+        seed_instance_profile_arn=instance_profile_arn,
+    )
+    use_instance_profile = bool(instance_profile_arn)
+
+    if use_instance_profile:
+        print(f"  Using EC2 instance profile for EFS CSI auth: [dim]{instance_profile_arn}[/dim]")
+    else:
+        print("  No instance profile detected. Falling back to static AWS credentials for EFS CSI bootstrap.")
+
     networking = metadata.get("networking", {}) if metadata else {}
     subnet_id = networking.get("subnet_id", "")
     security_group_id = networking.get("security_group_id", "")
@@ -187,6 +321,19 @@ def install_storage(
                     }
                 },
             )
+
+            print("  Installing AWS EFS CSI driver...")
+            efs_csi_script = _build_aws_efs_csi_setup_script(
+                region=aws_region,
+                use_instance_profile=use_instance_profile,
+                access_key_id=access_key_id or None,
+                secret_access_key=secret_access_key or None,
+                session_token=aws_creds.get("session_token") or None,
+            )
+            efs_csi_rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, efs_csi_script)
+            if efs_csi_rc != 0:
+                print("[red]  AWS EFS CSI installation failed.[/red]")
+                return storage_ok
 
             print("  Creating aws-efs StorageClass...")
             efs_sc_script = _build_aws_efs_storageclass_script(efs_file_system_id)

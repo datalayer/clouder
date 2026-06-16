@@ -925,6 +925,69 @@ kubectl get storageclass aws-efs
 """
 
 
+def _build_aws_efs_csi_setup_script(
+    region: str,
+    use_instance_profile: bool = False,
+    access_key_id: str | None = None,
+    secret_access_key: str | None = None,
+    session_token: str | None = None,
+) -> str:
+    """Return a bash script that installs AWS EFS CSI driver."""
+    import base64
+
+    access_key_b64 = base64.b64encode((access_key_id or "").encode()).decode()
+    secret_key_b64 = base64.b64encode((secret_access_key or "").encode()).decode()
+    session_token_b64 = base64.b64encode((session_token or "").encode()).decode()
+
+    credential_block = """
+# Ensure static credentials are not forced when using instance profile auth.
+kubectl -n kube-system set env deployment/efs-csi-controller \\
+    --containers=efs-plugin AWS_ACCESS_KEY_ID- AWS_SECRET_ACCESS_KEY- AWS_SESSION_TOKEN- || true
+"""
+
+    if not use_instance_profile:
+        credential_block = f"""
+AWS_ACCESS_KEY_ID=\"$(echo '{access_key_b64}' | base64 -d)\"
+AWS_SECRET_ACCESS_KEY=\"$(echo '{secret_key_b64}' | base64 -d)\"
+AWS_SESSION_TOKEN=\"$(echo '{session_token_b64}' | base64 -d)\"
+
+kubectl -n kube-system create secret generic aws-efs-csi-credentials \\
+    --from-literal=AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\" \\
+    --from-literal=AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\" \\
+    --from-literal=AWS_SESSION_TOKEN=\"$AWS_SESSION_TOKEN\" \\
+    --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n kube-system set env deployment/efs-csi-controller \\
+    --containers=efs-plugin --from=secret/aws-efs-csi-credentials
+"""
+
+    return f"""set -euo pipefail
+
+if ! command -v helm >/dev/null 2>&1; then
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+fi
+
+helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/ 2>/dev/null || true
+helm repo update
+
+helm upgrade --install aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver \\
+    --namespace kube-system \\
+    --set controller.serviceAccount.create=true \\
+    --wait --timeout 300s
+
+kubectl -n kube-system set env deployment/efs-csi-controller \\
+    --containers=efs-plugin AWS_REGION={region}
+
+{credential_block}
+
+kubectl -n kube-system rollout status deployment/efs-csi-controller --timeout=240s
+kubectl -n kube-system get deployment efs-csi-controller -o wide
+kubectl -n kube-system get daemonset efs-csi-node -o wide
+
+echo \"AWS EFS CSI driver installed.\"
+"""
+
+
 def _build_aws_load_balancer_setup_script(
         region: str,
         vpc_id: str,
