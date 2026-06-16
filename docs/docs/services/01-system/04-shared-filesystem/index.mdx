@@ -69,7 +69,7 @@ Use your Terraform/cluster automation workflow to provision EFS and `aws-efs` be
 </TabItem>
 </Tabs>
 
-### Deploy
+Deploy the shared filesystem with the following command.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
@@ -80,11 +80,7 @@ plane up datalayer-shared-filesystem
   <TabItem value="terraform" label="Terraform">
 ```bash
 cd terraform
-terraform init
-terraform apply
-./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
-./generated/services/deploy-datalayer-shared-filesystem.sh
+...
 ```
   </TabItem>
 </Tabs>
@@ -115,7 +111,53 @@ kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
 kubectl delete pod shared-fs-prepare -n datalayer-runtimes
 ```
 
-On AWS/EFS, `chown` is intentionally skipped in `shared-fs-prepare` to avoid noisy `Operation not permitted` errors from EFS access point ownership semantics.
+On AWS/EFS, `chown` runs in `shared-fs-prepare` as on other providers. This relies on EFS access points being provisioned with root identity mapping (`uid=0`, `gid=0`) by platform automation.
+
+Validate ownership behavior:
+
+```bash
+kubectl logs shared-fs-prepare -n datalayer-runtimes --tail=120
+# Look for chown lines for each directory and ai-models
+
+kubectl exec shared-fs-prepare -n datalayer-runtimes -- \
+  sh -c 'chown -R root:root /mnt/shared-fs/ai-models && chown 1000:100 /mnt/shared-fs/home && stat -c "%u:%g %n" /mnt/shared-fs/ai-models /mnt/shared-fs/home'
+```
+
+For a full from-scratch AWS validation, tear down and reprovision everything:
+
+```bash
+# 1) Remove the Helm release resources
+plane down datalayer-shared-filesystem
+
+# 2) Delete old PVC/PV and StorageClass objects
+kubectl delete pvc datalayer-shared-filesystem -n datalayer-runtimes --ignore-not-found
+kubectl delete pvc datalayer-shared-filesystem -n datalayer-api --ignore-not-found
+for PV in $(kubectl get pv -o jsonpath='{range .items[?(@.spec.claimRef.name=="datalayer-shared-filesystem")]}{.metadata.name}{"\n"}{end}'); do
+  kubectl patch pv "$PV" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+  kubectl delete pv "$PV" --ignore-not-found
+done
+kubectl delete storageclass aws-efs --ignore-not-found
+
+# 3) Delete old EFS file system (mount targets must be removed first)
+EFS_ID=<old-fs-id>
+for MT in $(aws efs describe-mount-targets --file-system-id "$EFS_ID" --query 'MountTargets[].MountTargetId' --output text); do
+  aws efs delete-mount-target --mount-target-id "$MT"
+done
+aws efs wait file-system-deleted --file-system-id "$EFS_ID" || true
+aws efs delete-file-system --file-system-id "$EFS_ID"
+
+# 4) Reprovision from plane automation
+plane up datalayer-shared-filesystem
+kubectl wait --for=condition=Bound pvc/datalayer-shared-filesystem -n datalayer-runtimes --timeout=240s
+kubectl wait --for=condition=Bound pvc/datalayer-shared-filesystem -n datalayer-api --timeout=240s
+kubectl delete pod shared-fs-prepare -n datalayer-runtimes --force --grace-period=0 --ignore-not-found
+plane up datalayer-shared-filesystem
+kubectl wait --for=condition=Ready pod/shared-fs-prepare -n datalayer-runtimes --timeout=240s
+
+# 5) Verify StorageClass identity mapping and prepare logs
+kubectl get storageclass aws-efs -o yaml | grep -E 'uid:|gid:|fileSystemId|provisioningMode'
+kubectl logs shared-fs-prepare -n datalayer-runtimes --tail=120
+```
 
 Tear down when you don't need the Shared Filesystem anymore.
 
