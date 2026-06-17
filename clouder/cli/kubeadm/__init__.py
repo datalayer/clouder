@@ -26,6 +26,7 @@ from . import info, ingress_nginx, ingress_traefik, smoke_test    # noqa: E402
 from . import upgrade_kubelet                                     # noqa: E402
 from . import use                                                 # noqa: E402
 from . import repair                                              # noqa: E402
+from . import remove_node                                         # noqa: E402
 
 create.register(kubeadm_app)
 list_clusters.register(kubeadm_app)
@@ -42,3 +43,4 @@ ingress_traefik.register(kubeadm_app)
 smoke_test.register(kubeadm_app)
 upgrade_kubelet.register(kubeadm_app)
 repair.register(kubeadm_app)
+remove_node.register(kubeadm_app)

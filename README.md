@@ -39,6 +39,9 @@ clouder kubeadm prune r1 --force
 
 # Repair worker VMs missing from kubectl nodes
 clouder kubeadm repair r1
+
+# Remove a single worker node (k8s drain/delete + cloud VM deletion)
+clouder kubeadm remove-node r1 r1-node-3-264d
 ```
 
 ### Prune Command
@@ -66,4 +69,22 @@ clouder kubeadm repair r1
 
 # Apply custom labels on reconciled workers
 clouder kubeadm repair r1 --node-label role.datalayer.io/runtime=true --node-label node.datalayer.io/variant=large
+```
+
+### Remove Node Command
+
+`clouder kubeadm remove-node <cluster> <node-name>` removes one worker from the cluster by:
+
+- cordoning, draining, and deleting the Kubernetes node object (when kubeconfig is available)
+- deleting the corresponding cloud VM (Azure or AWS)
+- updating local cluster metadata worker inventory
+
+Examples:
+
+```bash
+# Interactive removal
+clouder kubeadm remove-node r1 r1-node-3-264d
+
+# Non-interactive removal
+clouder kubeadm remove-node r1 r1-node-3-264d --force
 ```

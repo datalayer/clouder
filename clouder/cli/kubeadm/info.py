@@ -157,6 +157,7 @@ def register(kubeadm_app: typer.Typer):
             f"  Run kubectl:       [cyan]clouder kubectl {name} get nodes[/cyan]",
             f"  SSH to master:     [cyan]clouder ssh {master['name']}[/cyan]",
             f"  Scale workers:     [cyan]clouder kubeadm scale {name} --workers N[/cyan]",
+            f"  Remove one node:   [cyan]clouder kubeadm remove-node {name} <node-name>[/cyan]",
             f"  Repair workers:    [cyan]clouder kubeadm repair {name}[/cyan]",
             f"  Ingress (nginx):   [cyan]clouder kubeadm enable-ingress-nginx {name}[/cyan]",
             f"  Ingress (traefik): [cyan]clouder kubeadm enable-ingress-traefik {name}[/cyan]",

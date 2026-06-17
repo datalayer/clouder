@@ -50,6 +50,9 @@ clouder kubeadm prune my-cluster
 # Repair worker VMs that exist in cloud inventory but are missing from kubectl nodes
 clouder kubeadm repair my-cluster
 
+# Remove one worker node (drain/delete k8s node + delete cloud VM)
+clouder kubeadm remove-node my-cluster my-cluster-node-1
+
 # Disable ingress
 clouder kubeadm disable-ingress-traefik my-cluster
 
@@ -502,6 +505,51 @@ clouder kubeadm repair my-cluster
 
 # Repair and apply custom labels
 clouder kubeadm repair my-cluster --node-label role.datalayer.io/runtime=true --node-label node.datalayer.io/variant=large
+```
+
+---
+
+### `clouder kubeadm remove-node`
+
+Remove a single worker node from a Kubeadm cluster.
+
+```bash
+clouder kubeadm remove-node [name] <node-name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+| `node-name` (required) | Worker node name to remove (for example `my-cluster-node-2`). |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
+| `--force` | `-f` | Skip confirmation prompt |
+
+**What it does:**
+
+1. Cordon the Kubernetes node.
+2. Drain workloads from the node.
+3. Delete the Kubernetes node object.
+4. Delete the corresponding cloud VM (Azure or AWS).
+5. Update local kubeadm metadata worker inventory.
+
+:::note
+`remove-node` is for worker nodes only. It intentionally refuses control-plane node removal.
+:::
+
+**Examples:**
+
+```bash
+# Interactive removal
+clouder kubeadm remove-node my-cluster my-cluster-node-2
+
+# Use default kubeadm cluster
+clouder kubeadm remove-node my-cluster-node-2
+
+# Non-interactive
+clouder kubeadm remove-node my-cluster my-cluster-node-2 --force
 ```
 
 ---
