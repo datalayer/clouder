@@ -22,11 +22,17 @@ from ._helpers import (
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
     _ssh_cmd_stream,
+    _update_cluster_metadata,
     resolve_kubeadm_cluster_name,
 )
 
-def _resolve_node_labels(raw_labels: list[str] | None) -> list[str]:
+def _resolve_node_labels(raw_labels: list[str] | None, metadata: dict | None = None) -> list[str]:
     if not raw_labels:
+        stored = (metadata or {}).get("node_labels") if isinstance(metadata, dict) else None
+        if isinstance(stored, list):
+            stored_labels = [str(value).strip() for value in stored if str(value).strip()]
+            if stored_labels:
+                return stored_labels
         return list(DEFAULT_NODE_LABELS)
 
     labels: list[str] = []
@@ -171,7 +177,12 @@ def _reconcile_worker(
     _ssh_cmd_stream(worker_ip, ssh_user, key_path, reset_cmd)
 
     join_command = _get_join_command(master_ip, ssh_user, key_path)
-    rc = _ssh_cmd_stream(worker_ip, ssh_user, key_path, f"sudo {join_command}")
+    rc = _ssh_cmd_stream(
+        worker_ip,
+        ssh_user,
+        key_path,
+        f"sudo {join_command} --node-name {worker_name}",
+    )
     if rc != 0:
         typer.echo(f"kubeadm join failed on {worker_name}", err=True)
         raise typer.Exit(1)
@@ -231,10 +242,11 @@ def register(kubeadm_app: typer.Typer):
         3) reconciles worker VMs present in cloud but absent from Kubernetes nodes.
         """
         name = resolve_kubeadm_cluster_name(name)
-        node_labels_resolved = _resolve_node_labels(node_labels)
         cloud, _ = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         cluster = _resolve_cluster_vms(name, cloud=cloud)
         metadata = _load_cluster_metadata(name) or {}
+        node_labels_resolved = _resolve_node_labels(node_labels, metadata)
+        _update_cluster_metadata(name, {"node_labels": node_labels_resolved})
 
         key_path = str(SSH_FOLDER / key) if key else _resolve_ssh_key_for_cluster(name)
         ssh_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")

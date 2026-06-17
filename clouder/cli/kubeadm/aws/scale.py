@@ -59,6 +59,81 @@ def _registered_worker_names(core_v1: k8s_client.CoreV1Api | None, cluster_name:
     return names
 
 
+def _registered_worker_vm_names(
+    core_v1: k8s_client.CoreV1Api | None,
+    cluster_name: str,
+    workers: list[dict[str, str]],
+) -> set[str]:
+    """Resolve registered worker VM names from Kubernetes nodes.
+
+    This matches by explicit node name, AWS provider instance id, and node IP
+    addresses so clusters that currently expose IP-based node names are still
+    counted correctly during scale decisions.
+    """
+    if core_v1 is None:
+        return set()
+
+    try:
+        nodes = core_v1.list_node().items
+    except Exception:
+        return set()
+
+    by_name = {
+        str(worker.get("name") or ""): str(worker.get("name") or "")
+        for worker in workers
+        if str(worker.get("name") or "")
+    }
+    by_instance_id = {
+        str(worker.get("instance_id") or ""): str(worker.get("name") or "")
+        for worker in workers
+        if str(worker.get("instance_id") or "") and str(worker.get("name") or "")
+    }
+    by_public_ip = {
+        str(worker.get("ip") or ""): str(worker.get("name") or "")
+        for worker in workers
+        if str(worker.get("ip") or "") and str(worker.get("name") or "")
+    }
+    by_private_ip = {
+        str(worker.get("private_ip") or ""): str(worker.get("name") or "")
+        for worker in workers
+        if str(worker.get("private_ip") or "") and str(worker.get("name") or "")
+    }
+
+    prefix = f"{cluster_name}-node-"
+    resolved: set[str] = set()
+
+    for node in nodes:
+        node_name = str(getattr(getattr(node, "metadata", None), "name", "") or "")
+        if node_name in by_name:
+            resolved.add(by_name[node_name])
+            continue
+
+        if node_name.startswith(prefix) and node_name in by_name:
+            resolved.add(by_name[node_name])
+            continue
+
+        provider_id = str(getattr(getattr(node, "spec", None), "provider_id", "") or "")
+        if provider_id:
+            instance_id = provider_id.rsplit("/", 1)[-1].strip()
+            if instance_id in by_instance_id:
+                resolved.add(by_instance_id[instance_id])
+                continue
+
+        addresses = getattr(getattr(node, "status", None), "addresses", None) or []
+        for address in addresses:
+            ip = str(getattr(address, "address", "") or "")
+            if not ip:
+                continue
+            if ip in by_private_ip:
+                resolved.add(by_private_ip[ip])
+                break
+            if ip in by_public_ip:
+                resolved.add(by_public_ip[ip])
+                break
+
+    return resolved
+
+
 def _wait_for_node_ready_api(core_v1: k8s_client.CoreV1Api, node_name: str, timeout_seconds: int = 300) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -190,7 +265,7 @@ def _prepare_and_join_workers(
             worker_ip,
             admin_username,
             key_path,
-            f"sudo {join_command} --v=5",
+            f"sudo {join_command} --node-name {worker_name} --v=5",
         )
         join_combined = "\n".join(
             part for part in (join_out.lower(), join_err.lower()) if part
@@ -273,6 +348,17 @@ def scale_up(
             "Re-create metadata with `clouder kubeadm create` or provide complete cluster metadata."
         )
 
+    discovered_registered_workers = _registered_worker_vm_names(
+        core_v1,
+        cluster_name,
+        current_workers,
+    )
+    workers_to_reconcile = [
+        worker
+        for worker in current_workers
+        if str(worker.get("name") or "") not in discovered_registered_workers
+    ]
+
     reconciled_workers = _prepare_and_join_workers(
         cluster_name=cluster_name,
         core_v1=core_v1,
@@ -285,7 +371,11 @@ def scale_up(
 
     refreshed_cluster = _resolve_cluster_vms(cluster_name, cloud="aws", context_id=context_id)
     refreshed_workers = refreshed_cluster["workers"]
-    registered_after_reconcile = _registered_worker_names(core_v1, cluster_name)
+    registered_after_reconcile = _registered_worker_vm_names(
+        core_v1,
+        cluster_name,
+        refreshed_workers,
+    )
 
     desired_missing_workers = max(0, int(new_count) - len(registered_after_reconcile))
 
@@ -346,6 +436,7 @@ def scale_up(
             "name": w.get("name"),
             "vm_size": node_size,
             "ip": w.get("ip"),
+            "private_ip": w.get("private_ip"),
             "instance_id": w.get("instance_id"),
         }
         for w in latest_cluster["workers"]

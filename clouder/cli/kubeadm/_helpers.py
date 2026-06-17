@@ -216,6 +216,7 @@ def _resolve_cluster_vms(
             workers.append({
                 "name": wvm["name"],
                 "ip": wvm.get("public_ip"),
+                "private_ip": wvm.get("private_ip"),
                 "instance_id": wvm.get("id"),
                 "region": wvm.get("region"),
             })

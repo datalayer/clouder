@@ -469,7 +469,7 @@ def scale_up(
                 join_worker_result = run_azure_vm_shell_script(
                     resource_group=resource_group,
                     vm_name=worker["name"],
-                    script=f"sudo {join_command} --v=5",
+                    script=f"sudo {join_command} --node-name {worker['name']} --v=5",
                     subscription_id=context_id,
                 )
             except Exception as exc:
@@ -1362,7 +1362,7 @@ def scale_up(
                 join_worker_result = run_azure_vm_shell_script(
                     resource_group=resource_group,
                     vm_name=worker["name"],
-                    script=f"sudo {join_command} --v=5",
+                    script=f"sudo {join_command} --node-name {worker['name']} --v=5",
                     subscription_id=context_id,
                 )
             except Exception as exc:

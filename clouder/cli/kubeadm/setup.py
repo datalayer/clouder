@@ -305,7 +305,12 @@ def register(kubeadm_app: typer.Typer):
                 "  sleep 1; "
                 "done"
             )
-            rc = _ssh_cmd_stream(worker["ip"], resolved_user, key_path, f"sudo {join_command}")
+            rc = _ssh_cmd_stream(
+                worker["ip"],
+                resolved_user,
+                key_path,
+                f"sudo {join_command} --node-name {worker['name']}",
+            )
             if rc != 0:
                 print(f"  [red]Join failed on {worker['name']}[/red]")
                 raise typer.Exit(1)
@@ -401,6 +406,7 @@ def register(kubeadm_app: typer.Typer):
             "k8s_version": k8s_version,
             "setup_complete": True,
             "admin_username": resolved_user,
+            "node_labels": resolved_node_labels,
             "storage_ready": storage_ok,
             "loadbalancer_ready": loadbalancer_ok,
         })
