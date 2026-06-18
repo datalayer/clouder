@@ -303,11 +303,17 @@ def _save_cluster_metadata(cluster_name: str, metadata: dict):
 
 
 def _load_cluster_metadata(cluster_name: str) -> dict | None:
-    """Load cluster metadata from disk. Returns None if not found."""
+    """Load cluster metadata from disk. Returns None if not found, empty, or corrupt."""
     path = _cluster_metadata_path(cluster_name)
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    content = path.read_text().strip()
+    if not content:
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return None
 
 
 def _update_cluster_metadata(cluster_name: str, updates: dict):

@@ -27,6 +27,36 @@ from ._helpers import (
 
 _NGINX_NAMESPACE = "datalayer-nginx"
 
+
+class IngressNginxDeprecatedError(Exception):
+    """Raised when a deprecated ingress-nginx command is invoked.
+
+    Datalayer clusters use Traefik for ingress. The ingress-nginx commands are
+    kept only so this clear error is raised instead of silently provisioning an
+    unsupported controller.
+    """
+
+
+def _raise_nginx_deprecated() -> "None":
+    """Print guidance and raise a deprecation error for ingress-nginx commands."""
+    print(
+        Panel(
+            "[bold red]ingress-nginx is deprecated and no longer supported.[/bold red]\n\n"
+            "Datalayer clusters now use [bold]Traefik[/bold] for ingress and load balancing.\n\n"
+            "Use instead:\n"
+            "  [cyan]clouder kubeadm enable-ingress-traefik <cluster>[/cyan]\n"
+            "  [cyan]clouder kubeadm repair-load-balancer <cluster>[/cyan]\n"
+            "  [cyan]clouder kubeadm disable-ingress-traefik <cluster>[/cyan]",
+            title="Deprecated: ingress-nginx",
+            border_style="red",
+        )
+    )
+    raise IngressNginxDeprecatedError(
+        "clouder kubeadm enable/disable-ingress-nginx is deprecated; use Traefik "
+        "(enable-ingress-traefik / repair-load-balancer / disable-ingress-traefik)."
+    )
+
+
 _SCRIPT_INSTALL_INGRESS_NGINX = """
 set -euo pipefail
 
@@ -71,7 +101,7 @@ def register(kubeadm_app: typer.Typer):
         user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
-        """Enable ingress load balancing: deploy ingress-nginx + Azure Load Balancer.
+        """Enable ingress load balancing: deploy ingress-nginx Helm chart + Cloud Load Balancer.
 
         Deploys ingress-nginx in NodePort mode on the cluster, creates an Azure
         Load Balancer with a public IP, and wires LB rules (80/443) to the
@@ -81,6 +111,7 @@ def register(kubeadm_app: typer.Typer):
         upgrade-or-install, the LB and public IP use create-or-update, and
         NIC backend pool membership is checked before adding.
         """
+        _raise_nginx_deprecated()
         import os as _os
 
         name = resolve_kubeadm_cluster_name(name)
@@ -416,6 +447,7 @@ def register(kubeadm_app: typer.Typer):
         Deletes the Azure Load Balancer, its public IP, and uninstalls
         the ingress-nginx controller from the cluster.
         """
+        _raise_nginx_deprecated()
         name = resolve_kubeadm_cluster_name(name)
         cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud != "azure":

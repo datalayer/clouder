@@ -50,6 +50,12 @@ clouder kubeadm prune my-cluster
 # Repair worker VMs that exist in cloud inventory but are missing from kubectl nodes
 clouder kubeadm repair my-cluster
 
+# Rebuild a damaged/empty cluster metadata file (~/.clouder/kubeadm/<name>/kubeadm.json)
+clouder kubeadm repair-config my-cluster
+
+# Re-provision the Traefik load balancer (AWS NLB / Azure Load Balancer)
+clouder kubeadm repair-load-balancer my-cluster
+
 # Remove one worker node (drain/delete k8s node + delete cloud VM)
 clouder kubeadm remove-node my-cluster my-cluster-node-1
 
@@ -509,6 +515,111 @@ clouder kubeadm repair my-cluster --node-label role.datalayer.io/runtime=true --
 
 ---
 
+### `clouder kubeadm repair-config`
+
+Rebuild a damaged, empty, or missing cluster metadata file
+(`~/.clouder/kubeadm/<name>/kubeadm.json`). Use this when commands such as
+`clouder kubeadm info` fail with a JSON decode error because the metadata file
+was truncated, emptied, or deleted.
+
+```bash
+clouder kubeadm repair-config [name] [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`). Defaults to current context cloud. |
+| `--force` | `-f` | Rebuild metadata even if the existing file is still valid. |
+| `--skip-ssh` | | Do not connect to the cluster over SSH; rely only on cloud inventory and prompts. |
+
+**What it does:**
+
+1. Detects whether the metadata file is missing, empty, or corrupt (and asks for confirmation before overwriting a valid file).
+2. Recovers VM inventory (master, workers, region, resource group / account / subscription) from the cloud provider.
+3. SSHes into the master (best effort) to recover the Kubernetes version, admin user, and Datalayer node labels from the live cluster.
+4. Prompts for anything that cannot be discovered automatically — most importantly the **SSH key name** — falling back to sensible defaults.
+5. Writes a fresh `~/.clouder/kubeadm/<name>/kubeadm.json`.
+
+:::note
+Information that is not stored on the cloud provider or the live cluster (for
+example the local SSH key used to access the nodes) cannot be recovered
+automatically and must be supplied interactively.
+:::
+
+**Examples:**
+
+```bash
+# Repair the default cluster's metadata
+clouder kubeadm repair-config my-cluster
+
+# Force a rebuild even though the current file is valid
+clouder kubeadm repair-config my-cluster --force
+
+# Rebuild from cloud inventory and prompts only, without SSH discovery
+clouder kubeadm repair-config my-cluster --skip-ssh
+```
+
+---
+
+### `clouder kubeadm repair-load-balancer`
+
+Re-provision the cloud load balancer used by the Traefik ingress controller.
+Use this when `clouder kubeadm info` reports **"No load balancer address
+detected yet"** even though the cluster previously had a working endpoint — for
+example after the AWS NLB or the Azure Load Balancer was deleted, or after the
+Traefik `LoadBalancer` service lost its external address.
+
+```bash
+clouder kubeadm repair-load-balancer [name] [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`). Defaults to cluster metadata or current context cloud. |
+| `--admin-user` | `-u` | SSH username on the VMs. |
+| `--key` | `-i` | SSH key name from `~/.ssh/`. |
+| `--reinstall` | | Re-run the Traefik Helm install/upgrade before re-provisioning the load balancer. |
+| `--force` | `-f` | Skip confirmation prompt. |
+
+**What it does:**
+
+1. Diagnoses the current Traefik `LoadBalancer` service endpoint.
+2. Optionally re-applies the Traefik LoadBalancer service (`--reinstall`).
+3. Reads the Traefik web/websecure NodePorts.
+4. **AWS**: ensures worker security-group ingress and reconciles Kubernetes node `providerID`s, then **reuses the existing AWS NLB endpoint** if the service still reports one (otherwise waits for the controller to re-provision it).
+5. **Azure**: **reuses the existing `<name>-lb-ip` public IP** (Static allocation is preserved through create-or-update), re-applies the Azure Load Balancer, and re-wires worker NICs to the backend pool.
+6. Marks `loadbalancer_ready` and saves `loadbalancer_endpoint` in the cluster metadata and reports the endpoint.
+
+:::note
+This command inspects for a prior load balancer and reuses it where possible to
+**keep the previously assigned IP / endpoint**. It does not reinstall the
+cluster or the plane and is idempotent — safe to run multiple times. If a domain
+is mapped in metadata, verify your DNS still points to the endpoint afterwards.
+:::
+
+**Examples:**
+
+```bash
+# Repair the load balancer for the default cluster
+clouder kubeadm repair-load-balancer my-cluster
+
+# Also re-apply the Traefik LoadBalancer service first
+clouder kubeadm repair-load-balancer my-cluster --reinstall
+
+# Non-interactive
+clouder kubeadm repair-load-balancer my-cluster --force
+```
+
+---
+
 ### `clouder kubeadm remove-node`
 
 Remove a single worker node from a Kubeadm cluster.
@@ -670,6 +781,14 @@ clouder kubeadm smoke-test my-cluster --no-cleanup
 
 ### `clouder kubeadm enable-ingress-nginx`
 
+:::danger Deprecated
+The `enable-ingress-nginx` / `disable-ingress-nginx` commands are **deprecated
+and disabled**. Invoking them raises an `IngressNginxDeprecatedError`. Datalayer
+clusters use **Traefik** for ingress and load balancing. Use
+[`enable-ingress-traefik`](#clouder-kubeadm-enable-ingress-traefik) and
+[`repair-load-balancer`](#clouder-kubeadm-repair-load-balancer) instead.
+:::
+
 Deploy an ingress-nginx controller and create an Azure Load Balancer with a public IP that forwards HTTP/HTTPS traffic to the cluster.
 
 ```bash
@@ -725,6 +844,11 @@ clouder kubectl my-cluster create ingress demo --rule='/*=my-svc:80'
 ---
 
 ### `clouder kubeadm disable-ingress-nginx`
+
+:::danger Deprecated
+Deprecated and disabled — raises `IngressNginxDeprecatedError`. Use
+[`disable-ingress-traefik`](#clouder-kubeadm-disable-ingress-traefik) instead.
+:::
 
 Remove the Azure Load Balancer and ingress-nginx controller from the cluster.
 
@@ -913,15 +1037,18 @@ clouder kubectl get nodes
 
 ### Add an Ingress Controller
 
-Pick one of nginx or traefik. Both create an Azure Load Balancer with a public IP:
+Use Traefik, which creates a cloud load balancer (AWS NLB or Azure Load Balancer) with a public endpoint:
 
 ```bash
-# Option A: ingress-nginx
-clouder kubeadm enable-ingress-nginx my-cluster
-
-# Option B: traefik
 clouder kubeadm enable-ingress-traefik my-cluster
+
+# If the load balancer is later lost, re-provision it (preserving the IP where possible):
+clouder kubeadm repair-load-balancer my-cluster
 ```
+
+:::warning
+`enable-ingress-nginx` is deprecated and disabled. Use `enable-ingress-traefik`.
+:::
 
 ### Validate with Smoke Test
 

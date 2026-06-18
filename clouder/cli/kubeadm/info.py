@@ -40,7 +40,9 @@ def _discover_load_balancer_addresses(cluster_name: str, cluster: dict, metadata
     try:
         master = cluster["master"]
         cloud = (metadata or {}).get("cloud")
-        user = "azureuser" if cloud == "azure" else "ec2-user"
+        user = (metadata or {}).get("admin_username") or (
+            "azureuser" if cloud == "azure" else "ubuntu"
+        )
         key_path = _resolve_ssh_key_for_cluster(cluster_name)
         svc_cmd = (
             "kubectl get svc -A "
@@ -159,8 +161,8 @@ def register(kubeadm_app: typer.Typer):
             f"  Scale workers:     [cyan]clouder kubeadm scale {name} --workers N[/cyan]",
             f"  Remove one node:   [cyan]clouder kubeadm remove-node {name} <node-name>[/cyan]",
             f"  Repair workers:    [cyan]clouder kubeadm repair {name}[/cyan]",
-            f"  Ingress (nginx):   [cyan]clouder kubeadm enable-ingress-nginx {name}[/cyan]",
             f"  Ingress (traefik): [cyan]clouder kubeadm enable-ingress-traefik {name}[/cyan]",
+            f"  Repair LB:         [cyan]clouder kubeadm repair-load-balancer {name}[/cyan]",
             f"  Smoke test:        [cyan]clouder kubeadm smoke-test {name}[/cyan]",
             f"  Terminate:         [cyan]clouder kubeadm terminate {name}[/cyan]",
         ]
