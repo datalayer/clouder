@@ -1,0 +1,366 @@
+---
+title: PostgreSQL
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🐘 Datalayer PostgreSQL
+
+Datalayer runs PostgreSQL through the [CloudNativePG](https://cloudnative-pg.io) operator. The primary use case is a highly-available PostgreSQL cluster used as the **persisted memory backend for the Datalayer AI agents** via [mem0ai](https://mem0.ai), which stores agent memories in a [`pgvector`](https://github.com/pgvector/pgvector) vector store.
+
+## CloudNativePG Operator
+
+To deploy PostgreSQL, you first need to deploy the [CloudNativePG operator](https://cloudnative-pg.io). It ships the `Cluster`, `Backup`, `ScheduledBackup` and related CRDs and reconciles the PostgreSQL clusters.
+
+```bash
+helm repo add cnpg https://cloudnative-pg.github.io/charts
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-postgresql-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+nodeSelector:
+  role.datalayer.io/system: "true"
+EOF
+export RELEASE=datalayer-postgresql-operator
+export NAMESPACE=datalayer-postgresql-operator
+helm upgrade \
+  --install $RELEASE \
+  cnpg/cloudnative-pg \
+  --version 0.29.0 \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --values /tmp/values.yaml \
+  --timeout 5m
+```
+  </TabItem>
+</Tabs>
+
+> **Version note**
+> Chart `0.29.0` ships CloudNativePG `1.30.0`. The chart version is decoupled from the
+> operator (app) version — check `helm search repo cnpg/cloudnative-pg --versions` before pinning.
+
+Check the availability of the PostgreSQL CRDs.
+
+```bash
+kubectl get crd | grep cnpg.io
+# backups.postgresql.cnpg.io
+# clusters.postgresql.cnpg.io
+# databases.postgresql.cnpg.io
+# poolers.postgresql.cnpg.io
+# scheduledbackups.postgresql.cnpg.io
+```
+
+Check the availability of the operator pod.
+
+```bash
+kubectl rollout status deployment -n datalayer-postgresql-operator
+kubectl get pods -n datalayer-postgresql-operator
+```
+
+Optionally install the `cnpg` kubectl plugin for richer diagnostics (`kubectl cnpg status ...`).
+
+```bash
+curl -sSfL \
+  https://github.com/cloudnative-pg/cloudnative-pg/raw/main/hack/install-cnpg-plugin.sh | \
+  sudo sh -s -- -b /usr/local/bin
+```
+
+## Datalayer PostgreSQL Memory Cluster
+
+The memory cluster hosts the `mem0` database owned by the `mem0` role, with the `vector` (pgvector) extension enabled at bootstrap. The operator automatically generates a connection secret named `datalayer-postgresql-memory-app`.
+
+> **pgvector requirement**
+> The operand image **must** provide the `vector` extension required by mem0ai. The default
+> `ghcr.io/cloudnative-pg/postgresql:17` image may not bundle it. Point
+> `DATALAYER_POSTGRESQL_IMAGE` at a pgvector-enabled PostgreSQL image if the bootstrap
+> `CREATE EXTENSION vector` fails.
+
+The cluster is configured through the following environment variables (defaults shown):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DATALAYER_POSTGRESQL_INSTANCES` | `3` | Number of instances (1 primary + replicas). |
+| `DATALAYER_POSTGRESQL_STORAGE_SIZE` | `10Gi` | Persistent storage per instance. |
+| `DATALAYER_POSTGRESQL_IMAGE` | `ghcr.io/cloudnative-pg/postgresql:17` | Operand image (must include pgvector). |
+| `DATALAYER_POSTGRESQL_MEMORY_DATABASE` | `mem0` | mem0ai database name. |
+| `DATALAYER_POSTGRESQL_MEMORY_OWNER` | `mem0` | mem0ai owning role. |
+| `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` | _(unset)_ | Enables S3 backups when set. |
+| `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_REGION` | `us-east-1` | S3 bucket region. |
+| `DATALAYER_POSTGRESQL_BACKUP_RETENTION` | `30d` | Backup retention policy. |
+| `DATALAYER_POSTGRESQL_BACKUP_SCHEDULE` | `0 0 */6 * * *` | Backup cron (with seconds field). |
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane postgresql-memory-create
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+kubectl create namespace datalayer-postgresql
+cat <<EOF | kubectl apply -f -
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: datalayer-postgresql-memory
+  namespace: datalayer-postgresql
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  primaryUpdateStrategy: unsupervised
+  storage:
+    size: 10Gi
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: 256MB
+  bootstrap:
+    initdb:
+      database: mem0
+      owner: mem0
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector
+  affinity:
+    nodeSelector:
+      role.datalayer.io/system: "true"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      memory: "1Gi"
+EOF
+```
+  </TabItem>
+</Tabs>
+
+A checked-in reference spec is available at `$PLANE_HOME/etc/specs/postgresql/datalayer-postgresql-memory.yaml`.
+
+## Monitor the PostgreSQL Cluster
+
+It may take a few minutes for the cluster to become fully healthy, mostly due to storage provisioning.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane postgresql-memory-status
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+kubectl get cluster datalayer-postgresql-memory -n datalayer-postgresql -w
+# NAME                          AGE   INSTANCES   READY   STATUS                     PRIMARY
+# datalayer-postgresql-memory   2m    3           3       Cluster in healthy state   datalayer-postgresql-memory-1
+kubectl get pods -n datalayer-postgresql -l cnpg.io/cluster=datalayer-postgresql-memory -o wide
+kubectl cnpg status datalayer-postgresql-memory -n datalayer-postgresql
+```
+  </TabItem>
+</Tabs>
+
+## Backup the PostgreSQL Cluster
+
+Backups are written to an AWS S3 bucket using CloudNativePG's Barman object store. They rely on the `backup.barmanObjectStore` stanza, which `plane postgresql-memory-create` adds automatically when `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` is set.
+
+### Prerequisites
+
+Create the `aws-creds` secret with write access to the bucket in the `datalayer-postgresql` namespace.
+
+```bash
+kubectl create secret generic aws-creds \
+  --from-literal=access-key-id=$AWS_ACCESS_KEY_ID \
+  --from-literal=secret-access-key=$AWS_SECRET_ACCESS_KEY \
+  --namespace=datalayer-postgresql
+```
+
+Set the bucket variables and (re)create the cluster so it declares the object store.
+
+```bash
+export DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME=my-datalayer-postgresql-backups
+export DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_REGION=us-east-1
+plane postgresql-memory-create
+```
+
+### Schedule and Trigger Backups
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Apply the recurring backup schedule.
+plane postgresql-memory-backup
+# Trigger a one-off backup immediately.
+plane postgresql-memory-backup now
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+# Recurring schedule.
+cat <<EOF | kubectl apply -f -
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: datalayer-postgresql-memory-scheduled
+  namespace: datalayer-postgresql
+spec:
+  schedule: "0 0 */6 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: datalayer-postgresql-memory
+  method: barmanObjectStore
+EOF
+# One-off backup.
+cat <<EOF | kubectl apply -f -
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: datalayer-postgresql-memory-manual
+  namespace: datalayer-postgresql
+spec:
+  cluster:
+    name: datalayer-postgresql-memory
+  method: barmanObjectStore
+EOF
+```
+  </TabItem>
+</Tabs>
+
+## Restore the PostgreSQL Cluster
+
+CloudNativePG restores into a **new** cluster that bootstraps from the source cluster's object store — the source is never mutated. Optionally provide a point-in-time recovery (PITR) target.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Restore the latest backup into datalayer-postgresql-memory-restore.
+plane postgresql-memory-restore
+# Restore into a named cluster at a specific point in time.
+plane postgresql-memory-restore datalayer-postgresql-memory-pitr "2026-07-31 10:00:00+00"
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: datalayer-postgresql-memory-restore
+  namespace: datalayer-postgresql
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  storage:
+    size: 10Gi
+  bootstrap:
+    recovery:
+      source: datalayer-postgresql-memory
+  externalClusters:
+    - name: datalayer-postgresql-memory
+      barmanObjectStore:
+        destinationPath: s3://my-datalayer-postgresql-backups/datalayer-postgresql-memory
+        s3Credentials:
+          accessKeyId:
+            name: aws-creds
+            key: access-key-id
+          secretAccessKey:
+            name: aws-creds
+            key: secret-access-key
+        wal:
+          compression: gzip
+        data:
+          compression: gzip
+EOF
+```
+  </TabItem>
+</Tabs>
+
+## Access the PostgreSQL Cluster
+
+The operator exposes a read-write service (always the current primary) and a read-only service (replicas).
+
+| Service | Endpoint |
+|---------|----------|
+| Read-write | `datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local:5432` |
+| Read-only | `datalayer-postgresql-memory-ro.datalayer-postgresql.svc.cluster.local:5432` |
+
+Read the auto-generated application credentials.
+
+```bash
+kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.username}' | base64 -d
+kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d
+kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.uri}' | base64 -d
+```
+
+Port-forward to the primary for local access.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane pf-postgresql
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+kubectl port-forward -n datalayer-postgresql service/datalayer-postgresql-memory-rw 5432:5432
+psql "postgres://mem0:<password>@localhost:5432/mem0"
+```
+  </TabItem>
+</Tabs>
+
+## Use as mem0ai Memory
+
+[mem0ai](https://mem0.ai) uses `pgvector` as its vector store. Point it at the memory cluster's read-write service and the `mem0` database.
+
+```python
+from mem0 import Memory
+
+config = {
+    "vector_store": {
+        "provider": "pgvector",
+        "config": {
+            "host": "datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local",
+            "port": 5432,
+            "dbname": "mem0",
+            "user": "mem0",          # from datalayer-postgresql-memory-app secret
+            "password": "...",       # from datalayer-postgresql-memory-app secret
+            "collection_name": "agent_memories",
+        },
+    },
+}
+
+memory = Memory.from_config(config)
+```
+
+## Teardown
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Delete the memory cluster (keeps the operator).
+kubectl delete cluster datalayer-postgresql-memory -n datalayer-postgresql
+# Remove the operator.
+plane down datalayer-postgresql-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+kubectl delete cluster datalayer-postgresql-memory -n datalayer-postgresql
+helm delete datalayer-postgresql-operator --namespace datalayer-postgresql-operator
+```
+  </TabItem>
+</Tabs>
+
+## Cheat Sheet
+
+```bash
+plane postgresql-help
+```
+
