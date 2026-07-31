@@ -15,14 +15,18 @@ Datalayer runs PostgreSQL through the [CloudNativePG](https://cloudnative-pg.io)
 mem0ai requires the `vector` (pgvector) extension. Datalayer publishes a CloudNativePG-compatible operand image that bundles it, built on top of `ghcr.io/cloudnative-pg/postgresql` so it stays compatible with the operator. The Dockerfile lives in `etc/dockerfiles/datalayer-postgresql-pgvector`.
 
 ```bash
-export DATALAYER_DOCKER_REGISTRY=docker.io/datalayer
+# Example private registry namespace:
+export DATALAYER_DOCKER_REGISTRY=<registry-host>/datalayer
 cd $PLANE_HOME/etc/dockerfiles/datalayer-postgresql-pgvector
 make build
 make verify   # asserts pgvector is present in the image
 make push
 ```
 
-This publishes `${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17`, the default operand image for the memory cluster. Override the PostgreSQL major version with `make build POSTGRES_MAJOR=16`.
+This publishes `${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17` and
+`${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:latest`.
+The memory cluster uses `:17` by default. Override the PostgreSQL major version
+with `make build POSTGRES_MAJOR=16`.
 
 ## CloudNativePG Operator
 
@@ -96,9 +100,11 @@ The memory cluster hosts the `mem0` database owned by the `mem0` role, with the 
 > **pgvector image**
 > mem0ai requires the `vector` (pgvector) extension. Datalayer publishes a
 > CloudNativePG-compatible image that bundles it,
-> `docker.io/datalayer/datalayer-postgresql-pgvector:17`, built from
+> `${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17`, built from
 > `etc/dockerfiles/datalayer-postgresql-pgvector` (see [Build the pgvector image](#build-the-pgvector-image)).
 > This is the default operand image; override it with `DATALAYER_POSTGRESQL_IMAGE`.
+> If `DATALAYER_DOCKER_REGISTRY` is not set, Plane falls back to
+> `${DATALAYER_DOCKER_REGISTRY_HOST}/datalayer`.
 
 The cluster is configured through the following environment variables (defaults shown):
 
@@ -106,13 +112,60 @@ The cluster is configured through the following environment variables (defaults 
 |----------|---------|---------|
 | `DATALAYER_POSTGRESQL_INSTANCES` | `3` | Number of instances (1 primary + replicas). |
 | `DATALAYER_POSTGRESQL_STORAGE_SIZE` | `10Gi` | Persistent storage per instance. |
-| `DATALAYER_POSTGRESQL_IMAGE` | `<registry>/datalayer/datalayer-postgresql-pgvector:17` | Operand image bundling pgvector. |
+| `DATALAYER_POSTGRESQL_IMAGE` | `${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17` | Operand image bundling pgvector. |
 | `DATALAYER_POSTGRESQL_MEMORY_DATABASE` | `mem0` | mem0ai database name. |
 | `DATALAYER_POSTGRESQL_MEMORY_OWNER` | `mem0` | mem0ai owning role. |
+| `DATALAYER_POSTGRESQL_IMAGE_PULL_SECRET` | `reg-creds` | Image pull secret in `datalayer-postgresql` namespace. |
 | `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` | _(unset)_ | Enables S3 backups when set. |
 | `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_REGION` | `us-east-1` | S3 bucket region. |
 | `DATALAYER_POSTGRESQL_BACKUP_RETENTION` | `30d` | Backup retention policy. |
 | `DATALAYER_POSTGRESQL_BACKUP_SCHEDULE` | `0 0 */6 * * *` | Backup cron (with seconds field). |
+
+### How the Memory Database Is Created
+
+Run
+
+```bash
+plane reg-creds-create
+plane postgresql-memory-create
+```
+
+It will create a CloudNativePG `Cluster` with a bootstrap `initdb` block that creates the memory database and owner role on first initialization:
+
+```yaml
+bootstrap:
+  initdb:
+    database: ${DATALAYER_POSTGRESQL_MEMORY_DATABASE:-mem0}
+    owner: ${DATALAYER_POSTGRESQL_MEMORY_OWNER:-mem0}
+    postInitApplicationSQL:
+      - CREATE EXTENSION IF NOT EXISTS vector
+```
+
+This means:
+
+- The memory database (default `mem0`) is created automatically.
+- The owning role (default `mem0`) is created automatically.
+- The `vector` extension is enabled automatically for mem0ai.
+- CloudNativePG also generates the application secret `datalayer-postgresql-memory-app` with connection credentials (`username`, `password`, `uri`).
+
+> Note: these bootstrap settings apply when the cluster data directory is initialized. If you change `DATALAYER_POSTGRESQL_MEMORY_DATABASE` or `DATALAYER_POSTGRESQL_MEMORY_OWNER` on an existing cluster, re-create a fresh cluster (or provision roles/databases manually) to apply the new values.
+
+You can verify the memory database setup with:
+
+```bash
+# 1) Read the generated URI and export the generated password.
+kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.uri}' | base64 -d
+export PGSQL_PASSWORD="$(kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d)"
+
+# 2) Port-forward to the primary.
+plane pf-postgresql
+
+# 3) From another terminal, connect and verify DB/user/extension.
+# sslmode=disable avoids a TLS-teardown RST that would drop the port-forward
+# (traffic already rides the encrypted kubectl port-forward tunnel).
+psql "postgres://mem0:${PGSQL_PASSWORD}@localhost:5432/mem0?sslmode=disable" -c "SELECT current_database(), current_user;"
+psql "postgres://mem0:${PGSQL_PASSWORD}@localhost:5432/mem0?sslmode=disable" -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+```
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
@@ -122,6 +175,7 @@ plane postgresql-memory-create
   </TabItem>
   <TabItem value="bash" label="Bash">
 ```bash
+export DATALAYER_DOCKER_REGISTRY=<registry-host>/datalayer
 kubectl create namespace datalayer-postgresql
 cat <<EOF | kubectl apply -f -
 apiVersion: postgresql.cnpg.io/v1
@@ -131,7 +185,9 @@ metadata:
   namespace: datalayer-postgresql
 spec:
   instances: 3
-  imageName: docker.io/datalayer/datalayer-postgresql-pgvector:17
+  imageName: ${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17
+  imagePullSecrets:
+    - name: reg-creds
   primaryUpdateStrategy: unsupervised
   storage:
     size: 10Gi
@@ -263,6 +319,7 @@ plane postgresql-memory-restore datalayer-postgresql-memory-pitr "2026-07-31 10:
   </TabItem>
   <TabItem value="bash" label="Bash">
 ```bash
+export DATALAYER_DOCKER_REGISTRY=<registry-host>/datalayer
 cat <<EOF | kubectl apply -f -
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
@@ -271,7 +328,9 @@ metadata:
   namespace: datalayer-postgresql
 spec:
   instances: 3
-  imageName: docker.io/datalayer/datalayer-postgresql-pgvector:17
+  imageName: ${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17
+  imagePullSecrets:
+    - name: reg-creds
   storage:
     size: 10Gi
   bootstrap:
@@ -325,7 +384,8 @@ plane pf-postgresql
   <TabItem value="bash" label="Bash">
 ```bash
 kubectl port-forward -n datalayer-postgresql service/datalayer-postgresql-memory-rw 5432:5432
-psql "postgres://mem0:<password>@localhost:5432/mem0"
+export PGSQL_PASSWORD="$(kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d)"
+psql "postgres://mem0:${PGSQL_PASSWORD}@localhost:5432/mem0?sslmode=disable"
 ```
   </TabItem>
 </Tabs>
@@ -360,7 +420,7 @@ memory = Memory.from_config(config)
   <TabItem value="plane" label="Plane" default>
 ```bash
 # Delete the memory cluster (keeps the operator).
-kubectl delete cluster datalayer-postgresql-memory -n datalayer-postgresql
+plane postgresql-memory-terminate
 # Remove the operator.
 plane down datalayer-postgresql-operator
 ```

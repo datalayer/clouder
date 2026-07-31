@@ -3,6 +3,7 @@ openstack-api-ca.pem
 
 .*
 yarn.lock
+**/package-lock.json
 *.bundle.*
 lib/
 node_modules/
