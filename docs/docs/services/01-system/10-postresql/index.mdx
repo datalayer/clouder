@@ -10,6 +10,20 @@ import { Label, Stack } from '@primer/react-brand';
 
 Datalayer runs PostgreSQL through the [CloudNativePG](https://cloudnative-pg.io) operator. The primary use case is a highly-available PostgreSQL cluster used as the **persisted memory backend for the Datalayer AI agents** via [mem0ai](https://mem0.ai), which stores agent memories in a [`pgvector`](https://github.com/pgvector/pgvector) vector store.
 
+## Build the pgvector Image
+
+mem0ai requires the `vector` (pgvector) extension. Datalayer publishes a CloudNativePG-compatible operand image that bundles it, built on top of `ghcr.io/cloudnative-pg/postgresql` so it stays compatible with the operator. The Dockerfile lives in `etc/dockerfiles/datalayer-postgresql-pgvector`.
+
+```bash
+export DATALAYER_DOCKER_REGISTRY=docker.io/datalayer
+cd $PLANE_HOME/etc/dockerfiles/datalayer-postgresql-pgvector
+make build
+make verify   # asserts pgvector is present in the image
+make push
+```
+
+This publishes `${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17`, the default operand image for the memory cluster. Override the PostgreSQL major version with `make build POSTGRES_MAJOR=16`.
+
 ## CloudNativePG Operator
 
 To deploy PostgreSQL, you first need to deploy the [CloudNativePG operator](https://cloudnative-pg.io). It ships the `Cluster`, `Backup`, `ScheduledBackup` and related CRDs and reconciles the PostgreSQL clusters.
@@ -79,11 +93,12 @@ curl -sSfL \
 
 The memory cluster hosts the `mem0` database owned by the `mem0` role, with the `vector` (pgvector) extension enabled at bootstrap. The operator automatically generates a connection secret named `datalayer-postgresql-memory-app`.
 
-> **pgvector requirement**
-> The operand image **must** provide the `vector` extension required by mem0ai. The default
-> `ghcr.io/cloudnative-pg/postgresql:17` image may not bundle it. Point
-> `DATALAYER_POSTGRESQL_IMAGE` at a pgvector-enabled PostgreSQL image if the bootstrap
-> `CREATE EXTENSION vector` fails.
+> **pgvector image**
+> mem0ai requires the `vector` (pgvector) extension. Datalayer publishes a
+> CloudNativePG-compatible image that bundles it,
+> `docker.io/datalayer/datalayer-postgresql-pgvector:17`, built from
+> `etc/dockerfiles/datalayer-postgresql-pgvector` (see [Build the pgvector image](#build-the-pgvector-image)).
+> This is the default operand image; override it with `DATALAYER_POSTGRESQL_IMAGE`.
 
 The cluster is configured through the following environment variables (defaults shown):
 
@@ -91,7 +106,7 @@ The cluster is configured through the following environment variables (defaults 
 |----------|---------|---------|
 | `DATALAYER_POSTGRESQL_INSTANCES` | `3` | Number of instances (1 primary + replicas). |
 | `DATALAYER_POSTGRESQL_STORAGE_SIZE` | `10Gi` | Persistent storage per instance. |
-| `DATALAYER_POSTGRESQL_IMAGE` | `ghcr.io/cloudnative-pg/postgresql:17` | Operand image (must include pgvector). |
+| `DATALAYER_POSTGRESQL_IMAGE` | `<registry>/datalayer/datalayer-postgresql-pgvector:17` | Operand image bundling pgvector. |
 | `DATALAYER_POSTGRESQL_MEMORY_DATABASE` | `mem0` | mem0ai database name. |
 | `DATALAYER_POSTGRESQL_MEMORY_OWNER` | `mem0` | mem0ai owning role. |
 | `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` | _(unset)_ | Enables S3 backups when set. |
@@ -116,7 +131,7 @@ metadata:
   namespace: datalayer-postgresql
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  imageName: docker.io/datalayer/datalayer-postgresql-pgvector:17
   primaryUpdateStrategy: unsupervised
   storage:
     size: 10Gi
@@ -256,7 +271,7 @@ metadata:
   namespace: datalayer-postgresql
 spec:
   instances: 3
-  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  imageName: docker.io/datalayer/datalayer-postgresql-pgvector:17
   storage:
     size: 10Gi
   bootstrap:
