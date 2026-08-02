@@ -121,9 +121,10 @@ it from the discovered username/password and host/port/db defaults.
 ### Per-User Memory Isolation
 
 Memories are stored in a **single shared** `mem0` database and `agent_memories`
-collection. Isolation is logical: every memory is partitioned by a trusted,
-tenant-scoped `user_id` derived from the runtime owner, never by the agent id
-and never from any value supplied by the model or caller.
+collection. Isolation is logical: every memory is partitioned by a trusted
+`user_id` derived from the runtime owner's personal account, never by the agent
+id and never from any value supplied by the model or caller. Memories are scoped
+to a user's personal account (organization and team scoping are not used yet).
 
 The operator injects the trusted identity into each agent-runtimes pod from the
 reservation labels, so a pod can never impersonate another user:
@@ -132,10 +133,9 @@ reservation labels, so a pod can never impersonate another user:
 |----------|--------------|---------|
 | `DATALAYER_USER_UID` | `runtime-pools.datalayer.io/user-uid` | Authenticated user id. |
 | `DATALAYER_USER_HANDLE` | `runtime-pools.datalayer.io/user-account-handle` | Human-readable handle (fallback). |
-| `DATALAYER_BILLING_ENTITY_UID` | `runtime-pools.datalayer.io/billing-entity-uid` | Tenant/billing entity. |
 
 The agent-runtimes memory gateway resolves these into a single effective key
-`user_id = "<tenant>:<user>"` (for example `org-42:user-123`) and passes it to
+`user_id` (the personal account, for example `user-123`) and passes it to
 mem0ai as the partition key. The agent id remains a secondary scope for
 agent-private memories. Set `AGENT_RUNTIMES_MEMORY_USER_ID` to override the
 resolved identity (mainly for local development).
