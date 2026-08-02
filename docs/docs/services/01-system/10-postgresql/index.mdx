@@ -97,6 +97,59 @@ curl -sSfL \
 
 The memory cluster hosts the `mem0` database owned by the `mem0` role, with the `vector` (pgvector) extension enabled at bootstrap. The operator automatically generates a connection secret named `datalayer-postgresql-memory-app`.
 
+## Operator and Runtime Wiring
+
+`datalayer-operator` (running in `datalayer-runtimes`) reads PostgreSQL memory
+credentials from the CloudNativePG app secret in `datalayer-postgresql` and
+injects them into agent-runtimes pods. This keeps memory traffic internal to
+the cluster by default (`datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local`).
+
+Default integration settings:
+
+| Variable | Default |
+|----------|---------|
+| `DATALAYER_POSTGRESQL_MEMORY_NAMESPACE` | `datalayer-postgresql` |
+| `DATALAYER_POSTGRESQL_MEMORY_SECRET` | `datalayer-postgresql-memory-app` |
+| `DATALAYER_POSTGRESQL_MEMORY_HOST` | `datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local` |
+| `DATALAYER_POSTGRESQL_MEMORY_PORT` | `5432` |
+| `DATALAYER_POSTGRESQL_MEMORY_DATABASE` | `mem0` |
+| `DATALAYER_POSTGRESQL_MEMORY_COLLECTION` | `agent_memories` |
+
+If `DATALAYER_POSTGRESQL_MEMORY_URI` is not explicitly set, the operator builds
+it from the discovered username/password and host/port/db defaults.
+
+### Per-User Memory Isolation
+
+Memories are stored in a **single shared** `mem0` database and `agent_memories`
+collection. Isolation is logical: every memory is partitioned by a trusted,
+tenant-scoped `user_id` derived from the runtime owner, never by the agent id
+and never from any value supplied by the model or caller.
+
+The operator injects the trusted identity into each agent-runtimes pod from the
+reservation labels, so a pod can never impersonate another user:
+
+| Variable | Source label | Purpose |
+|----------|--------------|---------|
+| `DATALAYER_USER_UID` | `runtime-pools.datalayer.io/user-uid` | Authenticated user id. |
+| `DATALAYER_USER_HANDLE` | `runtime-pools.datalayer.io/user-account-handle` | Human-readable handle (fallback). |
+| `DATALAYER_BILLING_ENTITY_UID` | `runtime-pools.datalayer.io/billing-entity-uid` | Tenant/billing entity. |
+
+The agent-runtimes memory gateway resolves these into a single effective key
+`user_id = "<tenant>:<user>"` (for example `org-42:user-123`) and passes it to
+mem0ai as the partition key. The agent id remains a secondary scope for
+agent-private memories. Set `AGENT_RUNTIMES_MEMORY_USER_ID` to override the
+resolved identity (mainly for local development).
+
+Because pgvector stores these scope fields in the `payload` JSONB column, add
+expression indexes for the hot filters once the collection exists:
+
+```sql
+CREATE INDEX IF NOT EXISTS agent_memories_user_id_idx
+  ON agent_memories ((payload->>'user_id'));
+CREATE INDEX IF NOT EXISTS agent_memories_agent_id_idx
+  ON agent_memories ((payload->>'agent_id'));
+```
+
 > **pgvector image**
 > mem0ai requires the `vector` (pgvector) extension. Datalayer publishes a
 > CloudNativePG-compatible image that bundles it,
