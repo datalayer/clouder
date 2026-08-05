@@ -95,27 +95,27 @@ curl -sSfL \
 
 ## Datalayer PostgreSQL Memory Cluster
 
-The memory cluster hosts the `mem0` database owned by the `mem0` role, with the `vector` (pgvector) extension enabled at bootstrap. The operator automatically generates a connection secret named `datalayer-postgresql-memory-app`.
+The memory cluster hosts the `mem0` database owned by the `mem0` role, with the `vector` (pgvector) extension enabled at bootstrap. The operator automatically generates a connection secret named `datalayer-postgresql-agent-memories-app`.
 
 ## Operator and Runtime Wiring
 
 `datalayer-operator` (running in `datalayer-runtimes`) reads PostgreSQL memory
 credentials from the CloudNativePG app secret in `datalayer-postgresql` and
 injects them into agent-runtimes pods. This keeps memory traffic internal to
-the cluster by default (`datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local`).
+the cluster by default (`datalayer-postgresql-agent-memories-rw.datalayer-postgresql.svc.cluster.local`).
 
 Default integration settings:
 
 | Variable | Default |
 |----------|---------|
-| `DATALAYER_POSTGRESQL_MEMORY_NAMESPACE` | `datalayer-postgresql` |
-| `DATALAYER_POSTGRESQL_MEMORY_SECRET` | `datalayer-postgresql-memory-app` |
-| `DATALAYER_POSTGRESQL_MEMORY_HOST` | `datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local` |
-| `DATALAYER_POSTGRESQL_MEMORY_PORT` | `5432` |
-| `DATALAYER_POSTGRESQL_MEMORY_DATABASE` | `mem0` |
-| `DATALAYER_POSTGRESQL_MEMORY_COLLECTION` | `agent_memories` |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_NAMESPACE` | `datalayer-postgresql` |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_SECRET` | `datalayer-postgresql-agent-memories-app` |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_HOST` | `datalayer-postgresql-agent-memories-rw.datalayer-postgresql.svc.cluster.local` |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_PORT` | `5432` |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_DATABASE` | `mem0` |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_COLLECTION` | `agent_memories` |
 
-If `DATALAYER_POSTGRESQL_MEMORY_URI` is not explicitly set, the operator builds
+If `DATALAYER_POSTGRESQL_AGENT_MEMORIES_URI` is not explicitly set, the operator builds
 it from the discovered username/password and host/port/db defaults.
 
 ### Per-User Memory Isolation
@@ -140,8 +140,8 @@ mem0ai as the partition key. The agent id remains a secondary scope for
 agent-private memories. Set `AGENT_RUNTIMES_MEMORY_USER_ID` to override the
 resolved identity (mainly for local development).
 
-Because pgvector stores these scope fields in the `payload` JSONB column, add
-expression indexes for the hot filters once the collection exists:
+Because pgvector stores these scope fields in the `payload` JSONB column, the
+cluster bootstrap creates expression indexes for the hot filters:
 
 ```sql
 CREATE INDEX IF NOT EXISTS agent_memories_user_id_idx
@@ -166,8 +166,9 @@ The cluster is configured through the following environment variables (defaults 
 | `DATALAYER_POSTGRESQL_INSTANCES` | `3` | Number of instances (1 primary + replicas). |
 | `DATALAYER_POSTGRESQL_STORAGE_SIZE` | `10Gi` | Persistent storage per instance. |
 | `DATALAYER_POSTGRESQL_IMAGE` | `${DATALAYER_DOCKER_REGISTRY}/datalayer-postgresql-pgvector:17` | Operand image bundling pgvector. |
-| `DATALAYER_POSTGRESQL_MEMORY_DATABASE` | `mem0` | mem0ai database name. |
-| `DATALAYER_POSTGRESQL_MEMORY_OWNER` | `mem0` | mem0ai owning role. |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_DATABASE` | `mem0` | mem0ai database name. |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_OWNER` | `mem0` | mem0ai owning role. |
+| `DATALAYER_POSTGRESQL_AGENT_MEMORIES_VECTOR_DIMS` | `1536` | pgvector dimensions for `agent_memories.vector`. |
 | `DATALAYER_POSTGRESQL_IMAGE_PULL_SECRET` | `reg-creds` | Image pull secret in `datalayer-postgresql` namespace. |
 | `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` | _(unset)_ | Enables S3 backups when set. |
 | `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_REGION` | `us-east-1` | S3 bucket region. |
@@ -180,7 +181,7 @@ Run
 
 ```bash
 plane reg-creds-create
-plane postgresql-memory-create
+plane postgresql-agent-memories-create
 ```
 
 It will create a CloudNativePG `Cluster` with a bootstrap `initdb` block that creates the memory database and owner role on first initialization:
@@ -188,10 +189,16 @@ It will create a CloudNativePG `Cluster` with a bootstrap `initdb` block that cr
 ```yaml
 bootstrap:
   initdb:
-    database: ${DATALAYER_POSTGRESQL_MEMORY_DATABASE:-mem0}
-    owner: ${DATALAYER_POSTGRESQL_MEMORY_OWNER:-mem0}
+    database: ${DATALAYER_POSTGRESQL_AGENT_MEMORIES_DATABASE:-mem0}
+    owner: ${DATALAYER_POSTGRESQL_AGENT_MEMORIES_OWNER:-mem0}
     postInitApplicationSQL:
       - CREATE EXTENSION IF NOT EXISTS vector
+      - CREATE TABLE IF NOT EXISTS agent_memories (id UUID PRIMARY KEY, vector vector(${DATALAYER_POSTGRESQL_AGENT_MEMORIES_VECTOR_DIMS:-1536}), payload JSONB)
+      - ALTER TABLE agent_memories OWNER TO ${DATALAYER_POSTGRESQL_AGENT_MEMORIES_OWNER:-mem0}
+      - GRANT ALL PRIVILEGES ON TABLE agent_memories TO ${DATALAYER_POSTGRESQL_AGENT_MEMORIES_OWNER:-mem0}
+      - CREATE INDEX IF NOT EXISTS agent_memories_text_lemmatized_idx ON agent_memories USING gin(to_tsvector('simple', payload->>'text_lemmatized'))
+      - CREATE INDEX IF NOT EXISTS agent_memories_user_id_idx ON agent_memories ((payload->>'user_id'))
+      - CREATE INDEX IF NOT EXISTS agent_memories_agent_id_idx ON agent_memories ((payload->>'agent_id'))
 ```
 
 This means:
@@ -199,16 +206,21 @@ This means:
 - The memory database (default `mem0`) is created automatically.
 - The owning role (default `mem0`) is created automatically.
 - The `vector` extension is enabled automatically for mem0ai.
-- CloudNativePG also generates the application secret `datalayer-postgresql-memory-app` with connection credentials (`username`, `password`, `uri`).
+- The `agent_memories` table is created automatically with `id`, `vector`, and `payload` columns.
+- The `agent_memories` table ownership and privileges are granted to the memory owner role (default `mem0`).
+- The `agent_memories_text_lemmatized_idx`, `agent_memories_user_id_idx`, and `agent_memories_agent_id_idx` indexes are created automatically.
+- CloudNativePG also generates the application secret `datalayer-postgresql-agent-memories-app` with connection credentials (`username`, `password`, `uri`).
 
-> Note: these bootstrap settings apply when the cluster data directory is initialized. If you change `DATALAYER_POSTGRESQL_MEMORY_DATABASE` or `DATALAYER_POSTGRESQL_MEMORY_OWNER` on an existing cluster, re-create a fresh cluster (or provision roles/databases manually) to apply the new values.
+After the cluster reaches ready state, `plane postgresql-agent-memories-create` also runs an idempotent schema reconciliation against the primary. This guarantees that the `agent_memories` table and indexes are present even when bootstrap SQL was changed between releases.
+
+> Note: these bootstrap settings apply when the cluster data directory is initialized. If you change `DATALAYER_POSTGRESQL_AGENT_MEMORIES_DATABASE`, `DATALAYER_POSTGRESQL_AGENT_MEMORIES_OWNER`, or `DATALAYER_POSTGRESQL_AGENT_MEMORIES_VECTOR_DIMS` on an existing cluster, re-create a fresh cluster (or provision roles/databases manually) to apply the new values.
 
 You can verify the memory database setup with:
 
 ```bash
 # 1) Read the generated URI and export the generated password.
-kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.uri}' | base64 -d
-export PGSQL_PASSWORD="$(kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d)"
+kubectl get secret datalayer-postgresql-agent-memories-app -n datalayer-postgresql -o jsonpath='{.data.uri}' | base64 -d
+export PGSQL_PASSWORD="$(kubectl get secret datalayer-postgresql-agent-memories-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d)"
 
 # 2) Port-forward to the primary.
 plane pf-postgresql
@@ -223,7 +235,7 @@ psql "postgres://mem0:${PGSQL_PASSWORD}@localhost:5432/mem0?sslmode=disable" -c 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-plane postgresql-memory-create
+plane postgresql-agent-memories-create
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -234,7 +246,7 @@ cat <<EOF | kubectl apply -f -
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: datalayer-postgresql-memory
+  name: datalayer-postgresql-agent-memories
   namespace: datalayer-postgresql
 spec:
   instances: 3
@@ -254,6 +266,12 @@ spec:
       owner: mem0
       postInitApplicationSQL:
         - CREATE EXTENSION IF NOT EXISTS vector
+        - CREATE TABLE IF NOT EXISTS agent_memories (id UUID PRIMARY KEY, vector vector(1536), payload JSONB)
+        - ALTER TABLE agent_memories OWNER TO mem0
+        - GRANT ALL PRIVILEGES ON TABLE agent_memories TO mem0
+        - CREATE INDEX IF NOT EXISTS agent_memories_text_lemmatized_idx ON agent_memories USING gin(to_tsvector('simple', payload->>'text_lemmatized'))
+        - CREATE INDEX IF NOT EXISTS agent_memories_user_id_idx ON agent_memories ((payload->>'user_id'))
+        - CREATE INDEX IF NOT EXISTS agent_memories_agent_id_idx ON agent_memories ((payload->>'agent_id'))
   affinity:
     nodeSelector:
       role.datalayer.io/system: "true"
@@ -268,7 +286,7 @@ EOF
   </TabItem>
 </Tabs>
 
-A checked-in reference spec is available at `$PLANE_HOME/etc/specs/postgresql/datalayer-postgresql-memory.yaml`.
+A checked-in reference spec is available at `$PLANE_HOME/etc/specs/postgresql/datalayer-postgresql-agent-memories.yaml`.
 
 ## Monitor the PostgreSQL Cluster
 
@@ -277,23 +295,23 @@ It may take a few minutes for the cluster to become fully healthy, mostly due to
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-plane postgresql-memory-status
+plane postgresql-agent-memories-status
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
 ```bash
-kubectl get cluster datalayer-postgresql-memory -n datalayer-postgresql -w
+kubectl get cluster datalayer-postgresql-agent-memories -n datalayer-postgresql -w
 # NAME                          AGE   INSTANCES   READY   STATUS                     PRIMARY
-# datalayer-postgresql-memory   2m    3           3       Cluster in healthy state   datalayer-postgresql-memory-1
-kubectl get pods -n datalayer-postgresql -l cnpg.io/cluster=datalayer-postgresql-memory -o wide
-kubectl cnpg status datalayer-postgresql-memory -n datalayer-postgresql
+# datalayer-postgresql-agent-memories   2m    3           3       Cluster in healthy state   datalayer-postgresql-agent-memories-1
+kubectl get pods -n datalayer-postgresql -l cnpg.io/cluster=datalayer-postgresql-agent-memories -o wide
+kubectl cnpg status datalayer-postgresql-agent-memories -n datalayer-postgresql
 ```
   </TabItem>
 </Tabs>
 
 ## Backup the PostgreSQL Cluster
 
-Backups are written to an AWS S3 bucket using CloudNativePG's Barman object store. They rely on the `backup.barmanObjectStore` stanza, which `plane postgresql-memory-create` adds automatically when `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` is set.
+Backups are written to an AWS S3 bucket using CloudNativePG's Barman object store. They rely on the `backup.barmanObjectStore` stanza, which `plane postgresql-agent-memories-create` adds automatically when `DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` is set.
 
 ### Prerequisites
 
@@ -311,7 +329,7 @@ Set the bucket variables and (re)create the cluster so it declares the object st
 ```bash
 export DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME=my-datalayer-postgresql-backups
 export DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_REGION=us-east-1
-plane postgresql-memory-create
+plane postgresql-agent-memories-create
 ```
 
 ### Schedule and Trigger Backups
@@ -320,9 +338,9 @@ plane postgresql-memory-create
   <TabItem value="plane" label="Plane" default>
 ```bash
 # Apply the recurring backup schedule.
-plane postgresql-memory-backup
+plane postgresql-agent-memories-backup
 # Trigger a one-off backup immediately.
-plane postgresql-memory-backup now
+plane postgresql-agent-memories-backup now
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -332,13 +350,13 @@ cat <<EOF | kubectl apply -f -
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
 metadata:
-  name: datalayer-postgresql-memory-scheduled
+  name: datalayer-postgresql-agent-memories-scheduled
   namespace: datalayer-postgresql
 spec:
   schedule: "0 0 */6 * * *"
   backupOwnerReference: self
   cluster:
-    name: datalayer-postgresql-memory
+    name: datalayer-postgresql-agent-memories
   method: barmanObjectStore
 EOF
 # One-off backup.
@@ -346,11 +364,11 @@ cat <<EOF | kubectl apply -f -
 apiVersion: postgresql.cnpg.io/v1
 kind: Backup
 metadata:
-  name: datalayer-postgresql-memory-manual
+  name: datalayer-postgresql-agent-memories-manual
   namespace: datalayer-postgresql
 spec:
   cluster:
-    name: datalayer-postgresql-memory
+    name: datalayer-postgresql-agent-memories
   method: barmanObjectStore
 EOF
 ```
@@ -361,13 +379,15 @@ EOF
 
 CloudNativePG restores into a **new** cluster that bootstraps from the source cluster's object store — the source is never mutated. Optionally provide a point-in-time recovery (PITR) target.
 
+After restore readiness, `plane postgresql-agent-memories-restore` runs the same idempotent schema reconciliation so `agent_memories` and its indexes are recreated automatically when restoring from older backups.
+
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-# Restore the latest backup into datalayer-postgresql-memory-restore.
-plane postgresql-memory-restore
+# Restore the latest backup into datalayer-postgresql-agent-memories-restore.
+plane postgresql-agent-memories-restore
 # Restore into a named cluster at a specific point in time.
-plane postgresql-memory-restore datalayer-postgresql-memory-pitr "2026-07-31 10:00:00+00"
+plane postgresql-agent-memories-restore datalayer-postgresql-agent-memories-pitr "2026-07-31 10:00:00+00"
 ```
   </TabItem>
   <TabItem value="bash" label="Bash">
@@ -377,7 +397,7 @@ cat <<EOF | kubectl apply -f -
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
-  name: datalayer-postgresql-memory-restore
+  name: datalayer-postgresql-agent-memories-restore
   namespace: datalayer-postgresql
 spec:
   instances: 3
@@ -388,11 +408,11 @@ spec:
     size: 10Gi
   bootstrap:
     recovery:
-      source: datalayer-postgresql-memory
+      source: datalayer-postgresql-agent-memories
   externalClusters:
-    - name: datalayer-postgresql-memory
+    - name: datalayer-postgresql-agent-memories
       barmanObjectStore:
-        destinationPath: s3://my-datalayer-postgresql-backups/datalayer-postgresql-memory
+        destinationPath: s3://my-datalayer-postgresql-backups/datalayer-postgresql-agent-memories
         s3Credentials:
           accessKeyId:
             name: aws-creds
@@ -415,15 +435,15 @@ The operator exposes a read-write service (always the current primary) and a rea
 
 | Service | Endpoint |
 |---------|----------|
-| Read-write | `datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local:5432` |
-| Read-only | `datalayer-postgresql-memory-ro.datalayer-postgresql.svc.cluster.local:5432` |
+| Read-write | `datalayer-postgresql-agent-memories-rw.datalayer-postgresql.svc.cluster.local:5432` |
+| Read-only | `datalayer-postgresql-agent-memories-ro.datalayer-postgresql.svc.cluster.local:5432` |
 
 Read the auto-generated application credentials.
 
 ```bash
-kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.username}' | base64 -d
-kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d
-kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.uri}' | base64 -d
+kubectl get secret datalayer-postgresql-agent-memories-app -n datalayer-postgresql -o jsonpath='{.data.username}' | base64 -d
+kubectl get secret datalayer-postgresql-agent-memories-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d
+kubectl get secret datalayer-postgresql-agent-memories-app -n datalayer-postgresql -o jsonpath='{.data.uri}' | base64 -d
 ```
 
 Port-forward to the primary for local access.
@@ -436,8 +456,8 @@ plane pf-postgresql
   </TabItem>
   <TabItem value="bash" label="Bash">
 ```bash
-kubectl port-forward -n datalayer-postgresql service/datalayer-postgresql-memory-rw 5432:5432
-export PGSQL_PASSWORD="$(kubectl get secret datalayer-postgresql-memory-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d)"
+kubectl port-forward -n datalayer-postgresql service/datalayer-postgresql-agent-memories-rw 5432:5432
+export PGSQL_PASSWORD="$(kubectl get secret datalayer-postgresql-agent-memories-app -n datalayer-postgresql -o jsonpath='{.data.password}' | base64 -d)"
 psql "postgres://mem0:${PGSQL_PASSWORD}@localhost:5432/mem0?sslmode=disable"
 ```
   </TabItem>
@@ -454,11 +474,11 @@ config = {
     "vector_store": {
         "provider": "pgvector",
         "config": {
-            "host": "datalayer-postgresql-memory-rw.datalayer-postgresql.svc.cluster.local",
+            "host": "datalayer-postgresql-agent-memories-rw.datalayer-postgresql.svc.cluster.local",
             "port": 5432,
             "dbname": "mem0",
-            "user": "mem0",          # from datalayer-postgresql-memory-app secret
-            "password": "...",       # from datalayer-postgresql-memory-app secret
+            "user": "mem0",          # from datalayer-postgresql-agent-memories-app secret
+            "password": "...",       # from datalayer-postgresql-agent-memories-app secret
             "collection_name": "agent_memories",
         },
     },
@@ -473,14 +493,14 @@ memory = Memory.from_config(config)
   <TabItem value="plane" label="Plane" default>
 ```bash
 # Delete the memory cluster (keeps the operator).
-plane postgresql-memory-terminate
+plane postgresql-agent-memories-terminate
 # Remove the operator.
 plane down datalayer-postgresql-operator
 ```
   </TabItem>
   <TabItem value="helm" label="Helm">
 ```bash
-kubectl delete cluster datalayer-postgresql-memory -n datalayer-postgresql
+kubectl delete cluster datalayer-postgresql-agent-memories -n datalayer-postgresql
 helm delete datalayer-postgresql-operator --namespace datalayer-postgresql-operator
 ```
   </TabItem>
