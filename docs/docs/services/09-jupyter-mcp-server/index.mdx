@@ -1,26 +1,49 @@
 ---
-title: Jupyter MCP Server
+title: Datalayer Jupyter MCP Server
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# Jupyter MCP Server
+# Datalayer Jupyter MCP Server
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
   <Label color="red">REST API</Label>
+  <Label color="green">MCP</Label>
 </Stack>
 
-## Deploy Jupyter MCP Server
+The hosted MCP gateway: one endpoint that AI agents — Claude Code, Codex,
+Cursor, VS Code, any MCP client — connect to in order to read, edit and
+execute the Notebooks their user is allowed to reach.
 
-`Jupyter MCP Server` exposes Jupyter MCP Server.
+It is a **multi-tenant gateway, not one process per user**. The access token
+identifies the user, their organization and their workspace; the tools then
+expose only what that identity can reach. There is no per-user URL.
+
+The tool vocabulary comes from the open source
+[`jupyter-mcp-server`](https://jupyter-mcp-server.datalayer.tech); this service
+adds identity, tenancy, permissions, durable execution and audit around it.
+
+## Prerequisites
+
+| | |
+|---|---|
+| `datalayer-iam` | Issues the OAuth 2.1 and personal access tokens this service verifies |
+| `datalayer-spacer` | Answers what a user may do with a Notebook, document or dataset |
+| Solr collections | `oauth-clients`, `oauth-codes`, `oauth-grants`, created by `solr-init` |
+
+The IAM service must be deployed with `DATALAYER_JUPYTER_MCP_SERVER_URL` set to the
+same value used here: IAM stamps it into the audience of every OAuth token,
+and this service refuses a token naming anything else.
+
+## Deploy Datalayer Jupyter MCP Server
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-plane up jupyter-mcp-server
+plane up datalayer-jupyter-mcp-server
 ```
   </TabItem>
   <TabItem value="terraform" label="Terraform">
@@ -30,44 +53,103 @@ terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
 export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
-./generated/services/deploy-jupyter-mcp-server.sh
+./generated/services/deploy-datalayer-jupyter-mcp-server.sh
 ```
   </TabItem>
 </Tabs>
 
-Check the availability of the Jupyter MCP Server Pods.
+Check the availability of the Datalayer Jupyter MCP Server Pods.
 
 ```bash
 kubectl get pods -n datalayer-api -l app=jupyter-mcp-server
 ```
 
-Check the logs of the Jupyter MCP Server Pods.
+Check the logs of the Datalayer Jupyter MCP Server Pods.
 
 ```bash
 kubectl logs -n datalayer-api -l app=jupyter-mcp-server
 ```
 
-Check the availability of the Jupyter MCP Server Certificate.
+Check the availability of the Datalayer Jupyter MCP Server Certificate.
+
+The gateway is served on a host of its own, so it has a certificate of its own,
+declared by the chart rather than inferred from ingress annotations.
 
 ```bash
-kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+kubectl describe certificate mcp.datalayer.run-datalayer-api-cert -n datalayer-api
 ```
 
-Check the availability of the Jupyter MCP Server Endpoints.
+`Ready: True` means the certificate is issued. While it is still being issued
+the browser reports the site as not secure, and the events of the resource say
+what the ACME challenge is waiting for — most often DNS for the new host not
+yet resolving to the ingress.
 
 ```bash
-open https://${DATALAYER_RUN_HOST}/api/jupyter-mcp-server/version
-open https://${DATALAYER_RUN_HOST}/api/jupyter-mcp-server/v1/ping
+kubectl get certificate,certificaterequest,order,challenge -n datalayer-api | grep mcp
 ```
 
-## Tear Down Jupyter MCP Server
+Check the availability of the Datalayer Jupyter MCP Server Endpoints.
+
+```bash
+open https://mcp.datalayer.run/api/mcp/version
+open https://mcp.datalayer.run/api/mcp/healthz
+open https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp
+```
+
+The last one is the document an MCP client reads to discover where to
+authenticate. If it does not answer, no agent can connect.
+
+## Configuration
+
+| Variable | Meaning |
+|---|---|
+| `DATALAYER_JUPYTER_MCP_SERVER_URL` | The resource identifier, and the audience tokens must name. Default `https://mcp.datalayer.run/mcp` |
+| `DATALAYER_JUPYTER_MCP_VERIFY_AUDIENCE` | Refuse a token issued for another resource. Default `true` |
+| `DATALAYER_IAM_URL` | The authorization server |
+| `DATALAYER_SPACER_URL` | Where Notebooks and their permissions live |
+| `DATALAYER_JWT_SECRET` / `_ALGORITHM` / `_ISSUER` | Token verification, shared with IAM |
+| `JUPYTER_MCP_TOKEN_VERIFIER_CLASS` | How MCP clients are authenticated. Defaults to `datalayer_jupyter_mcp_server.verifier:DatalayerTokenVerifier` |
+
+The ingress host is derived from `DATALAYER_JUPYTER_MCP_SERVER_URL`, so the host and
+the token audience cannot drift apart.
+
+## Verify authentication end to end
+
+An unauthenticated request must be refused *and* must say where to
+authenticate:
+
+```bash
+curl -i https://mcp.datalayer.run/mcp
+```
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="Datalayer",
+  resource_metadata="https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp"
+```
+
+A `401` without that header means a client will fail instead of starting the
+OAuth flow. With a personal access token:
+
+```bash
+curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  https://mcp.datalayer.run/api/mcp/version
+```
+
+## Tear Down Datalayer Jupyter MCP Server
 
 If needed, tear down.
 
 ```bash
-plane down jupyter-mcp-server
+plane down datalayer-jupyter-mcp-server
 ```
+
+## Notes
+
+The execution registry is currently in memory, so a single replica is
+expected: outputs do not yet survive a pod restart. Scaling out and surviving
+restarts is the durable-execution workstream.
 
 ## OpenAPI Specification
 
-The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/jupyter-mcp-server/v1/docs).
+The OpenAPI (Swagger) specification is [available online](https://mcp.datalayer.run/api/mcp/v1/docs).
