@@ -1,0 +1,73 @@
+---
+title: Jupyter MCP Server
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# Jupyter MCP Server
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+## Deploy Jupyter MCP Server
+
+`Jupyter MCP Server` exposes Jupyter MCP Server.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up jupyter-mcp-server
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-jupyter-mcp-server.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Jupyter MCP Server Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=jupyter-mcp-server
+```
+
+Check the logs of the Jupyter MCP Server Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=jupyter-mcp-server
+```
+
+Check the availability of the Jupyter MCP Server Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Jupyter MCP Server Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/jupyter-mcp-server/version
+open https://${DATALAYER_RUN_HOST}/api/jupyter-mcp-server/v1/ping
+```
+
+## Tear Down Jupyter MCP Server
+
+If needed, tear down.
+
+```bash
+plane down jupyter-mcp-server
+```
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/jupyter-mcp-server/v1/docs).
