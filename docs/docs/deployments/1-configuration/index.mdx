@@ -262,7 +262,36 @@ SSL certificates will be created by the cert-manager service for that hostname.<
 </tr>
 <tr>
   <td>DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION</td>
-  <td>Define the S3 bucket region for the Sorl backups.</td>
+  <td>Define the S3 bucket region for the Solr backups.</td>
+</tr>
+
+<tr>
+  <td>DATALAYER_CONTENTS_API_PORT</td>
+  <td>Contents REST port. The chart default is `9400`.</td>
+</tr>
+<tr>
+  <td>DATALAYER_CONTENTS_FLIGHT_PORT</td>
+  <td>Contents Arrow Flight port. The chart default is `9401`.</td>
+</tr>
+<tr>
+  <td>DATALAYER_CONTENTS_BRIDGE_PORT</td>
+  <td>Contents local-bridge relay port. The chart default is `9402`.</td>
+</tr>
+<tr>
+  <td>DATALAYER_CONTENTS_REQUIRE_SOLR</td>
+  <td>When `true`, Contents readiness fails until Solr is reachable.</td>
+</tr>
+<tr>
+  <td>DATALAYER_CONTENTS_REQUIRE_VAULT</td>
+  <td>When `true`, Contents readiness fails until Vault is reachable.</td>
+</tr>
+<tr>
+  <td>DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS</td>
+  <td>Timeout in seconds for each Contents readiness dependency probe.</td>
+</tr>
+<tr>
+  <td>DATALAYER_SOLR_URL</td>
+  <td>Internal Solr endpoint used by Contents and other Solr-backed services.</td>
 </tr>
 
 <tr>
@@ -303,6 +332,24 @@ e.g. support@your-company.io</td>
 </tr>
 
 </table>
+
+## Contents and Solr recovery settings
+
+Deploy Contents with the standard IAM JWT, Solr, Vault and OpenTelemetry
+settings above. Supply passwords, signing material and provider credentials
+through Kubernetes Secrets or an external secret controller; do not commit
+them to Helm values.
+
+Solr backup storage is selected by
+`DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME`,
+`DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION` and the AWS workload identity or
+credential secret. Recurrence and retention are declarative fields in the
+checked-in backup specifications: `spec.recurrence.schedule` and
+`spec.recurrence.maxSaved`. Review them together with object-store versioning
+and Vault retention before applying a production schedule.
+
+See [Datalayer Contents](/services/contents/),
+[Solr](/services/system/solr/) and [Continuity](/operations/continuity/).
 
 :::tip
 

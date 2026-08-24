@@ -247,7 +247,7 @@ kubectl describe pods -n datalayer-solr | grep Node
 
 Solr collections are organized into two sets that can be initialized independently.
 
-### Core Collections (17)
+### Core Collections (25 during Contents migration)
 
 Platform collections used by the main Datalayer services:
 
@@ -256,15 +256,23 @@ Platform collections used by the main Datalayer services:
 | `ai-agents` | AI agents service records |
 | `api-keys` | IAM authentication tokens |
 | `contacts` | Contact information |
+| `content-audit` | Immutable Contents audit and provenance events |
+| `content-objects` | Contents object/version and materialization metadata |
+| `contents` | Content sources, grants, revisions and attachments |
 | `credits` | Usage credits |
 | `datasources` | Data source definitions |
+| `evals` | Evaluation definitions and results |
 | `events` | Agent lifecycle and system event records |
 | `iam` | Identity and access management |
 | `inbounds` | Inbound integrations |
 | `invites` | User invitations |
 | `library` | Content library |
 | `notifications` | User-facing notifications records |
+| `oauth-clients` | OAuth client registrations |
+| `oauth-codes` | OAuth authorization codes |
+| `oauth-grants` | OAuth grants |
 | `outbounds` | Outbound integrations |
+| `schedules` | Scheduled jobs |
 | `secrets` | Encrypted secrets metadata |
 | `spaces` | Workspace spaces |
 | `success` | Success tracking |
@@ -273,14 +281,35 @@ Platform collections used by the main Datalayer services:
 
 Note: The `notifications` collection stores user-facing notifications, while `events` stores lifecycle and system events.
 
-### Runtimes Collections (2)
+### Runtimes Collections (5)
 
 Collections specific to the runtimes subsystem:
 
 | Collection | Purpose |
 |---|---|
+| `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
+| `ray` | Ray service records |
+| `runtime-registrations` | Runtime registrations |
 | `runtime-checkpoints` | Runtime checkpoint records (CRIU snapshots metadata) |
 | `sandbox-snapshots` | Runtime snapshot records |
+
+The transitional inventory is 25 Core plus 5 Runtimes collections, 30 in
+total. After Datasource migration removes the legacy `datasources` collection,
+the final inventory is 24 Core, 5 Runtimes and 29 total. Always verify the
+arrays and manifests rather than relying on these numbers alone.
+
+The four Contents collections form one operational recovery scope even though
+`content-operations` belongs to the Runtimes initialization set. The
+`contents` scope is available to backup, status, task cleanup and restore
+commands; it does not create duplicate collections.
+
+The collections use the shared managed configset and its typed dynamic fields
+(`*_s`, `*_t`, `*_dt`, numeric and boolean variants). Application-facing UIDs
+are ULIDs stored in exact UID fields; Solr's internal `id` remains important
+for optimistic updates and nested blocks but is not the user-facing identity.
+Bounded grants and attachment status details may use nested documents.
+Unbounded revisions, objects, operations and audit events are independent root
+documents linked by exact `*_uid` fields.
 
 ### Source of Truth
 
@@ -288,6 +317,7 @@ The collection arrays are defined in `solr-collections.sh`:
 
 - `SOLR_COLLECTIONS_CORE` — Core platform collections
 - `SOLR_COLLECTIONS_RUNTIMES` — Runtimes collections
+- `SOLR_COLLECTIONS_CONTENTS` — Contents recovery set across both groups
 - `SOLR_COLLECTIONS` — All collections combined (union of the above two)
 
 The `solr-init` script prompts which collection set to create. This is useful when adding the runtimes collections to an existing cluster without re-creating the core ones.
@@ -297,9 +327,9 @@ The `solr-init` script prompts which collection set to create. This is useful wh
 ```bash
 plane solr-init
 # Select:
-#   1) Core       - Platform collections (17 collections)
-#   2) Runtimes   - Runtimes collections (2 collections)
-#   3) All        - All collections (19 collections)
+#   1) Core       - Platform collections (25 collections)
+#   2) Runtimes   - Runtimes collections (5 collections)
+#   3) All        - All collections (30 collections)
 #
 # The init pod is created, logs are streamed, and the pod is auto-cleaned.
 ```
@@ -338,7 +368,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents contacts credits datasources events iam api-keys inbounds invites library notifications outbounds secrets spaces success tool-approvals usage runtime-checkpoints sandbox-snapshots
+for COLLECTION in ai-agents api-keys contacts content-audit content-objects contents credits datasources evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage content-operations ray runtime-registrations runtime-checkpoints sandbox-snapshots
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -353,13 +383,15 @@ done
 
 Solr collections are backed up to an AWS S3 bucket using the Solr Operator [`SolrBackup`](https://solr.apache.org/operator/articles/solr-backup.html) CRD. The backup relies on the `s3` repository configured in the `SolrCloud` spec (see [Datalayer Solr Cluster](#datalayer-solr-cluster) above).
 
-Three backup definitions are available, matching the collection sets:
+Four backup definitions are available. Contents has a distinct resource name
+so its coordinated schedule can run beside the full backup:
 
 | File | Scope | CR Name |
 |------|-------|---------|
-| `datalayer-backup-s3.yaml` | All 19 collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-core.yaml` | 17 core collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-runtimes.yaml` | 2 runtimes collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3.yaml` | All 30 transitional collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-core.yaml` | 25 Core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-runtimes.yaml` | 5 Runtimes collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
 
 All backups run every 10 minutes and retain up to 200 snapshots.
 
@@ -373,11 +405,12 @@ All backups run every 10 minutes and retain up to 200 snapshots.
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-# Prompt for backup set (core / runtimes / all).
+# Prompt for backup set (core / runtimes / contents / all).
 plane solr-backups-apply
 # Apply a specific backup spec directly.
 plane solr-backups-apply core
 plane solr-backups-apply runtimes
+plane solr-backups-apply contents
 plane solr-backups-apply all
 ```
   </TabItem>
@@ -396,8 +429,12 @@ spec:
   collections:
     - ai-agents
     - contacts
+    - content-audit
+    - content-objects
+    - contents
     - credits
     - datasources
+    - evals
     - events
     - iam
     - api-keys
@@ -405,14 +442,21 @@ spec:
     - invites
     - library
     - notifications
-    - runtime-checkpoints
-    - sandbox-snapshots
+    - oauth-clients
+    - oauth-codes
+    - oauth-grants
     - outbounds
+    - schedules
     - secrets
     - spaces
     - success
     - tool-approvals
     - usage
+    - content-operations
+    - ray
+    - runtime-registrations
+    - runtime-checkpoints
+    - sandbox-snapshots
   recurrence:
     schedule: "*/10 * * * *" # every 10 minutes
     maxSaved: 200
@@ -442,6 +486,8 @@ kubectl get solrbackups -n datalayer-solr
 kubectl describe solrbackup datalayer-solr-collection-backups -n datalayer-solr
 # Plane summary command (analyzes command outputs and prints a summary).
 plane solr-backups-status
+# Inspect only the coordinated Contents backup resource.
+plane solr-backups-status contents
 ```
 
 ### Diagnose Failed Backups
@@ -478,15 +524,17 @@ If the S3 path is empty for a failed collection (for example `datalayer-solr-col
 
 When Solr Operator logs show `Task with the same requestid already exists` for a collection backup, clear the stored async task response for the affected collection(s).
 
-Use `plane solr-backups-clean-tasks` to clean request IDs for a selected scope (core, runtimes, all, or a single collection).
+Use `plane solr-backups-clean-tasks` to clean request IDs for a selected scope
+(core, runtimes, contents, all, or a single collection).
 
 ```bash
-# Prompt for scope (core / runtimes / all / single collection).
+# Prompt for scope (core / runtimes / contents / all / single collection).
 plane solr-backups-clean-tasks
 
 # Clean by predefined set.
 plane solr-backups-clean-tasks core
 plane solr-backups-clean-tasks runtimes
+plane solr-backups-clean-tasks contents
 plane solr-backups-clean-tasks all
 
 # Clean one collection.
@@ -514,16 +562,18 @@ kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -c solrcloud-node -- \
 
 ### Stop (Remove) Backup Schedules
 
-Use `plane solr-backups-stop` to delete the `SolrBackup` definitions with the same collection-set menu (core, runtimes, all).
+Use `plane solr-backups-stop` to delete the `SolrBackup` definitions with the
+same collection-set menu (core, runtimes, contents, all).
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-# Prompt for backup set to remove (core / runtimes / all).
+# Prompt for backup set to remove (core / runtimes / contents / all).
 plane solr-backups-stop
 # Remove a specific backup definition directly.
 plane solr-backups-stop core
 plane solr-backups-stop runtimes
+plane solr-backups-stop contents
 plane solr-backups-stop all
 ```
   </TabItem>
@@ -532,6 +582,7 @@ plane solr-backups-stop all
 # Equivalent kubectl delete commands.
 kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-core.yaml --ignore-not-found
 kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-runtimes.yaml --ignore-not-found
+kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-contents.yaml --ignore-not-found
 kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml --ignore-not-found
 ```
   </TabItem>
@@ -541,7 +592,9 @@ kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml --
 
 Restore Solr collections from an S3 backup using the `plane solr-restore` command. The restore calls the Solr [Collections API RESTORE action](https://solr.apache.org/guide/solr/latest/deployment-guide/collection-management.html#restore) asynchronously for each collection.
 
-When restoring multiple collections, the script prompts which collection set to restore (core, runtimes, or all). Specifying a single collection on the command line bypasses the prompt.
+When restoring multiple collections, the script prompts which collection set
+to restore (core, runtimes, contents, or all). Specifying a single collection
+on the command line bypasses the prompt.
 
 ### Prerequisites
 
@@ -550,13 +603,17 @@ When restoring multiple collections, the script prompts which collection set to 
 
 ### Restore Collections
 
-The default backup name is `datalayer-solr-collection-backups` (matching the `SolrBackup` CRD name).
+Core, Runtimes and all-collection restores use
+`datalayer-solr-collection-backups`. The Contents scope automatically uses its
+independent `datalayer-solr-contents-backups` resource.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-# Restore collections (prompts for set: core / runtimes / all).
+# Restore collections (prompts for set: core / runtimes / contents / all).
 plane solr-restore
+# Restore the coordinated Contents set from its dedicated backup.
+plane solr-restore contents
 # Restore only a specific collection (no prompt).
 plane solr-restore datalayer-solr-collection-backups iam
 ```
@@ -574,13 +631,17 @@ kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -- \
 
 ### Monitor Restore Progress
 
-Restore operations are asynchronous. Use the `solr-restore-status` script to check a selected collection set (core, runtimes, or all), or query a single collection.
+Restore operations are asynchronous. Use the `solr-restore-status` script to
+check a selected collection set (core, runtimes, contents, or all), or query a
+single collection.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
-# Prompt for status set (core / runtimes / all).
+# Prompt for status set (core / runtimes / contents / all).
 plane solr-restore-status
+# Check all four Contents restore requests.
+plane solr-restore-status contents
 # Check a single collection.
 plane solr-restore-status iam
 ```
@@ -594,6 +655,9 @@ kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -- \
 ```
   </TabItem>
 </Tabs>
+
+For the coordinated metadata and managed-object recovery procedure, validation
+steps and rollback rules, see [Continuity](/operations/continuity/).
 
 ## Scale Datalayer Solr
 

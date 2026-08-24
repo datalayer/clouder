@@ -1,0 +1,148 @@
+---
+title: Datalayer Contents
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 💼 Datalayer Contents
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+`Datalayer Contents` owns the catalog and lifecycle of content sources used by
+notebooks, agents and Code Sandboxes. It stores control-plane state in Solr,
+resolves credential references through Vault and coordinates Runtimes,
+Operator, Library and provider adapters. File bytes remain in managed or
+provider storage; credentials never become catalog fields.
+
+## Processes and ports
+
+| Process | Purpose | Default port |
+| --- | --- | --- |
+| API | REST, OpenAPI, catalog and operation control | `9400` |
+| Worker | Durable transfers, synchronization, reconciliation and cleanup | none |
+| Flight gateway | Arrow Flight and Flight SQL data plane | `9401` |
+| Local bridge relay | Authenticated local-folder bridge sessions | `9402` |
+
+The initial chart enables only the API. Worker, Flight and bridge deployments
+remain disabled until their protocol milestones are installed; their binaries
+fail closed instead of pretending to serve traffic.
+
+## Routes and authentication boundaries
+
+| Surface | Route | Authentication boundary |
+| --- | --- | --- |
+| REST API | `/api/contents/v1/*` | IAM user JWTs for user operations; scoped service identities for internal callers |
+| Arrow Flight | dedicated HTTP/2 route on `9401` | Short-lived, audience-bound capability issued by the REST API |
+| Local bridge | dedicated relay route on `9402` | One-session, one-sandbox bridge capability; never a stored provider credential |
+
+`ping`, `health` and dependency-aware `ready` are Kubernetes probe surfaces.
+Catalog, operation and capability endpoints are protected. Runtimes, Operator,
+Library and workers use service identities with only their required scopes;
+they do not forward a reusable end-user token to a sandbox. Keep Flight and
+bridge listeners private until their protocol implementations and network
+policies are enabled.
+
+## Dependencies
+
+- SolrCloud with `contents`, `content-objects`, `content-operations` and
+  `content-audit` collections;
+- IAM JWT and service identities;
+- Vault for credential references;
+- managed object storage for User Folders, Dataset revisions and staging;
+- Runtimes and Operator for Datalayer Code Sandbox attachments; and
+- Library for publication of selected immutable Dataset revisions.
+
+Initialize and protect the Solr collections before enabling production writes.
+See [Solr](/services/system/solr/) and
+[Continuity](/operations/continuity/).
+
+## Deploy
+
+Build and push the current service image from the Services repository:
+
+```bash
+cd plane/etc/dockerfiles/datalayer-contents
+make build-dev
+make push
+```
+
+Deploy with Plane:
+
+```bash
+plane up datalayer-contents
+kubectl rollout status deployment/datalayer-contents -n datalayer-api
+```
+
+The public REST ingress is `/api/contents`. Flight and bridge require their
+dedicated HTTP/2/TCP routes when those processes are enabled.
+
+## Verify
+
+```bash
+kubectl get pods,service,ingress -n datalayer-api -l app=contents
+kubectl port-forward -n datalayer-api service/datalayer-contents-svc 9400:9400
+curl http://localhost:9400/api/contents/v1/ping
+curl http://localhost:9400/api/contents/v1/health
+curl http://localhost:9400/api/contents/v1/ready
+```
+
+`health` reports process liveness. `ready` separately probes required Solr and
+Vault dependencies and returns `503` without including credentials when a
+required dependency is unavailable.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DATALAYER_CONTENTS_API_PORT` | REST listener port; default `9400` |
+| `DATALAYER_CONTENTS_FLIGHT_PORT` | Flight listener port; default `9401` |
+| `DATALAYER_CONTENTS_BRIDGE_PORT` | Local bridge listener port; default `9402` |
+| `DATALAYER_CONTENTS_REQUIRE_SOLR` | Make Solr mandatory for readiness |
+| `DATALAYER_CONTENTS_REQUIRE_VAULT` | Make Vault mandatory for readiness |
+| `DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS` | Timeout for each readiness probe |
+| `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint |
+| `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | Solr identity, supplied through Kubernetes secrets in production |
+| `DATALAYER_VAULT_URL` | Internal Vault endpoint |
+| standard `DATALAYER_JWT_*` variables | IAM token verification |
+| standard `OTEL_*` variables | Logs, traces and metrics export |
+
+Do not place Vault tokens, provider credentials or signing material directly
+in chart values. Use `contents.envValueFrom` and Kubernetes Secret references.
+
+## Logs and scaling
+
+```bash
+plane logs datalayer-contents
+kubectl logs -n datalayer-api -l app=contents -f
+kubectl scale deployment/datalayer-contents -n datalayer-api --replicas=2
+```
+
+Scale API and background processes independently. Do not enable a worker,
+Flight or bridge deployment until its readiness and protocol implementation is
+available in the selected image.
+
+## Observability
+
+The API exports structured logs, traces and metrics through the standard
+`OTEL_*` settings. Alert on failed dependency readiness, authorization and
+capability-token rejection, stuck operations, reconciliation retries and
+cleanup backlog. Data-plane processes additionally report transfer bytes,
+Flight batches/rows and active bridge sessions once enabled. Logs and spans
+must never contain JWTs, Vault values, provider credentials, signed URLs or
+Flight tickets.
+
+## Tear down
+
+```bash
+plane down datalayer-contents
+```
+
+Removing the deployment does not delete Solr collections, managed objects,
+Vault credentials or Solr backups. Archive or delete content through the API
+and follow the recovery/retention runbooks instead of deleting storage from
+the Helm release.

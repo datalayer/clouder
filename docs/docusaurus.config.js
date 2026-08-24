@@ -8,6 +8,7 @@ module.exports = {
     require.resolve('./src/gtag-shim.js'),
   ],
   onBrokenLinks: 'throw',
+  onBrokenAnchors: 'throw',
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
   organizationName: 'datalayer', // Usually your GitHub org/user name.
