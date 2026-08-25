@@ -311,6 +311,19 @@ Omitting one of them leaves the worker crashing at startup with
 `contents` scope stays available to backup, status, task cleanup and restore
 commands; it does not create duplicate collections.
 
+### The Contents mapping
+
+`datalayer_solr/contents_mappings.json` records every Contents document family:
+its `type_s`, the fields it writes, its nested children, the sorts it pages by
+and the fields carrying an expiry. It is generated from the DAO codecs and
+queries by `scripts/generate_contents_mappings.py` and verified by a test, so
+it describes what the code does rather than what it did when someone last
+updated a table by hand. Regenerate it in the same change that adds a field:
+
+```bash
+cd services/solr && python3 scripts/generate_contents_mappings.py
+```
+
 Cursor pagination follows Solr's rule: a `cursorMark` query must sort on the
 **uniqueKey** (`id`) as a tie breaker, or Solr answers HTTP 400. Contents sorts
 by public identity and appends `id asc` — `uid asc,id asc` for sources — so the
