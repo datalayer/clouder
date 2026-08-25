@@ -247,7 +247,7 @@ kubectl describe pods -n datalayer-solr | grep Node
 
 Solr collections are organized into two sets that can be initialized independently.
 
-### Core Collections (25 during Contents migration)
+### Core Collections (26 during Contents migration)
 
 Platform collections used by the main Datalayer services:
 
@@ -293,15 +293,19 @@ Collections specific to the runtimes subsystem:
 | `runtime-checkpoints` | Runtime checkpoint records (CRIU snapshots metadata) |
 | `sandbox-snapshots` | Runtime snapshot records |
 
-The transitional inventory is 25 Core plus 5 Runtimes collections, 30 in
+The transitional inventory is 26 Core plus 4 Runtimes collections, 30 in
 total. After Datasource migration removes the legacy `datasources` collection,
-the final inventory is 24 Core, 5 Runtimes and 29 total. Always verify the
+the final inventory is 25 Core, 4 Runtimes and 29 total. Always verify the
 arrays and manifests rather than relying on these numbers alone.
 
-The four Contents collections form one operational recovery scope even though
-`content-operations` belongs to the Runtimes initialization set. The
-`contents` scope is available to backup, status, task cleanup and restore
-commands; it does not create duplicate collections.
+All four Contents collections — including `content-operations` — are Core
+collections, and together they form one operational recovery scope. They are
+read and written only by `datalayer-contents`, so initializing the Core set
+alone gives the Contents API and worker every collection they need: a Core
+initialization that omitted `content-operations` left the worker crashing at
+startup with `Unknown collection`. The `contents` scope is available to
+backup, status, task cleanup and restore commands; it does not create
+duplicate collections.
 
 The collections use the shared managed configset and its typed dynamic fields
 (`*_s`, `*_t`, `*_dt`, numeric and boolean variants). Application-facing UIDs
@@ -327,8 +331,8 @@ The `solr-init` script prompts which collection set to create. This is useful wh
 ```bash
 plane solr-init
 # Select:
-#   1) Core       - Platform collections (25 collections)
-#   2) Runtimes   - Runtimes collections (5 collections)
+#   1) Core       - Platform collections (26 collections)
+#   2) Runtimes   - Runtimes collections (4 collections)
 #   3) All        - All collections (30 collections)
 #
 # The init pod is created, logs are streamed, and the pod is auto-cleaned.
@@ -368,7 +372,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents api-keys contacts content-audit content-objects contents credits datasources evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage content-operations ray runtime-registrations runtime-checkpoints sandbox-snapshots
+for COLLECTION in ai-agents api-keys contacts content-audit content-objects content-operations contents credits datasources evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage ray runtime-registrations runtime-checkpoints sandbox-snapshots
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -389,8 +393,8 @@ so its coordinated schedule can run beside the full backup:
 | File | Scope | CR Name |
 |------|-------|---------|
 | `datalayer-backup-s3.yaml` | All 30 transitional collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-core.yaml` | 25 Core collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-runtimes.yaml` | 5 Runtimes collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-core.yaml` | 26 Core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-runtimes.yaml` | 4 Runtimes collections | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
 
 All backups run every 10 minutes and retain up to 200 snapshots.

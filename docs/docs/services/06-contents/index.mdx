@@ -28,8 +28,12 @@ provider storage; credentials never become catalog fields.
 | Flight gateway | Arrow Flight and Flight SQL data plane | `9401` |
 | Local bridge relay | Authenticated local-folder bridge sessions | `9402` |
 
-The initial chart enables only the API. Worker, Flight and bridge deployments
-remain disabled until their protocol milestones are installed; their binaries
+The chart enables the API and worker. The API serves the catalog, User Folder,
+resumable Transfer, attachment-manifest and immutable Dataset-revision
+contracts; the worker handles durable operations, terminal transfer
+audit/provenance reconciliation, abandoned-transfer cleanup and version
+retention. Flight and bridge remain
+disabled until their protocol milestones are installed, and their binaries
 fail closed instead of pretending to serve traffic.
 
 ## Routes and authentication boundaries
@@ -81,6 +85,22 @@ kubectl rollout status deployment/datalayer-contents -n datalayer-api
 The public REST ingress is `/api/contents`. Flight and bridge require their
 dedicated HTTP/2/TCP routes when those processes are enabled.
 
+### Local development
+
+Start Contents with the same local supervisor used by the other services:
+
+```bash
+plane pf-solr
+plane local --services iam,spacer,contents --logs contents
+```
+
+The API listens on `http://localhost:9400`. `plane local` exports
+`DATALAYER_CONTENTS_URL=http://localhost:9400` to locally launched clients and
+services, validates `/api/contents/v1/health`, prefixes its logs and terminates
+the process during normal cleanup. The production client default remains
+`https://prod1.datalayer.run`; set `DATALAYER_CONTENTS_URL` explicitly whenever
+the service runs on a separate host.
+
 ## Verify
 
 ```bash
@@ -105,7 +125,20 @@ required dependency is unavailable.
 | `DATALAYER_CONTENTS_REQUIRE_SOLR` | Make Solr mandatory for readiness |
 | `DATALAYER_CONTENTS_REQUIRE_VAULT` | Make Vault mandatory for readiness |
 | `DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS` | Timeout for each readiness probe |
-| `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint |
+| `DATALAYER_CONTENTS_STORAGE_BACKEND` | Managed-byte backend: `local` for development or `s3` for deployed environments |
+| `DATALAYER_CONTENTS_STORAGE_ROOT` | Root used by the local managed-byte backend |
+| `DATALAYER_CONTENTS_STORAGE_BUCKET` | S3 bucket for User Folder versions and transfer staging |
+| `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` | Optional S3-compatible endpoint |
+| `DATALAYER_CONTENTS_STORAGE_REGION` | Optional S3 region |
+| `DATALAYER_CONTENTS_USER_FOLDER_QUOTA_BYTES` | Per-user User Folder byte limit reserved before upload |
+| `DATALAYER_CONTENTS_USER_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
+| `DATALAYER_CONTENTS_VERSION_RETENTION_DAYS` | Retention period for superseded object versions |
+| `DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS` | Worker cleanup/reconciliation interval |
+| `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://prod1.datalayer.run`, local Plane uses `http://localhost:9400` |
+| `DATALAYER_IAM_URL` | IAM endpoint used to resolve the caller's memberships |
+| `DATALAYER_SPACER_URL` | Spacer endpoint used to resolve accessible spaces |
+| `DATALAYER_SOLR_ZK_HOST` | ZooKeeper ensemble the Solr DAOs connect through; required by the API and the worker |
+| `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint, polled by the readiness probe |
 | `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | Solr identity, supplied through Kubernetes secrets in production |
 | `DATALAYER_VAULT_URL` | Internal Vault endpoint |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
@@ -122,9 +155,8 @@ kubectl logs -n datalayer-api -l app=contents -f
 kubectl scale deployment/datalayer-contents -n datalayer-api --replicas=2
 ```
 
-Scale API and background processes independently. Do not enable a worker,
-Flight or bridge deployment until its readiness and protocol implementation is
-available in the selected image.
+Scale API and worker independently. Keep Flight and bridge disabled until their
+readiness and protocol implementations are available in the selected image.
 
 ## Observability
 

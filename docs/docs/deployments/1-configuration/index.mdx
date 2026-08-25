@@ -290,8 +290,13 @@ SSL certificates will be created by the cert-manager service for that hostname.<
   <td>Timeout in seconds for each Contents readiness dependency probe.</td>
 </tr>
 <tr>
+  <td>DATALAYER_SOLR_ZK_HOST</td>
+  <td>ZooKeeper ensemble the Solr data-access layer connects through. Required by every Solr-backed service, including the Contents API and worker.</td>
+</tr>
+
+<tr>
   <td>DATALAYER_SOLR_URL</td>
-  <td>Internal Solr endpoint used by Contents and other Solr-backed services.</td>
+  <td>Internal Solr HTTP endpoint polled by readiness probes. It does not replace <code>DATALAYER_SOLR_ZK_HOST</code>.</td>
 </tr>
 
 <tr>
