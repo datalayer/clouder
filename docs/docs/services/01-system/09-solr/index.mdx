@@ -247,7 +247,7 @@ kubectl describe pods -n datalayer-solr | grep Node
 
 Solr collections are organized into two sets that can be initialized independently.
 
-### Core Collections (26 during Contents migration)
+### Core Collections (22 during Contents migration)
 
 Platform collections used by the main Datalayer services:
 
@@ -256,9 +256,6 @@ Platform collections used by the main Datalayer services:
 | `ai-agents` | AI agents service records |
 | `api-keys` | IAM authentication tokens |
 | `contacts` | Contact information |
-| `content-audit` | Immutable Contents audit and provenance events |
-| `content-objects` | Contents object/version and materialization metadata |
-| `contents` | Content sources, grants, revisions and attachments |
 | `credits` | Usage credits |
 | `datasources` | Data source definitions |
 | `evals` | Evaluation definitions and results |
@@ -281,31 +278,43 @@ Platform collections used by the main Datalayer services:
 
 Note: The `notifications` collection stores user-facing notifications, while `events` stores lifecycle and system events.
 
-### Runtimes Collections (5)
+### Runtimes Collections (8)
 
-Collections specific to the runtimes subsystem:
+Collections specific to the runtimes plane, Contents included — the Contents
+service is deployed there, beside the NFS that backs the Home Folder and the
+Volumes:
 
 | Collection | Purpose |
 |---|---|
-| `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
 | `ray` | Ray service records |
 | `runtime-registrations` | Runtime registrations |
 | `runtime-checkpoints` | Runtime checkpoint records (CRIU snapshots metadata) |
 | `sandbox-snapshots` | Runtime snapshot records |
+| `contents` | Content sources, grants, revisions and attachments |
+| `content-objects` | Contents object/version and materialization metadata |
+| `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
+| `content-audit` | Immutable Contents audit and provenance events |
 
-The transitional inventory is 26 Core plus 4 Runtimes collections, 30 in
+The transitional inventory is 22 Core plus 8 Runtimes collections, 30 in
 total. After Datasource migration removes the legacy `datasources` collection,
-the final inventory is 25 Core, 4 Runtimes and 29 total. Always verify the
+the final inventory is 21 Core, 8 Runtimes and 29 total. Always verify the
 arrays and manifests rather than relying on these numbers alone.
 
-All four Contents collections — including `content-operations` — are Core
-collections, and together they form one operational recovery scope. They are
-read and written only by `datalayer-contents`, so initializing the Core set
-alone gives the Contents API and worker every collection they need: a Core
-initialization that omitted `content-operations` left the worker crashing at
-startup with `Unknown collection`. The `contents` scope is available to
-backup, status, task cleanup and restore commands; it does not create
-duplicate collections.
+All four Contents collections — `contents`, `content-objects`,
+`content-operations` and `content-audit` — belong to the **Runtimes** set, and
+together they form one operational recovery scope. The Contents service is
+deployed on the runtimes plane, beside the NFS that backs the Home Folder and
+the Volumes, so its collections initialize with that plane: a plane brought up
+with the Runtimes set has everything `datalayer-contents` reads and writes.
+Omitting one of them leaves the worker crashing at startup with
+`Unknown collection`, which is how `content-operations` was found missing. The
+`contents` scope stays available to backup, status, task cleanup and restore
+commands; it does not create duplicate collections.
+
+Cursor pagination follows Solr's rule: a `cursorMark` query must sort on the
+**uniqueKey** (`id`) as a tie breaker, or Solr answers HTTP 400. Contents sorts
+by public identity and appends `id asc` — `uid asc,id asc` for sources — so the
+page order stays meaningful and the cursor stays legal.
 
 The collections use the shared managed configset and its typed dynamic fields
 (`*_s`, `*_t`, `*_dt`, numeric and boolean variants). Application-facing UIDs
@@ -331,8 +340,8 @@ The `solr-init` script prompts which collection set to create. This is useful wh
 ```bash
 plane solr-init
 # Select:
-#   1) Core       - Platform collections (26 collections)
-#   2) Runtimes   - Runtimes collections (4 collections)
+#   1) Core       - Platform collections (22 collections)
+#   2) Runtimes   - Runtimes collections (8 collections, Contents included)
 #   3) All        - All collections (30 collections)
 #
 # The init pod is created, logs are streamed, and the pod is auto-cleaned.
@@ -372,7 +381,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents api-keys contacts content-audit content-objects content-operations contents credits datasources evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage ray runtime-registrations runtime-checkpoints sandbox-snapshots
+for COLLECTION in ai-agents api-keys contacts credits datasources evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -393,8 +402,8 @@ so its coordinated schedule can run beside the full backup:
 | File | Scope | CR Name |
 |------|-------|---------|
 | `datalayer-backup-s3.yaml` | All 30 transitional collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-core.yaml` | 26 Core collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-runtimes.yaml` | 4 Runtimes collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-core.yaml` | 22 Core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-runtimes.yaml` | 8 Runtimes collections, the four Contents ones included | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
 
 All backups run every 10 minutes and retain up to 200 snapshots.

@@ -97,9 +97,12 @@ plane local --services iam,spacer,contents --logs contents
 The API listens on `http://localhost:9400`. `plane local` exports
 `DATALAYER_CONTENTS_URL=http://localhost:9400` to locally launched clients and
 services, validates `/api/contents/v1/health`, prefixes its logs and terminates
-the process during normal cleanup. The production client default remains
-`https://prod1.datalayer.run`; set `DATALAYER_CONTENTS_URL` explicitly whenever
-the service runs on a separate host.
+the process during normal cleanup. The production client default is `https://r1.datalayer.run` — the runtimes
+plane, not the IAM one, because the NFS that backs the Home Folder and Volumes
+is deployed there and the service has to sit beside the storage it serves. The
+ingress follows: `up.sh` sets `contents.runHost` from `DATALAYER_CONTENTS_URL`,
+falling back to `DATALAYER_RUNTIMES_URL`. Set `DATALAYER_CONTENTS_URL`
+explicitly whenever the service runs on a host of its own.
 
 ## Verify
 
@@ -134,18 +137,67 @@ required dependency is unavailable.
 | `DATALAYER_CONTENTS_USER_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
 | `DATALAYER_CONTENTS_VERSION_RETENTION_DAYS` | Retention period for superseded object versions |
 | `DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS` | Worker cleanup/reconciliation interval |
-| `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://prod1.datalayer.run`, local Plane uses `http://localhost:9400` |
-| `DATALAYER_IAM_URL` | IAM endpoint used to resolve the caller's memberships |
-| `DATALAYER_SPACER_URL` | Spacer endpoint used to resolve accessible spaces |
+| `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://r1.datalayer.run` (the runtimes plane, where the NFS lives), local Plane uses `http://localhost:9400` |
+| `DATALAYER_IAM_URL` | IAM endpoint used to resolve the caller's memberships and to read credentials. The chart default is the in-cluster service, correct only where Contents is co-located with IAM; on the runtimes plane `up.sh` overrides it with the platform plane's public endpoint |
+| `DATALAYER_SPACER_URL` | Spacer endpoint used to resolve accessible spaces, overridden the same way as `DATALAYER_IAM_URL` |
 | `DATALAYER_SOLR_ZK_HOST` | ZooKeeper ensemble the Solr DAOs connect through; required by the API and the worker |
-| `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint, polled by the readiness probe |
+| `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint, polled by the readiness probe. Address the `-solrcloud-common` service **without a port** — it listens on 80, while only the `-solrcloud-headless` service listens on 8983. Pointing the common service at 8983 leaves readiness reporting Solr `unreachable` while the worker, which goes through ZooKeeper, stays healthy |
 | `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | Solr identity, supplied through Kubernetes secrets in production |
-| `DATALAYER_VAULT_URL` | Internal Vault endpoint |
+| `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim, mounted into the API and the worker at `/mnt/shared-fs` exactly as the Operator mounts it into runtimes. `up.sh` passes it through `contents.sharedFsPVC` |
+| `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
+| `DATALAYER_CONTENTS_STORAGE_BACKEND` (`shared-fs`) | Store managed bytes on the shared filesystem rather than in S3 or a container-local directory. Refuses to start without a claim: writing managed bytes into the container looks like it worked until the pod is replaced |
+| `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
 | standard `OTEL_*` variables | Logs, traces and metrics export |
 
 Do not place Vault tokens, provider credentials or signing material directly
 in chart values. Use `contents.envValueFrom` and Kubernetes Secret references.
+The Solr identity comes from the `solr-basic-auth` secret this way; `up.sh`
+must not also `--set contents.env.DATALAYER_SOLR_USERNAME/PASSWORD`, which
+would write the credential into the release values and leave two env entries
+of each name in the pod.
+
+## Credentials
+
+A source stores a `credential_uid`, never a secret. Resolving it goes through
+**IAM's API** — the same path `datalayer_core` uses — rather than through
+Vault directly: `datalayer_vault` speaks hvac to a Vault in the same cluster,
+and Contents runs on the runtimes plane while Vault is deployed on the
+platform one. Going through IAM works across clusters and keeps the read
+subject to IAM's own authorization.
+
+The caller's own credentials are forwarded rather than a service token, so
+Contents cannot become a way to read a secret IAM would refuse to hand over
+directly. `401`, `403` and `404` are collapsed into one answer, because
+telling them apart would tell a caller which uids exist. The value is returned
+to the caller and never stored, logged, or included in a `repr`.
+
+The value is returned exactly as IAM stored it — not decoded. `datalayer_core`
+base64-encodes on create and the web application does not, and nothing on the
+record says which happened; the caller that knows how a credential was written
+is the one that can decode it.
+
+## The shared filesystem
+
+The Home Folder and the Volumes live on the NFS-backed claim the Operator
+mounts into runtimes. Contents mounts the **same claim at the same path**, so a
+file it writes is the file a runtime reads — not a copy that has to be kept in
+step. This is why the service belongs on the runtimes plane, and why its four
+Solr collections initialize with the Runtimes set.
+
+Readiness reports the mount rather than the variable: it answers whether this
+process can write where the runtimes read.
+
+| `shared-filesystem` detail | Meaning |
+| --- | --- |
+| `not configured` | No claim was passed. Required only when the managed backend is `shared-fs`; otherwise the service is ready without it |
+| `mount path missing` | The claim did not mount. The path is absent |
+| `mount path not writable` | Mounted read-only, or owned by another user |
+| `ready` | Mounted and writable |
+
+A failed mount otherwise leaves the path present and empty, and the service
+would write managed bytes into the container's own filesystem until the pod is
+replaced and they vanish.
 
 ## Logs and scaling
 
