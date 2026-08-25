@@ -14,7 +14,7 @@ import { Label, Stack } from '@primer/react-brand';
 </Stack>
 
 `Datalayer Contents` owns the catalog and lifecycle of content sources used by
-notebooks, agents and Code Sandboxes. It stores control-plane state in Solr,
+Notebooks, Agents and Code Sandboxes. It stores control-plane state in Solr,
 resolves credential references through Vault and coordinates Runtimes,
 Operator, Library and provider adapters. File bytes remain in managed or
 provider storage; credentials never become catalog fields.
@@ -41,6 +41,7 @@ fail closed instead of pretending to serve traffic.
 | Surface | Route | Authentication boundary |
 | --- | --- | --- |
 | REST API | `/api/contents/v1/*` | IAM user JWTs for user operations; scoped service identities for internal callers |
+| Capabilities | `/api/contents/v1/capabilities` | IAM user JWTs; the answer is per caller and has no anonymous form |
 | Arrow Flight | dedicated HTTP/2 route on `9401` | Short-lived, audience-bound capability issued by the REST API |
 | Local bridge | dedicated relay route on `9402` | One-session, one-sandbox bridge capability; never a stored provider credential |
 
@@ -146,6 +147,7 @@ required dependency is unavailable.
 | `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim, mounted into the API and the worker at `/mnt/shared-fs` exactly as the Operator mounts it into runtimes. `up.sh` passes it through `contents.sharedFsPVC` |
 | `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
 | `DATALAYER_CONTENTS_STORAGE_BACKEND` (`shared-fs`) | Store managed bytes on the shared filesystem rather than in S3 or a container-local directory. Refuses to start without a claim: writing managed bytes into the container looks like it worked until the pod is replaced |
+| `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
 | `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
 | standard `OTEL_*` variables | Logs, traces and metrics export |
@@ -187,6 +189,14 @@ Solr collections initialize with the Runtimes set.
 
 Readiness reports the mount rather than the variable: it answers whether this
 process can write where the runtimes read.
+
+`GET /sources/user-folder/files` browses that filesystem. It lists every folder
+the caller reaches — their own, plus one per organization and team they belong
+to — under the same names the Operator mounts them by, which come from
+`datalayer_common.home_folders` so the two services cannot name a folder
+differently. Which folders those are is resolved from IAM with the caller's own
+credentials and held per caller for a short window; the first path segment
+selects one of them, and a segment outside the resolved set is refused.
 
 | `shared-filesystem` detail | Meaning |
 | --- | --- |
