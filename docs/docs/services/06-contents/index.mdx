@@ -262,6 +262,7 @@ of moving on.
 | `DATALAYER_CONTENTS_API_KEY` | The Contents worker's own key, for running operations |
 | `DATALAYER_CONTENTS_FLIGHT_API_KEY` | The Flight server's key, for redeeming tickets |
 | `DATALAYER_CONTENTS_DATASERVER_API_KEY` | A Dataserver's key, for publishing results |
+| `DATALAYER_SPACER_API_KEY` | Spacer's key, for releasing a space's sources — revoking their attachments and returning them to their owners — before the space is deleted; Spacer refuses the deletion when this fails |
 | `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
 | standard `OTEL_*` variables | Logs, traces and metrics export |
