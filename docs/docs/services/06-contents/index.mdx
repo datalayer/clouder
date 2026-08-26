@@ -285,7 +285,7 @@ manager need no rebuild for this. On the runtimes plane (`datalayerrc-r1`):
 | Image | Why | How |
 | --- | --- | --- |
 | `datalayer-contents` | the relay process, the bridge sessions and tokens, the `local-mount` capability | `make build-dev push && plane reup datalayer-contents` after publishing `datalayer-core` (the pin) |
-| `datalayer-operator` | renders a `local-bridge` attachment as the inline `csi:` volume and its token Secret | `make build-dev push && plane reup datalayer-operator` (then the runtime-pools pod reclaim) |
+| `datalayer-operator` | renders a `local-bridge` attachment as the inline `csi:` volume and its token Secret | `make build-dev push && plane reup datalayer-operator`, then re-apply the Runtime Contents and Environments — see [After the upgrade](/services/operator/#after-the-upgrade-re-apply-the-runtime-contents-and-the-environments): an Environment left in the by-name shape spawns no pool pod |
 | `datalayer-runtimes` | refuses a local mount before launch on an environment that cannot carry it; hands the manifest to external sandboxes | `make build-dev push && plane reup datalayer-runtimes` |
 | `datalayer-local-csi` (new) | the node driver on the runtime nodes | `make build-dev push`, then step 5 |
 | `agent-runtimes` (runtime image) and the environment images of external sandboxes | the sandbox side: `code-sandboxes` with `fusepy` runs the FUSE mount where there is no CSI — an external sandbox's environment must install them, have `/dev/fuse`, and list the `fuse` feature | rebuild the runtime image (`plane/etc/dockerfiles/agent-runtimes`) and any Daytona/E2B/Modal environment that should mount |

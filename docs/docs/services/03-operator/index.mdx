@@ -82,6 +82,39 @@ export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
   </TabItem>
 </Tabs>
 
+### After the upgrade: re-apply the Runtime Contents and the Environments
+
+Since Environments select their Runtime Contents **by uid**, the Operator
+spawns nothing from an Environment still applied in the earlier shape
+(`contents: [{name: ...}]`), and nothing from one whose uids match no
+`RuntimeContent` in the cluster — every pool pod on it is refused before it
+is created. Upgrading the image is therefore not the whole upgrade. Apply the
+definitions first (each carries its `spec.uid`), then the Environments:
+
+```bash
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-contents/
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+kubectl get runtime-contents -n datalayer-runtimes -o custom-columns=NAME:.metadata.name,UID:.spec.uid,TYPE:.spec.type
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
+Every content must show a `UID` and every Environment a list of uids; a
+`name` in an Environment's `contents` is the old shape.
+
+**When no pool pod comes up.** The Operator now says why, at startup and on
+every reconcile, on its own logger:
+
+```bash
+plane logs datalayer-operator | grep -E "startup_check|pool_reconcile|add_runtime_pod"
+```
+
+`[startup_check] Environment 'X' still selects its contents by name …` or
+`… selects a Runtime Content the cluster cannot deliver …` names the spec to
+re-apply; `[startup_hydrate] runtime contents (name: uid)` lists what the
+cluster defines; `[add_runtime_pod] FAILED` carries the traceback of a spawn
+that failed for any other reason. The pool retries a minute later, so a
+re-applied spec is picked up without a restart.
+
 ## Cloud Credentials (AWS/Azure)
 
 For Operator scaling/executor workflows, credentials are consumed through a
