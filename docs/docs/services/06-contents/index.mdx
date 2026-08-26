@@ -268,6 +268,25 @@ process that pairs the two ends and forwards frames it cannot read) and, for
 Datalayer runtimes, the **Local CSI driver** on the runtime nodes, which
 mounts the far end into the pod. External sandboxes need no driver — the
 sandbox runs the mount itself when its environment lists the `fuse` feature.
+What a person does with it is the user manual:
+[datalayer.ai/docs/contents/mounts](https://datalayer.ai/docs/contents/mounts).
+
+**What has to be deployed for it — the runtimes plane only.** Nothing on the
+core plane takes part in a local mount: IAM, Spacer, the Library, OTel, the
+AI agents and inference services, growth, support, the scheduler and the
+manager need no rebuild for this. On the runtimes plane (`datalayerrc-r1`):
+
+| Image | Why | How |
+| --- | --- | --- |
+| `datalayer-contents` | the relay process, the bridge sessions and tokens, the `local-mount` capability | `make build-dev push && plane reup datalayer-contents` after publishing `datalayer-core` (the pin) |
+| `datalayer-operator` | renders a `local-bridge` attachment as the inline `csi:` volume and its token Secret | `make build-dev push && plane reup datalayer-operator` (then the runtime-pools pod reclaim) |
+| `datalayer-runtimes` | refuses a local mount before launch on an environment that cannot carry it; hands the manifest to external sandboxes | `make build-dev push && plane reup datalayer-runtimes` |
+| `datalayer-local-csi` (new) | the node driver on the runtime nodes | `make build-dev push`, then step 5 |
+| `agent-runtimes` (runtime image) and the environment images of external sandboxes | the sandbox side: `code-sandboxes` with `fusepy` runs the FUSE mount where there is no CSI — an external sandbox's environment must install them, have `/dev/fuse`, and list the `fuse` feature | rebuild the runtime image (`plane/etc/dockerfiles/agent-runtimes`) and any Daytona/E2B/Modal environment that should mount |
+
+And two things that are not images: the landing application (the Mounts
+card, the sandbox's Contents tab) and the published `datalayer` CLI
+(`datalayer contents mount|mounts|unmount`, core ≥ 1.1.62).
 
 1. **Give the relay its secrets.** In the Contents release values, through
    `contents.envValueFrom` and a Kubernetes Secret (never in plain values):
