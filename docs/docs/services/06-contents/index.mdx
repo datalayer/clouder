@@ -28,11 +28,12 @@ provider storage; credentials never become catalog fields.
 | Flight gateway | Arrow Flight and Flight SQL data plane | `9401` |
 | Local bridge relay | Authenticated local-folder bridge sessions | `9402` |
 
-The chart enables the API and worker. The API serves the catalog, User Folder,
-resumable Transfer, attachment-manifest and immutable Dataset-revision
-contracts; the worker handles durable operations, terminal transfer
-audit/provenance reconciliation, abandoned-transfer cleanup and version
-retention. Flight and bridge remain
+The chart enables the API and worker. The API serves the catalog, Home Folder,
+resumable Transfer, synchronization-session, attachment-manifest and immutable
+Dataset-revision contracts; the worker handles durable operations, terminal
+transfer and synchronization audit/provenance reconciliation,
+abandoned-transfer cleanup, closure of watch sessions whose client stopped
+sending heartbeats, and version retention. Flight and bridge remain
 disabled until their protocol milestones are installed, and their binaries
 fail closed instead of pretending to serve traffic.
 
@@ -42,6 +43,7 @@ fail closed instead of pretending to serve traffic.
 | --- | --- | --- |
 | REST API | `/api/contents/v1/*` | IAM user JWTs for user operations; scoped service identities for internal callers |
 | Capabilities | `/api/contents/v1/capabilities` | IAM user JWTs; the answer is per caller and has no anonymous form |
+| Synchronization | `/api/contents/v1/sync/*` | IAM user JWTs; a session belongs to the principal that opened it and is invisible to any other |
 | Arrow Flight | dedicated HTTP/2 route on `9401` | Short-lived, audience-bound capability issued by the REST API |
 | Local bridge | dedicated relay route on `9402` | One-session, one-sandbox bridge capability; never a stored provider credential |
 
@@ -59,7 +61,8 @@ policies are enabled.
 - IAM JWT and service identities;
 - Vault for credential references;
 - managed object storage for User Folders, Dataset revisions and staging;
-- Runtimes and Operator for Datalayer Code Sandbox attachments; and
+- Runtimes and Operator for Datalayer Code Sandbox attachments;
+- the [Local CSI driver](/services/system/local-csi/) for Local Mounts, once it ships; and
 - Library for publication of selected immutable Dataset revisions.
 
 Initialize and protect the Solr collections before enabling production writes.
@@ -134,8 +137,8 @@ required dependency is unavailable.
 | `DATALAYER_CONTENTS_STORAGE_BUCKET` | S3 bucket for User Folder versions and transfer staging |
 | `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` | Optional S3-compatible endpoint |
 | `DATALAYER_CONTENTS_STORAGE_REGION` | Optional S3 region |
-| `DATALAYER_CONTENTS_USER_FOLDER_QUOTA_BYTES` | Per-user User Folder byte limit reserved before upload |
-| `DATALAYER_CONTENTS_USER_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
+| `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_BYTES` | Per-user User Folder byte limit reserved before upload |
+| `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
 | `DATALAYER_CONTENTS_VERSION_RETENTION_DAYS` | Retention period for superseded object versions |
 | `DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS` | Worker cleanup/reconciliation interval |
 | `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://r1.datalayer.run` (the runtimes plane, where the NFS lives), local Plane uses `http://localhost:9400` |
@@ -147,6 +150,7 @@ required dependency is unavailable.
 | `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim, mounted into the API and the worker at `/mnt/shared-fs` exactly as the Operator mounts it into runtimes. `up.sh` passes it through `contents.sharedFsPVC` |
 | `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
 | `DATALAYER_CONTENTS_STORAGE_BACKEND` (`shared-fs`) | Store managed bytes on the shared filesystem rather than in S3 or a container-local directory. Refuses to start without a claim: writing managed bytes into the container looks like it worked until the pod is replaced |
+| `DATALAYER_CONTENTS_SYNC_HEARTBEAT_GRACE_SECONDS` | How long a `--watch` synchronization session survives without a heartbeat from its client before the worker closes it as failed with `SYNC_CLIENT_LOST`; default `900`. Long enough for a laptop's sleep to come back, short enough that a dead client is not reported as running all day. The next `datalayer contents sync` of the folder resumes from the last accepted manifest |
 | `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
 | `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
