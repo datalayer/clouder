@@ -24,18 +24,18 @@ provider storage; credentials never become catalog fields.
 | Process | Purpose | Default port |
 | --- | --- | --- |
 | API | REST, OpenAPI, catalog and operation control | `9400` |
-| Worker | Durable transfers, synchronization, reconciliation and cleanup | none |
-| Flight gateway | Arrow Flight and Flight SQL data plane | `9401` |
+| Worker | Durable operations (transfers, Volume provisioning, queries, acquisitions), the lease, bridge and synchronization sweeps, retention, the scheduled reconciliation; its own `/health` and `/ready` | `9403` (probes) |
+| Flight gateway | Arrow Flight `DoGet` of query results under a capability ticket, validated once; Flight SQL is not served yet and says so; enabled with `processes.flight.enabled` and routed by `flightHost` | `9401` (Flight), `9404` (probes) |
 | Local bridge relay | Pairs the two ends of a local mount — the person's computer and the sandbox — and forwards frames it cannot read; enabled with `processes.bridge.enabled` | `9402` |
 
-The chart enables the API and worker. The API serves the catalog, Home Folder,
-resumable Transfer, synchronization-session, attachment-manifest and immutable
-Dataset-revision contracts; the worker handles durable operations, terminal
-transfer and synchronization audit/provenance reconciliation,
-abandoned-transfer cleanup, closure of watch sessions whose client stopped
-sending heartbeats, and version retention. Flight and bridge remain
-disabled until their protocol milestones are installed, and their binaries
-fail closed instead of pretending to serve traffic.
+All four run from the one image (`datalayer-contents-worker`,
+`datalayer-contents-flight`, `datalayer-contents-bridge` are its console
+scripts). The chart enables the API and the worker; Flight and the relay are
+switches in `values.yaml` (`processes.flight.enabled`,
+`processes.bridge.enabled`) with the settings each needs listed under
+*Configuration* — a switch on without its secret refuses to start rather than
+serve unsigned tokens. The Prometheus rules ship with the chart and are their
+own switch (`alerts.enabled`).
 
 ## Routes and authentication boundaries
 
@@ -72,7 +72,14 @@ See [Solr](/services/system/solr/) and
 
 ## Deploy
 
-Build and push the current service image from the Services repository:
+The service imports the synchronization engine and the local-bridge protocol
+from the **published** `datalayer-core` — both ends of a sync or a bridge run
+one implementation — and `common/pyproject.toml` pins the version that
+carries them. Publish that `datalayer-core` to PyPI first; the image build
+fails on the pin otherwise, which is the point.
+
+Build and push the current service image from the Services repository (the
+base is Debian: `pyarrow` and `duckdb` have no Alpine wheels):
 
 ```bash
 cd plane/etc/dockerfiles/datalayer-contents
@@ -80,15 +87,27 @@ make build-dev
 make push
 ```
 
-Deploy with Plane:
+Deploy with Plane, then move the stored documents to the mapping version the
+new code is on — the reindex walks each family under compare-and-set and
+resumes if interrupted:
 
 ```bash
 plane up datalayer-contents
 kubectl rollout status deployment/datalayer-contents -n datalayer-api
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex --dry-run
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex
 ```
 
-The public REST ingress is `/api/contents`. Flight and bridge require their
-dedicated HTTP/2/TCP routes when those processes are enabled.
+The public REST ingress is `/api/contents`. The Flight gateway gets its own
+Service and a Traefik `IngressRouteTCP` with TLS passthrough on `flightHost`
+(a host of its own — a passthrough router on the API's host would swallow the
+API's TLS); the relay is reached at `DATALAYER_CONTENTS_BRIDGE_URL`. Two
+things deploy beside Contents when their workflows are wanted: the Local CSI
+node driver for local mounts on Datalayer runtimes
+([Local CSI](../01-system/12-local-csi/index.mdx), off by default), and the
+Dataserver for Datasources in a customer network
+(`plane/etc/helm/charts/datalayer-data-server`, outbound only, its README
+covers the identity bootstrap).
 
 ### Local development
 
@@ -235,6 +254,59 @@ not name (`--strict` makes those a failure too). The local drill does the
 whole loop — backup, manifest, drop, restore, verify, reconcile — and the
 [Continuity](/operations/continuity/) page says what the bucket must be
 configured with for the cluster.
+
+## Test after a deploy
+
+What to run, in the order the plan's milestones stack, from a machine with
+`datalayer` installed and logged in (`DATALAYER_API_KEY` or `datalayer login`).
+Each line is a workflow the documentation promises; a failure names the
+service and the step.
+
+```bash
+# The service, the worker, the store
+curl -s https://$RUN_HOST/api/contents/v1/ready | jq '.dependencies[] | {name, ready}'
+datalayer contents list                                  # the catalog: one row per source you reach
+datalayer contents home-folder list                      # the Home Folder, listed from the shared filesystem
+# Transfers and synchronization
+datalayer contents upload ./report.csv home-folder:///reports/report.csv
+datalayer contents download home-folder:///reports/report.csv ./report.copy.csv
+datalayer contents transfer status TRANSFER_UID           # the uid an upload prints; parts verified, then succeeded
+datalayer contents sync ./folder home-folder:///folder --direction push
+datalayer contents sync-list
+# Datasets and Volumes
+datalayer contents datasets create --name "Climate"
+datalayer contents datasets capture ./report.csv Climate results/report.csv
+datalayer contents datasets create-revision Climate --file results/report.csv
+datalayer contents volumes create --name models --size 5
+datalayer contents volumes list                          # `ready` once the Operator bound the claim
+# Cloud Storage, Environments, Code Sandboxes
+datalayer contents cloud-storage test BUCKET_SOURCE
+datalayer contents cloud-storage objects BUCKET_SOURCE --prefix data/
+datalayer contents environment list
+datalayer contents environment verify python-cpu --provider daytona
+datalayer contents sandbox attach models --sandbox SANDBOX_UID --path /home/jovyan/volumes/models
+datalayer contents sandbox list --sandbox SANDBOX_UID
+# Local mounts (the relay and, on Datalayer runtimes, the Local CSI driver)
+datalayer contents mount ./folder --sandbox SANDBOX_UID --path /home/jovyan/local
+datalayer contents mounts
+# MCP sources
+datalayer contents mcp tools EARTHDATA_SOURCE
+datalayer contents mcp call EARTHDATA_SOURCE search_earth_datasets --arg search_keywords=sea-ice --wait
+datalayer contents mcp approvals list --status pending
+# Datasources and Dataservers
+datalayer contents datasources test WAREHOUSE
+datalayer contents datasources schema WAREHOUSE
+datalayer contents datasources query WAREHOUSE "select 1 as one" --wait
+datalayer contents dataservers status GATEWAY
+# What gave up, and the catalog against the store
+datalayer contents operations dead-letter
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reconcile --verify
+```
+
+The user documentation under `/docs/contents` on the web application walks
+the same workflows from the browser; `datalayer contents --help` lists every
+group, and every command in this page and in that documentation is held to
+what ships by the documented-examples test.
 
 ## What synchronization compares
 
