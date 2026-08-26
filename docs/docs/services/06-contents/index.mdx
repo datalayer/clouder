@@ -98,6 +98,16 @@ plane pf-solr
 plane local --services iam,spacer,contents --logs contents
 ```
 
+Or, to try a change to the service against a real SolrCloud and a real
+object store with nothing port-forwarded from a cluster, the service's own
+stack — Solr 9 with the cluster's configset, the four collections and MinIO:
+
+```bash
+make -C contents local-stack       # up, wait for the collections
+make -C contents local-stack-env   # the variables to export for the API and the worker
+make -C contents local-stack-down  # down, keeping the data volumes
+```
+
 The API listens on `http://localhost:9400`. `plane local` exports
 `DATALAYER_CONTENTS_URL=http://localhost:9400` to locally launched clients and
 services, validates `/api/contents/v1/health`, prefixes its logs and terminates
@@ -138,6 +148,62 @@ that cannot reach Solr is taken out of service rather than left to process
 nothing. The chart probes both over HTTP; nothing but the kubelet talks to
 that port.
 
+### Operations that gave up
+
+An operation the worker has retried to exhaustion is failed with
+`RETRY_EXHAUSTED`, its compensation runs — a Volume whose claim never bound
+is released, so nothing is left that nobody owns — and it appears in the dead
+letter. Reading it, quarantining an operation while it is looked at, and
+requeuing it once the cause is fixed are platform-administrator actions,
+audited:
+
+```bash
+datalayer contents operations dead-letter
+datalayer contents operations quarantine OPERATION_UID --reason "..."
+datalayer contents operations requeue OPERATION_UID
+```
+
+### The backup drill, on one machine
+
+Before a change to what Contents stores goes anywhere near a cluster, the
+whole loop runs on the local stack: seed a source and a version, back the
+four collections up, drop them, restore them, and reconcile the catalog
+against the object store. The drill exits non-zero if a collection comes back
+with a different document count or the reconciliation finds a discrepancy:
+
+```bash
+make -C contents local-seed
+make -C contents local-backup-drill
+```
+
+One thing the first drill found, kept here because it holds in a cluster
+too: **a Solr backup holds the committed index, not the transaction log.** A
+document written a moment ago under a soft commit answers a query and is
+absent from the backup. The drill hard-commits before backing up; the
+cluster's configset does so on its own schedule (`autoCommit` every 15 s), so
+a scheduled backup can be missing at most the last 15 s of writes.
+
+### The catalog against the store
+
+After a restore, or when a bucket has been touched by hand, compare what the
+catalog names with what the store holds. The command writes nothing and exits
+`1` on any discrepancy, so a restore drill has a pass/fail:
+
+```bash
+datalayer-contents-reconcile --verify --json report.json
+```
+
+## What synchronization compares
+
+The remote side of a synchronization is the folder on the shared filesystem —
+what Contents wrote and what a notebook wrote — hashed under the folder and
+prefix the remote URI names. A catalog entry with no file behind it stays in
+the comparison rather than being read as a deletion, and a file only the
+folder has is fetched by path (`/sources/home-folder/files/content`), since it
+has no object version to ask for. A deployment without
+`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` has no folder to read, and the catalog
+is the whole account of the remote side.
+
 ## Changing the stored shape
 
 The Contents Solr mapping is generated from the DAO codecs and carries a
@@ -168,7 +234,7 @@ of moving on.
 | `DATALAYER_CONTENTS_FLIGHT_PORT` | Flight listener port; default `9401` |
 | `DATALAYER_CONTENTS_BRIDGE_PORT` | Local bridge listener port; default `9402` |
 | `DATALAYER_CONTENTS_REQUIRE_SOLR` | Make Solr mandatory for readiness |
-| `DATALAYER_CONTENTS_REQUIRE_VAULT` | Make Vault mandatory for readiness |
+| `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves its own `/health` and `/ready`; default `9403` |
 | `DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS` | Timeout for each readiness probe |
 | `DATALAYER_CONTENTS_STORAGE_BACKEND` | Where the managed bytes — uploads, transfers, captured versions — are published. `local` (default): under `DATALAYER_CONTENTS_STORAGE_ROOT` inside the container, ephemeral, lost when the pod is replaced; `plane local` and tests only. `shared-fs`: under `objects/` and `staging/` on the shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`, at `DATALAYER_SHARED_FS_MOUNT_PATH`) — the same RWX volume the Operator mounts into runtimes; refuses to start without the claim, because writing managed bytes into the container looks like it worked until the pod is replaced. `s3`: the bucket `DATALAYER_CONTENTS_STORAGE_BUCKET`, through `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` (empty for AWS S3, set for MinIO or another S3-compatible store); credentials come from the workload environment, never from the catalog. All three are versioned object stores keyed by source, path and version — the immutable copy. On completion a transfer also writes its file, as the working copy, into the Home Folder tree (`home/{users\|organizations\|teams}/{uid}/{path}`) on the shared filesystem, where sandboxes mount it and `/sources/home-folder/files` lists it; the staged parts are removed at that point. Without a shared filesystem there is no working copy and the catalog is all. Switching does not move bytes: change it before the first upload, or migrate the objects with it |
 | `DATALAYER_CONTENTS_STORAGE_ROOT` | Root used by the `local` backend; default `/tmp/datalayer-contents` |
@@ -191,6 +257,11 @@ of moving on.
 | `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
 | `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves `/health` and `/ready`; default `9403`, set by the chart from `contents.workerProbePort` so the port and the probes cannot drift apart |
 | `DATALAYER_CONTENTS_WORKER_STALL_SECONDS` | How long the worker's loop may go without coming round before `/health` reports `stalled`; default `120`. It must outlast the slowest turn of the loop — a full batch of operations — or a busy worker is restarted for being busy |
+| `DATALAYER_RUNTIMES_API_KEY` | The Runtimes service's key to Contents, for attaching sources to a sandbox. One identity per calling process, so a key can be rotated for one without touching the others and the audit trail says which acted |
+| `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for reporting Volume claims |
+| `DATALAYER_CONTENTS_API_KEY` | The Contents worker's own key, for running operations |
+| `DATALAYER_CONTENTS_FLIGHT_API_KEY` | The Flight server's key, for redeeming tickets |
+| `DATALAYER_CONTENTS_DATASERVER_API_KEY` | A Dataserver's key, for publishing results |
 | `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
 | standard `OTEL_*` variables | Logs, traces and metrics export |

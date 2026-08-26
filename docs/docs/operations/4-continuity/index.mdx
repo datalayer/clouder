@@ -17,6 +17,14 @@ For Contents, operate these recovery units together:
 | Credential references | Vault secret paths and policies | Vault snapshot and restore procedure |
 | Provider-owned data | External cloud storage and Dataservers | Provider backup policy; Datalayer only restores its references |
 
+
+:::note What a Solr backup holds
+A backup captures the committed index, not the transaction log. Under the
+shared configset Solr hard-commits every 15 s (`autoCommit`), so a backup can
+be missing at most the last 15 s of writes; a drill that seeds and backs up
+at once must commit first — `make -C contents local-backup-drill` does.
+:::
+
 ## Recovery objectives
 
 Choose and record an RPO and RTO for each deployment. The supplied Solr

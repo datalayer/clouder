@@ -31,7 +31,8 @@ adds identity, tenancy, permissions, durable execution and audit around it.
 | | |
 |---|---|
 | `datalayer-iam` | Issues the OAuth 2.1 and personal access tokens this service verifies |
-| `datalayer-spacer` | Answers what a user may do with a Notebook, document or dataset |
+| `datalayer-spacer` | Answers what a user may do with a Notebook or document |
+| `datalayer-contents` | Answers what a user may do with a Dataset |
 | Solr collections | `oauth-clients`, `oauth-codes`, `oauth-grants`, created by `solr-init` |
 
 The IAM service must be deployed with `DATALAYER_JUPYTER_MCP_SERVER_URL` set to the
