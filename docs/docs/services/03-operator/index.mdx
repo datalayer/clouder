@@ -21,6 +21,7 @@ import { Label, Stack } from '@primer/react-brand';
 - 💼 Manages the Runtime Contents.
 - 🌳 Manages the Runtime Environments
 - 🎱 Manages the Runtime Pools.
+- 📎 Provisions the Volumes and mounts the Contents attachments — Home Folders, Volumes, local bridges — into the Runtime pods, and tells Contents how each came up.
 ```
 
 Please note that the [Runtimes Service](/services/runtimes/) is responsible to deliver the ⚪ Runtimes to the user, so it is not the duty of the Datalayer Operator to serve Runtimes.
@@ -255,6 +256,95 @@ A platform administrator changes what an Environment brings through the Runtimes
 kubectl get runtime-contents -n datalayer-runtimes
 kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
 ```
+
+## Contents attachments
+
+The [Contents](/services/contents/) service keeps the catalog — what an
+account may bring into a sandbox — and the Operator is the one process that
+turns an attachment into something a pod can read. Contents never talks to
+Kubernetes; the Operator never decides who may attach what. Three things are
+the Operator's, in the order they happen.
+
+### Volumes: the PersistentVolumeClaims
+
+A Volume source in the Contents catalog is a PVC in `datalayer-runtimes`,
+made by the Operator on Contents' request. The request is not inline any
+more: creating a Volume source records a `volume-provision` operation that the
+Contents worker claims and drives against the Operator's REST endpoints —
+`POST /api/operator/v1/volumes` to create, `GET /volumes/{uid}` until the
+claim is `Bound`, `DELETE /volumes/{uid}` as the compensation when every
+attempt is spent. The calls carry the owner in `x-forwarded-user` and the
+Operator's own key (`DATALAYER_OPERATOR_API_KEY`); the Volume's uid is the
+source's uid, so a claim is always traceable to its catalog entry. A source
+is trusted — `ready`, mountable — only once the claim is bound. When a pod
+mounts a Volume the Operator records the assignment on the PVC and clears it
+when the runtime is deleted, so a Volume in use is never re-attached elsewhere.
+
+```bash
+kubectl get pvc -n datalayer-runtimes
+```
+
+### At launch: rendering the attachments
+
+Runtimes launches a sandbox that has attachments with
+`POST /api/operator/v1/runtimes` carrying `content_attachments` — the
+attachments it just had Contents **prepare** for that pod name (see
+[Runtimes](/services/runtimes/#contents-attachments)). The Operator refuses
+the launch (`4xx`) when an attachment is not in `preparing` state, names
+another sandbox or another provider than `datalayer`, or when two of them
+share a mount path or one is not an absolute path. A sandbox with attachments
+always gets a pod of its own: a pre-warmed pool pod was built before the
+request named anything to mount, so it is never handed one. Then, per
+`delivery`:
+
+| Attachment | What the pod gets |
+| --- | --- |
+| Home Folder (a `files` source, stamped by Runtimes) | subpaths of the platform shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`), one per membership the caller has — their own, each organization, each team — at `/home/jovyan/<handle>`; an init container creates the folders and hands them to the runtime user. The list of memberships is resolved by Runtimes from IAM and travels on the pod as `runtime-pools.datalayer.io/home-folder-mounts`. Contents reads the same claim at the same path, which is why the two services' mount paths must agree |
+| `mount` of a Volume | the Volume's PVC, at the attachment's `mount_path` (default `/home/jovyan/volumes/<volume name>`), read-only when the `mode` is `ro`. A Volume of another account refuses the launch; a required Volume that cannot be found refuses it, an optional one is dropped |
+| `local-bridge` (a person's own folder over the relay) | an inline `csi:` volume of the `local.csi.datalayer.io` driver — `content-bridge-<n>`, attributes `bridge-uid`, `sandbox-uid`, `mount-mode`, `relay-url` — with `nodePublishSecretRef` pointing at the Secret **`bridge-<bridge uid>`** (key `mount-token`, label `contents.datalayer.io/bridge-uid`). The Secret is created right after the pod and owned by it, so the token goes when the pod goes; the pod spec names the bridge and never carries the token. The [Local CSI driver](/services/system/local-csi/) on the node dials the relay and binds the filesystem before the container starts. An attachment Contents did not prepare a bridge session for is reported `failed` with `BRIDGE_NOT_PREPARED`: a required one refuses the launch, an optional one is left out — never rendered as an empty directory |
+| `environment` (brought by the Environment, see above) | the pinned git checkout, the shared-filesystem subpath or the Datashim claim; no Contents record, nothing reported |
+| anything else | refused when required, dropped when optional |
+
+The rendered list is written on the pod as the
+`contents.datalayer.io/attachments` annotation. It is the record: a pod spec
+rebuilt from it renders the same mounts, the Operator's cache is rebuilt from
+it at restart, and the runtime's API description lists what the pod actually
+mounts rather than something re-derived from billing labels.
+
+```bash
+kubectl get pod -n datalayer-runtimes <pod> -o jsonpath='{.metadata.annotations.contents\.datalayer\.io/attachments}'
+kubectl get secret -n datalayer-runtimes -l contents.datalayer.io/bridge-uid
+```
+
+### Reporting to Contents
+
+The Operator tells Contents how each attachment came up, with
+`PATCH /api/contents/v1/attachments/{uid}/status` under
+`DATALAYER_OPERATOR_API_KEY` (the `attachments:status` scope):
+
+- `ready` once the pod runs — for the Home Folder and the Volumes. A
+  `local-bridge` is **not** reported ready by the Operator: the volume is
+  there, but the bytes are readable only once the bridge connects, and that
+  is the relay's to say;
+- `failed`, with a code and a message, for what could not be mounted. A
+  required attachment whose report cannot be delivered ends the launch: the
+  runtime is deleted (`attachment_failed`) and the caller gets `502`;
+- `revoked` when the runtime is deleted, after the Volume assignments are
+  cleared — so the catalog never lists a sandbox that is gone;
+- `ready` again for every attachment of a pod the Operator finds when it
+  (re)starts and indexes the cluster, so a restart of the Operator does not
+  leave attachments stuck in `preparing`.
+
+Environment entries are skipped in all four: nothing prepared them and there
+is no record to update.
+
+### Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `DATALAYER_CONTENTS_URL` | Where the Operator reports (`operator.env` in the chart; default the in-cluster `datalayer-contents-svc`, `https://r1.datalayer.run` in the code). |
+| `DATALAYER_OPERATOR_API_KEY` | The Operator's identity to Contents — one key per calling process, so it can be rotated without touching Runtimes' and the audit trail says which acted. Required as soon as one attachment exists: without it the report raises. |
+| `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim the Home Folders live on. Contents mounts the same claim at the same path (`DATALAYER_SHARED_FS_MOUNT_PATH`); a mismatch makes a path recorded by one unresolvable in the other. |
 
 ## Tear Down Datalayer Operator
 

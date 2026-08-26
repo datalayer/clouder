@@ -241,20 +241,23 @@ relay refuses.
 ### Rendering the volume (Operator)
 
 Where: `src/k8s/services/operator/datalayer_operator/services/runtimes.py`,
-in the block that turns `attachment_mounts` into pod volumes. For
-`delivery == "local-bridge"` it renders the volume shown under
-[The contract](#the-contract) and creates the `bridge-<bridge uid>` Secret.
-The attachment travels on the pod as the `contents.datalayer.io/attachments`
-annotation, so a rebuilt pod spec renders the same mounts. A `required: true`
-attachment that cannot be mounted blocks readiness, the way a required Volume
-attachment does.
+`_render_local_bridge_volumes`. For `delivery == "local-bridge"` it renders
+the volume shown under [The contract](#the-contract) and creates the
+`bridge-<bridge uid>` Secret, owned by the pod. The attachment travels on the
+pod as the `contents.datalayer.io/attachments` annotation (the bridge's uid
+only, never its token), so a rebuilt pod spec renders the same mounts. An
+attachment with no bridge session is reported `failed` (`BRIDGE_NOT_PREPARED`);
+a `required: true` one refuses the launch, the way a required Volume
+attachment does. The Operator's whole part is on its page:
+[Contents attachments](/services/operator/#contents-attachments).
 
 ### External sandboxes (Daytona, E2B, Modal)
 
 No CSI driver reaches a sandbox that is not a pod. There, the same bridge is
 dialled from **inside** the sandbox by the same `code_sandboxes.bridge_mount`
 filesystem, and only environments that can run FUSE may offer local mounts:
-an environment advertising `local-bridge-mount` in
-`SandboxEnvironment.metadata` gets the mount from its adapter's `start()`;
-Runtimes refuses a `local-bridge` attachment before launch anywhere else and
-offers Synchronize instead.
+an environment that lists the `fuse` feature (fusepy and `/dev/fuse` in the
+image) gets the mount from inside the sandbox when its contents are
+prepared; Runtimes refuses a `local-bridge` attachment before launch
+anywhere else — `422 LOCAL_BRIDGE_UNSUPPORTED` — and offers Synchronize
+instead (see [Runtimes](/services/runtimes/#contents-attachments)).

@@ -62,8 +62,12 @@ policies are enabled.
 - IAM JWT and service identities;
 - Vault for credential references;
 - managed object storage for User Folders, Dataset revisions and staging;
-- Runtimes and Operator for Datalayer Code Sandbox attachments;
-- the [Local CSI driver](/services/system/local-csi/) for Local Mounts, once it ships; and
+- [Runtimes](/services/runtimes/#contents-attachments) (prepare, the launch
+  gates, external sandboxes) and the
+  [Operator](/services/operator/#contents-attachments) (Volumes, the mounts,
+  the status reports) for Code Sandbox attachments;
+- the [Local CSI driver](/services/system/local-csi/) for local mounts on
+  Datalayer runtimes (off by default); and
 - Library for publication of selected immutable Dataset revisions.
 
 Initialize and protect the Solr collections before enabling production writes.
