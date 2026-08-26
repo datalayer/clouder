@@ -16,7 +16,7 @@ import { Label, Stack } from '@primer/react-brand';
 `Datalayer Runtimes` service manages access to ⚪ Runtimes based on the defined 🎱 Runtime Pools.
 
 ```
-🌳 Environments that define the type, requested and limits for CPU/GPU and memory, the parameters, the Contents mount points (cloud buckets compatible with S3, local drive via SSHFS) and a Docker Image (the Datalayer Operator is responsible to build the Docker Images).
+🌳 Environments that define the type, requested and limits for CPU/GPU and memory, the parameters, the Runtime Contents they bring (selected by uid: git repositories pinned to a revision, subpaths of the shared filesystem, S3 buckets) and a Docker Image (the Datalayer Operator is responsible to build the Docker Images).
 
 🎱 Runtime Pool that deploys parametrised Runtimes with an availability based on a calendar.
 
@@ -101,6 +101,31 @@ Check the availability of the Datalayer Runtimes Endpoints.
 open https://${DATALAYER_RUN_HOST}/api/runtimes/version
 open https://${DATALAYER_RUN_HOST}/api/runtimes/v1/ping
 ```
+
+## Environment Contents
+
+An Environment selects Runtime Contents by uid (see the [Operator](/services/operator/) page for the definitions). Whether a selected content can be delivered depends on where the sandbox runs. In the cluster everything is a mount. At an external provider there is no cluster: a git content is a materialized checkout, a bucket is reachable from code through a Python filesystem object (fsspec) with the bucket's credentials — not mounted — and the platform shared filesystem cannot be reached at all.
+
+| Content type | Datalayer | Daytona, E2B, Modal |
+| --- | --- | --- |
+| `git` | mount of the pinned checkout | materialized checkout |
+| `nfs` | mount of the shared filesystem subpath | refused (nothing can mount the platform filesystem) |
+| `s3` | mount (Datashim) | `python` access from code; not mounted |
+
+Any other provider has no delivery rules and delivers nothing.
+
+**Endpoints**
+
+- `GET /api/runtimes/v1/environments` — every Environment, with `contents`: the selected uids and, resolved from their definitions, `name`, `type`, `revision`, `mount` and `permissions`.
+- `GET /api/runtimes/v1/environments/<name>/contents?provider=<provider>` — the contents resolved for a provider (the Environment's own by default): `environment`, `provider`, `supported` and `contents`, a list of resolved contents each carrying `uid`, `name`, `type`, `mount`, `permissions`, `revision`, `sha256`, a `status` of `resolved`, `unsupported` or `unresolved`, and a `detail` saying what the content becomes or what cannot be met. When the Environment resolves on Datalayer, the result is recorded as a Contents `environment` source (once per Environment, idempotent on its uid, brought up to date when the build changes) and returned as `source`.
+- `PUT /api/runtimes/v1/environments/<name>/contents` — platform administrators only; body `{"contents": [{"uid": "...", "mount": "...", "permissions": "ro"}]}`; proxied to the Operator, which resolves every uid before patching the `RuntimeEnvironment`.
+- `GET /api/runtimes/v1/runtime-contents` — the catalog as a user may see it: `uid`, `name`, `type`, `description`, `permissions`, and for a public git repository its `source` and pinned `revision`. Credentials, bucket names and filesystem paths are withheld.
+
+**The launch gate**
+
+`POST /api/runtimes/v1/runtimes` refuses a launch — before anything starts — when a content the Environment selects cannot be delivered where the sandbox will run: `422` with `code` `ENVIRONMENT_CONTENT_UNSUPPORTED` and a message naming the content, the provider and the semantics that cannot be met (`ENVIRONMENT_CONTENT_UNRESOLVED` when a selection matches no definition or a git content is not pinned).
+
+Registering the `environment` source needs `DATALAYER_RUNTIMES_API_KEY` (the Runtimes identity Contents accepts for it) and `DATALAYER_CONTENTS_URL`.
 
 ## Tear Down Datalayer Runtimes
 

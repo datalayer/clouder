@@ -198,6 +198,64 @@ Check the logs of the Datalayer Operator Pods.
 kubectl logs -n datalayer-runtimes -l app=operator -f
 ```
 
+## Runtime Contents and Environments
+
+A `RuntimeContent` defines something an Environment can bring into a runtime: a git repository, a subpath of the platform shared filesystem (`nfs`), or a S3 bucket. Every content carries a stable identity, `spec.uid` (a ULID assigned once, when the content is defined), and Environments select contents **by uid, never by name** — a content can be renamed or re-described without every Environment that uses it quietly pointing elsewhere.
+
+```yaml
+apiVersion: datalayer.io/v1
+kind: RuntimeContent
+metadata:
+  name: jakevdp-sklearn-tutorial-content
+  namespace: datalayer-runtimes
+spec:
+  uid: 01M0YX0MXYRP0Q29YWYRE5THZE
+  type: git
+  description: Jake VanderPlas scikit-learn tutorial
+  source: https://github.com/jakevdp/sklearn_tutorial.git
+  revision: 5098cee2a638c56c311aca0c18987e407fe127fd
+```
+
+| Field | Meaning |
+| --- | --- |
+| `uid` | The identity Environments select by. Required. |
+| `type` | `git`, `nfs` or `s3`. |
+| `source` | The repository URI (`git`) or the bucket name (`s3`). |
+| `subPath` | The subpath of the shared filesystem (`nfs`). |
+| `revision` | The commit sha a `git` content is checked out at. A git content without a revision is refused at launch: a tutorial that changes under a user is not the tutorial they were promised. |
+| `sha256` | Optional. The digest of `git archive --format=tar <revision>`; when set, the checkout is verified and the runtime pod fails to start on a mismatch. |
+| `permissions` | The content's own access, `ro` (default) or `rw`. |
+| `secret` | The Kubernetes Secret holding the bucket credentials (`s3`). |
+
+An Environment selects what it brings, and where:
+
+```yaml
+apiVersion: datalayer.io/v1
+kind: RuntimeEnvironment
+spec:
+  contents:
+    - uid: 01M0YX0MXYD8YZVMJW016KTB4M # nfs-models-oss-content
+      mount: /home/jovyan/models/datalayer-oss
+      permissions: ro
+    - uid: 01M0YX0MXYRP0Q29YWYRE5THZE # jakevdp-sklearn-tutorial-content
+      mount: /home/jovyan/tutorials/sklearn-tutorial
+```
+
+The `permissions` of a selection narrows the content's own access and is never wider than it; absent means the content's own. The name after `#` is a comment for the reader — the Operator resolves names, types and revisions from the definitions when it lists Environments.
+
+At launch, the Operator:
+
+- resolves every selected uid against its index of `RuntimeContent` definitions (the kopf cache, with the API server as fallback). A uid nothing defines, or a git content with no revision, **refuses the launch** with an error naming the uid — a runtime never starts with less than its Environment promised;
+- mounts **only the selected entries**: a `git` content is checked out at its pinned revision by an init container (`alpine/git`) that fails the pod when the revision is missing or the digest does not match; a `nfs` content is a subpath of the shared filesystem claim; a `s3` content is its Datashim claim;
+- publishes the resolved contents on the pod, in the `contents.datalayer.io/attachments` annotation the Contents attachments already use, as `delivery: environment` entries carrying `mount_path`, `mode` and `provider_resource_id` (the RuntimeContent uid). The sandbox manifest therefore lists everything the runtime mounts, wherever it came from. These entries have no Contents attachment record behind them: nothing is prepared, reported or revoked for them.
+
+A platform administrator changes what an Environment brings through the Runtimes gateway (`PUT /api/runtimes/v1/environments/<name>/contents`), which proxies to the Operator's `PUT /api/operator/v1/environments/<name>/contents` with a body of the form `{"contents": [{"uid": "...", "mount": "/home/jovyan/...", "permissions": "ro"}]}`. The Operator resolves every uid before writing, patches the `RuntimeEnvironment` spec, and answers `422` naming a uid nothing defines, a git content nobody pinned, or a mount path that is not a unique absolute path.
+
+```bash
+kubectl get runtime-contents -n datalayer-runtimes
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
 ## Tear Down Datalayer Operator
 
 If needed, tear down.
