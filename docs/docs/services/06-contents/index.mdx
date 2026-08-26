@@ -327,6 +327,21 @@ of moving on.
 | `DATALAYER_CONTENTS_DATASERVER_API_KEY` | A Dataserver's key, for publishing results |
 | `DATALAYER_SPACER_API_KEY` | Spacer's key, for releasing a space's sources — revoking their attachments and returning them to their owners — before the space is deleted; Spacer refuses the deletion when this fails |
 | `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
+| `DATALAYER_CONTENTS_REST_TOKEN_SECRET` | The secret the API signs its own pagination cursors and ETags with; at least 32 bytes. Unset, the local development value is used — never in a cluster, where every cursor would then be forgeable |
+| `DATALAYER_CONTENTS_PUBLIC_URL` | The URL clients are told to use for the HTTPS results fallback and in Flight metadata; defaults to `DATALAYER_CONTENTS_URL` |
+| `DATALAYER_CONTENTS_MAXIMUM_UPLOAD_PART_BYTES` | The largest part a transfer accepts in one request; default 16 MiB. A client cuts a file into parts no bigger than this |
+| `DATALAYER_CONTENTS_QUERY_MAX_BYTES` | The deployment's ceiling on a query result's bytes (a Datasource's own limit may be lower, never higher); default 1 GiB |
+| `DATALAYER_CONTENTS_QUERY_MAX_SECONDS` | The deployment's ceiling on a query's running time; default 600 |
+| `DATALAYER_CONTENTS_WORKER_UID` | How the worker names itself on the leases it claims; default the host name and a ULID, so two workers never share a name |
+| `DATALAYER_CONTENTS_WORKER_POLL_SECONDS` | How often an idle worker looks for operations; default `1` |
+| `DATALAYER_CONTENTS_WORKER_BATCH_SIZE` | How many operations one turn of the worker's loop claims; default `25` |
+| `DATALAYER_CONTENTS_WORKER_LEASE_SECONDS` | How long a claimed operation stays the worker's before another may take it over; default `30`. It must outlast the longest handler turn, or a slow attachment is run twice |
+| `DATALAYER_CONTENTS_FLIGHT_HOST` | The address the Flight gateway binds; default `0.0.0.0` |
+| `DATALAYER_CONTENTS_FLIGHT_PROBE_PORT` | Where the Flight gateway serves its own `/health` and `/ready`; default `9404` |
+| `DATALAYER_CONTENTS_FLIGHT_STALL_SECONDS` | How long the gateway's loop may go without coming round before `/health` reports `stalled`; default `60` |
+| `DATALAYER_CONTENTS_FLIGHT_TLS_CERT` / `DATALAYER_CONTENTS_FLIGHT_TLS_KEY` | The gateway's TLS certificate and key, PEM text or a path; both or neither. With them the Traefik route is TLS passthrough on `flightHost`; without them the gateway serves plain gRPC and must not be exposed |
+| `DATALAYER_CONTENTS_FLIGHT_VALIDATE_TIMEOUT_SECONDS` | How long the gateway waits for Contents to validate a ticket before answering unavailable; default `10` |
+| `DATALAYER_CONTENTS_FLIGHT_INFO_HOLD_SECONDS` | How long a ticket validated at `get_flight_info` stays good for the `do_get` that follows, since a ticket validates once; default `300`, bounded by the ticket's own expiry |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
 | standard `OTEL_*` variables | Logs, traces and metrics export |
 
