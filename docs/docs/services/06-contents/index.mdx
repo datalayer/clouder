@@ -91,9 +91,11 @@ make build-dev
 make push
 ```
 
-Deploy with Plane, then move the stored documents to the mapping version the
-new code is on — the reindex walks each family under compare-and-set and
-resumes if interrupted:
+Deploy with Plane, then run the reindex — first as a dry run, then for
+real — so the documents already in Solr are brought to the mapping version
+the new code writes. Why this is a step of every deploy, what the dry run
+tells you and what makes the real run safe is under
+[The reindex](#the-reindex-datalayer-contents-reindex) below.
 
 ```bash
 plane up datalayer-contents
@@ -453,27 +455,113 @@ has no object version to ask for. A deployment without
 `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` has no folder to read, and the catalog
 is the whole account of the remote side.
 
-## Changing the stored shape
-
-The Contents Solr mapping is generated from the DAO codecs and carries a
-version and a fingerprint. CI regenerates it and refuses a codec change whose
-fingerprint moved without a new version, a migration with both directions and
-its fingerprint recorded — a renamed field otherwise leaves the documents in
-the cluster addressed by a name nothing writes any more.
-
-After deploying code that changes the mapping, move the documents:
+## The reindex: `datalayer-contents-reindex`
 
 ```bash
-kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-reindex --dry-run
-kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-reindex
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex --dry-run
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex
 ```
 
-The walk is resumable, every write is a compare-and-set on the version the
-document was read at, and `--to-version` below the current one rolls a step
-back. Each family records the version it is on as a state document in its own
-collection, so a restored backup knows where it stands. The command exits
-non-zero when it left conflicts behind, so a deployment step notices instead
-of moving on.
+### What it is for
+
+Contents stores its documents in four Solr collections, in a **mapping** —
+which document families exist, which fields each writes, with which Solr
+suffix — that is generated from the DAO codecs into `contents_mappings.json`
+and carries a **version** (`CONTENTS_MAPPING_VERSION`, today `6`) and a
+fingerprint. The mapping says what the code means *now*. The cluster holds
+documents written by whatever the code meant *then*: an attachment recorded
+under version 1 has no `access_mode_s`, because version 1 had no such field.
+
+New code does not rewrite old documents by itself, and nothing at runtime
+refuses to serve them. That is exactly the problem: a query written for the
+new mapping — a filter on a field, a sort on a suffix that changed type — does
+not see the documents still in the old shape, and they drop out of listings
+silently rather than with an error. The reindex is what finishes a mapping
+change: it walks every family, applies the migrations from the version the
+family is on to the version the code writes, and writes each document back.
+Each family then records the version it is on, as a
+`content_migration_state` document **in its own collection** — so a restored
+backup carries its own migration state and knows where it stands.
+
+CI enforces the other half: the mapping is regenerated on every build, and a
+codec change whose fingerprint moved without a new version, a migration with
+both directions and its fingerprint recorded, fails the build. A field cannot
+be renamed in the code alone, leaving the documents in the cluster addressed
+by a name nothing writes any more.
+
+| Version | What changed |
+| --- | --- |
+| 2 | attachments carry `access_mode_s` and `fallback_reason_t`: how a Cloud Storage source is reached in the sandbox, and why a fallback was taken |
+| 3 | attachments carry `filesystem_primitives_ss`: what a client inside the sandbox may do to the files without asking Contents |
+| 4 | `content-operations` gains the `mcp_session`, `mcp_call` and `mcp_approval` families |
+| 5 | `content-operations` gains `content_bridge`: the session a local-bridge attachment holds |
+| 6 | `content-operations` gains `datasource_query`, `data_server_registration` and `capability_ticket` |
+
+### Why after every deploy, and why the dry run first
+
+Run the dry run after **every** Contents deploy, not only the ones you
+remember as changing the mapping: it is the cheapest way to learn whether
+this image raised the version. A family already on the target version is
+reported as such and nothing is scanned; the command is harmless when there
+is nothing to do. When there *is* something to do, the dry run says — per
+family, without writing a byte — the version it is on, the version it would
+go to, and how many documents would be scanned, migrated or left unchanged.
+That is where you catch the things you would rather not learn from the real
+run: Solr unreachable from the pod, a family with far more documents than
+expected, a version step no migration covers.
+
+Even a migration that only *adds* families (versions 4 to 6 do) is worth
+running for real: the documents it meets are left unchanged, but the family's
+recorded version moves up, and that recorded version is what the **next**
+migration — the one that renames a field — starts from. A family whose state
+says version 3 while the code writes 6 will be walked through three steps
+when version 7 arrives, and any of them may have been written against a
+mapping the documents are no longer in.
+
+### Why on the pod
+
+The tool needs the Solr ZooKeeper host and the Solr credentials, which the
+Contents pods have and your laptop does not. It also needs the code whose
+mapping version is the target: run from the image just deployed, the target
+is by construction the version that image writes — there is no way to reindex
+to a version the running service does not agree with. The API pod and the
+worker pod carry the same package; either works.
+
+### What makes the real run safe
+
+- **Compare-and-set.** Every write is conditional on the version the document
+  was read at, so a service writing the same document at the same moment is
+  never overwritten. The loser is reported as a **conflict**, and the batch
+  that held it is walked again by the next run. Nothing has to be quiesced.
+- **Resumable.** Progress is the per-family state document: the version and
+  the cursor the last batch reached. A run that is killed resumes where it
+  stopped; `--restart` walks each family from the beginning instead.
+- **Idempotent.** Every migration is safe to re-apply; running the command
+  twice is the same as running it once.
+- **Reversible.** Every migration carries both directions.
+  `--to-version N` below the current version rolls the documents back one
+  step at a time — do it *before* rolling the image back, while the code that
+  knows the newer shape is still there to read it.
+- **Honest exit code.** The command exits `1` when it left conflicts behind
+  (the summary's `complete` is `false`). A deployment step must treat that as
+  "run it again", not as done.
+
+### Reading the output
+
+One JSON line per family, then a summary:
+
+```json
+{"family": "content_attachments.attachment", "from_version": 5, "to_version": 6, "dry_run": false, "scanned": 1284, "migrated": 0, "unchanged": 1284, "conflicts": [], "complete": true}
+{"summary": {"families": 21, "scanned": 40213, "migrated": 0, "unchanged": 40213, "conflicts": 0, "complete": true}}
+```
+
+`migrated` counts documents whose stored shape changed, `unchanged` the ones
+a migration met and left as they were; `from_version` equal to `to_version`
+means the family was already there. Other switches: `--list` prints the
+families and their collections, `--family NAME` (repeatable) restricts the
+walk — a name that exists in no family is refused rather than migrating
+nothing and reporting success — and `--batch` sets the documents per Solr
+page (default `200`).
 
 ## Configuration
 
