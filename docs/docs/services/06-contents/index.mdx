@@ -255,6 +255,117 @@ whole loop — backup, manifest, drop, restore, verify, reconcile — and the
 [Continuity](/operations/continuity/) page says what the bucket must be
 configured with for the cluster.
 
+## Enabling the optional processes
+
+Three things run beside the API and the worker only when a cluster wants the
+workflow. Each is a switch, a secret and a verification; none is on by default.
+
+### Local mounts: the relay and the Local CSI driver
+
+A local mount is a folder of a person's computer, served over an encrypted
+channel into a sandbox. Two pieces make it: the **relay** (a Contents
+process that pairs the two ends and forwards frames it cannot read) and, for
+Datalayer runtimes, the **Local CSI driver** on the runtime nodes, which
+mounts the far end into the pod. External sandboxes need no driver — the
+sandbox runs the mount itself when its environment lists the `fuse` feature.
+
+1. **Give the relay its secrets.** In the Contents release values, through
+   `contents.envValueFrom` and a Kubernetes Secret (never in plain values):
+   `DATALAYER_CONTENTS_BRIDGE_SECRET` (at least 32 random bytes; it signs the
+   tokens both ends present) and `DATALAYER_CONTENTS_BRIDGE_API_KEY` (the
+   relay's own key to Contents, the `bridge` identity).
+2. **Switch the relay on** — `contents.processes.bridge.enabled: true` — and
+   deploy: `plane up datalayer-contents`. The chart then runs the
+   `datalayer-contents-bridge` pods, publishes them on the API's host at
+   `wss://<runHost>/bridges`, and tells the API and the worker
+   (`DATALAYER_CONTENTS_BRIDGE_ENABLED`, `DATALAYER_CONTENTS_BRIDGE_URL`).
+3. **Check the relay is there.** `curl -s https://<runHost>/api/contents/v1/capabilities | jq '.entry_points[] | select(.kind=="local-mount")'`
+   must say `available: true`; the Mounts card on the Contents page says the
+   same thing in words. Until this is true, `datalayer contents mount`
+   refuses with the reason.
+4. **Build the driver image** (once per version), from the Services
+   repository: `cd plane/etc/dockerfiles/datalayer-local-csi && make build-dev push`.
+   The image installs Clouder's `csi` extra, `code-sandboxes` (the FUSE
+   filesystem) and `fuse3`.
+5. **Install the driver on the runtime nodes.** Either with Plane —
+   ```bash
+   DATALAYER_LOCAL_CSI_ENABLED=true \
+   DATALAYER_LOCAL_CSI_RELAY_CIDR=<ingress address>/32 \
+   plane up datalayer-local-csi
+   ```
+   — which installs the `datalayer-local-csi` chart in `datalayer-runtimes`
+   with `relay.host` taken from `DATALAYER_CONTENTS_URL` (the driver refuses
+   a relay on any other host) and, with the CIDR, a NetworkPolicy that lets
+   the driver reach nothing but the relay; or during cluster setup with
+   `clouder kubeadm setup --local-csi --local-csi-relay-host <runHost>`
+   (step 7b, after the storage provider). Nothing is run on the nodes by
+   hand: the chart is a DaemonSet with the upstream node-driver-registrar,
+   the kubelet finds the driver through the registrar's socket, and the
+   `CSIDriver` object registers the name `local.csi.datalayer.io`. The nodes
+   need `/dev/fuse` (the stock `fuse` kernel module) and are selected with
+   `role.datalayer.io/runtime: "true"`.
+6. **Check the driver is registered.**
+   ```bash
+   kubectl get csidriver local.csi.datalayer.io
+   kubectl get daemonset -n datalayer-runtimes datalayer-local-csi
+   clouder local-csi status
+   ```
+7. **Mount something.** From a computer with the `datalayer` CLI:
+   `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/jovyan/local`,
+   then `datalayer contents mounts` shows the bridge `connected`, and the
+   sandbox's Contents tab and the Mounts card show the same state. The
+   Operator has rendered the attachment as an inline `csi:` volume; the node
+   plugin mounted the far end into the pod. A revoked bridge
+   (`datalayer contents unmount <bridge uid>`) makes the volume report
+   abnormal within a heartbeat, never stale data.
+
+### Arrow Flight
+
+Query results stream over Arrow Flight under a capability ticket; without
+the gateway, the same bytes are served over HTTPS (`GET /queries/{uid}/results`),
+so Flight is an optimization, not a requirement.
+
+1. `contents.processes.flight.enabled: true` and `contents.flightHost: flight.<runHost>`
+   — a host of its own, because the route is a Traefik `IngressRouteTCP` with
+   TLS passthrough and a passthrough router on the API's host would swallow
+   the API's TLS.
+2. The gateway's certificate and key for that host through
+   `contents.envValueFrom`: `DATALAYER_CONTENTS_FLIGHT_TLS_CERT` and
+   `DATALAYER_CONTENTS_FLIGHT_TLS_KEY` (PEM text or a path). Without them the
+   gateway serves plain gRPC and must not be exposed.
+3. `plane up datalayer-contents`; then `kubectl get pods -n datalayer-api -l app=contents-flight`
+   and, from a client, `datalayer contents datasources query <source> "select 1" --wait`
+   followed by the query's `ticket` — the SDK's `Query.to_arrow()` uses the
+   gateway when the ticket names it and falls back to HTTPS otherwise.
+
+### A Dataserver in a customer network
+
+A Dataserver runs where the data is and only ever dials out to Contents; it
+is registered as a `data-server` source, holds its own connector
+credentials, and answers routed queries.
+
+1. Register it: `datalayer contents dataservers register --identity <name> ...`
+   (or the Dataservers page) — the source, with its registration identity.
+2. Issue its identity: from the Dataserver host,
+   `datalayer-data-server bootstrap` makes a key and a CSR and obtains the
+   client certificate from `POST /dataservers/{uid}/identity` with the
+   owner's token; the private key never leaves the host.
+3. Deploy it there with the `datalayer-data-server` chart
+   (`plane/etc/helm/charts/datalayer-data-server`: a Deployment and a
+   ConfigMap of connectors, no Service, no ingress) or run
+   `datalayer-data-server run` with `DATALAYER_CONTENTS_URL`,
+   `DATALAYER_CONTENTS_DATASERVER_API_KEY`, the certificate and key, and the
+   connectors file. `datalayer-data-server check` validates the
+   configuration and tests every connector before it registers.
+4. `datalayer contents dataservers status <name>` shows `ready` with its
+   lease; a Datasource created with `--dataserver <name>` is then queried
+   through it, and the Dataserver detail's Test reports Flight and HTTPS
+   reachability.
+
+The Contents and Local CSI charts are read by Plane from `$PLANE_HOME/etc/helm/charts`
+on the operator's checkout — that directory is not versioned in the Services
+repository.
+
 ## Test after a deploy
 
 What to run, in the order the plan's milestones stack, from a machine with
