@@ -26,7 +26,7 @@ provider storage; credentials never become catalog fields.
 | API | REST, OpenAPI, catalog and operation control | `9400` |
 | Worker | Durable transfers, synchronization, reconciliation and cleanup | none |
 | Flight gateway | Arrow Flight and Flight SQL data plane | `9401` |
-| Local bridge relay | Authenticated local-folder bridge sessions | `9402` |
+| Local bridge relay | Pairs the two ends of a local mount — the person's computer and the sandbox — and forwards frames it cannot read; enabled with `processes.bridge.enabled` | `9402` |
 
 The chart enables the API and worker. The API serves the catalog, Home Folder,
 resumable Transfer, synchronization-session, attachment-manifest and immutable
@@ -233,6 +233,12 @@ of moving on.
 | `DATALAYER_CONTENTS_API_PORT` | REST listener port; default `9400` |
 | `DATALAYER_CONTENTS_FLIGHT_PORT` | Flight listener port; default `9401` |
 | `DATALAYER_CONTENTS_BRIDGE_PORT` | Local bridge listener port; default `9402` |
+| `DATALAYER_CONTENTS_BRIDGE_ENABLED` | Whether this deployment offers local mounts. The chart sets it from `processes.bridge.enabled`, which also runs the relay process; with it off, `capabilities` reports `local-mount` unavailable and a `local-bridge` attachment is refused up front with `CAPABILITY_UNAVAILABLE` rather than accepted and left waiting |
+| `DATALAYER_CONTENTS_BRIDGE_SECRET` | Signs the tokens both ends of a bridge present to the relay (HMAC-SHA256); at least 32 bytes, the service refuses to start with less. The API mints with it and the relay verifies with it alone — no callback, no state a relay restart loses — so both must hold the same value, from one Kubernetes secret |
+| `DATALAYER_CONTENTS_BRIDGE_URL` | The relay address both ends dial, as the person's computer and the sandbox reach it — `wss://bridge.example.com`, the dedicated route for port `9402`. Local mounts are offered only when the switch, the secret and this are all set |
+| `DATALAYER_CONTENTS_BRIDGE_API_KEY` | The relay's key to Contents, for reporting which ends of a session are connected. One identity (`bridge`, scope `bridges:report`) like the others, so it rotates on its own and the audit trail says the relay acted |
+| `DATALAYER_CONTENTS_BRIDGE_HEARTBEAT_GRACE_SECONDS` | How long a bridge session survives without a heartbeat from the person's client before the worker marks it `disconnected` and the attachment `degraded`; default `120`. The client beats every thirty seconds, so this forgives a stall and still ends a dead session before a sandbox reads much from a mount that is not there |
+| `DATALAYER_CONTENTS_BRIDGE_SESSION_SECONDS` | How long a bridge session lives at all; default `43200` (twelve hours). Past it the worker marks the session `expired` and the attachment `revoking`, and the person runs `datalayer contents mount` again. `DATALAYER_CONTENTS_BRIDGE_CLIENT_TOKEN_SECONDS` (at most twelve hours, renewed by the heartbeat) and `DATALAYER_CONTENTS_BRIDGE_MOUNT_TOKEN_SECONDS` (at most one hour, renewed by whoever prepared the attachment) bound the two tokens; neither outlives the session |
 | `DATALAYER_CONTENTS_REQUIRE_SOLR` | Make Solr mandatory for readiness |
 | `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves its own `/health` and `/ready`; default `9403` |
 | `DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS` | Timeout for each readiness probe |
@@ -255,6 +261,10 @@ of moving on.
 | `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
 | `DATALAYER_CONTENTS_SYNC_HEARTBEAT_GRACE_SECONDS` | How long a `--watch` synchronization session survives without a heartbeat from its client before the worker closes it as failed with `SYNC_CLIENT_LOST`; default `900`. Long enough for a laptop's sleep to come back, short enough that a dead client is not reported as running all day. The next `datalayer contents sync` of the folder resumes from the last accepted manifest |
 | `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
+| `DATALAYER_CONTENTS_MCP_CONNECT_TIMEOUT_SECONDS` | How long connecting to an MCP server — and one round trip on it — may take before the server is reported unavailable; default `30`. Discovery, health and a tool call all wait this long at most |
+| `DATALAYER_CONTENTS_MCP_CONTENT_CAP_BYTES` | The most a tool may answer *inline* — the JSON kept on the call — before the call is refused as `MCP_RESULT_TOO_LARGE`; default `262144`. Bytes belong in an artifact, which the worker lands through a transfer under the source's own `max_result_bytes`; this keeps a manifest from becoming the download |
+| `DATALAYER_CONTENTS_MCP_SESSION_SECONDS` | How long a minted MCP session lives when the request does not say; default `3600`. `DATALAYER_CONTENTS_MCP_SESSION_MAX_SECONDS` (default `86400`) is the most a request may ask for; a longer `expires_in` is cut to it, not refused |
+| `DATALAYER_CONTENTS_MCP_APPROVAL_SECONDS` | How long a call under an `explicit` source waits for the owner's decision before the approval expires and the call is denied with `MCP_APPROVAL_EXPIRED`; default `86400`. An approval binds to the arguments it was given, so a long wait is safe; it is the stale request nobody is waiting on that this ends |
 | `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves `/health` and `/ready`; default `9403`, set by the chart from `contents.workerProbePort` so the port and the probes cannot drift apart |
 | `DATALAYER_CONTENTS_WORKER_STALL_SECONDS` | How long the worker's loop may go without coming round before `/health` reports `stalled`; default `120`. It must outlast the slowest turn of the loop — a full batch of operations — or a busy worker is restarted for being busy |
 | `DATALAYER_RUNTIMES_API_KEY` | The Runtimes service's key to Contents, for attaching sources to a sandbox. One identity per calling process, so a key can be rotated for one without touching the others and the audit trail says which acted |

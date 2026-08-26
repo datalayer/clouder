@@ -10,14 +10,15 @@ import { Label, Stack } from '@primer/react-brand';
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
-  <Label color="yellow">Designed, not shipped</Label>
+  <Label color="green">Node driver shipped</Label>
+  <Label color="yellow">Relay and Operator rendering: see their pages</Label>
 </Stack>
 
 The `datalayer-local-csi` driver presents a folder of a user's own computer
-inside a Datalayer Code Sandbox, through the Contents **local bridge**. It does
-not exist yet. This page is the implementation guide: what the pieces are,
-where each one lives in the repositories, and the order to build them in, so
-that whoever builds it starts from a design rather than from a blank page.
+inside a Datalayer Code Sandbox, through the Contents **local bridge**. This
+page describes what ships in Clouder — the node driver, its image and its
+chart — how it is installed, and what it expects from the two other pieces:
+the bridge relay in Contents and the volume rendering in the Operator.
 
 The user-facing behaviour it implements is described under
 [Local Mounts](https://datalayer.ai/docs/contents/local-mounts). The contract it
@@ -32,153 +33,228 @@ flowchart LR
   relay["Contents bridge relay<br/>datalayer-contents-bridge :9402"]
   node["Local CSI node driver<br/>DaemonSet on every runtimes node"]
   pod["Runtime pod<br/>/home/jovyan/…/project"]
-  laptop -- "outbound, mTLS,<br/>one session" --> relay
-  node -- "outbound, mTLS,<br/>same session" --> relay
-  node -- "FUSE mount" --> pod
+  laptop -- "outbound, wss,<br/>one session" --> relay
+  node -- "outbound, wss,<br/>same session" --> relay
+  node -- "FUSE + bind mount" --> pod
 ~~~
 
 Both ends dial **out** to the relay. The laptop never opens an inbound port,
-and the relay never holds the files: it forwards encrypted filesystem
-operations for one session, bound to one local root, one sandbox identity, one
-mount path and one mode.
+and the relay never holds the files: it forwards filesystem operations for one
+bridge, bound to one local root, one sandbox identity, one mount path and one
+mode.
 
-## 1. The bridge relay (Contents)
+## The contract
 
-Where: `src/k8s/services/contents/datalayer_contents/processes/bridge.py`,
-today a scaffold that exits with code 78, and the chart's `processes.bridge`
-block, today `enabled: false`.
-
-What to build:
-
-- **Session issuance.** `POST /attachments/{uid}/prepare` already mints a
-  scoped token for a sandbox. For `delivery: local-bridge` it must also mint a
-  bridge session: an ephemeral key pair, the local root, sandbox uid, mount
-  path and mode, with an expiry. Store it on the attachment (`token_audience`,
-  `expires_at` already exist on the model).
-- **Two authenticated inbound streams per session**, one from the local
-  client and one from the node driver, mutually authenticated with the
-  session's keys. The relay pairs them and forwards operations; it does not
-  interpret paths beyond refusing anything outside the declared root.
-- **Heartbeat and revocation.** The local client's heartbeat keeps the
-  session alive; `DELETE /attachments/{uid}` invalidates the session token
-  first and unmounts second, so a revoked session cannot serve one more read.
-- **Path and block semantics** come from `datalayer_common.content_sync`
-  (normalization, block size, checksums), which synchronization already uses:
-  the two features must not disagree about what a path or a block is.
-
-Enable the process in the chart (`processes.bridge.enabled: true`) with a
-dedicated TCP route on `9402`, and a NetworkPolicy that admits only the
-runtimes nodes and the public ingress.
-
-## 2. The node driver (Clouder)
-
-Where: a new package `clouder/csi/` in the Clouder repository, published as the
-image `datalayer-local-csi`, with its chart at
-`src/k8s/services/plane/etc/helm/charts/datalayer-local-csi` — beside
-`datalayer-shared-filesystem`, which is the closest precedent for a storage
-chart in that tree.
-
-The driver implements the CSI **Node** service only; there is nothing to
-provision, so no Controller service and no StorageClass. Volumes are
-**ephemeral inline** volumes: the pod spec names the driver and carries the
-attachment uid, and the driver builds the mount when the pod is scheduled.
-
-| CSI call | What the driver does |
-| --- | --- |
-| `NodeGetInfo` / `NodeGetCapabilities` | Identify the node; advertise no staging |
-| `NodePublishVolume` | Read the attachment uid from `volumeContext`, fetch the bridge session from Contents with the node's service identity, dial the relay, start the FUSE process, mount at `targetPath` read-only or read/write as the attachment says |
-| `NodeUnpublishVolume` | Unmount, stop the FUSE process, close the session stream |
-| health probe | Report a mount whose session the relay has closed as unhealthy, so kubelet retries and the runtime sees a **disconnected** rather than an empty folder |
-
-Root escape is refused on both ends: the local client never serves outside its
-root, and the driver mounts nothing but what the session names.
-
-Objects the chart ships:
-
-- `CSIDriver` named `local.csi.datalayer.io`, `podInfoOnMount: true`,
-  `volumeLifecycleModes: [Ephemeral]`;
-- a `DaemonSet` in `datalayer-runtimes` with the driver container and the
-  standard `csi-node-driver-registrar` sidecar, registering at
-  `/var/lib/kubelet/plugins/local.csi.datalayer.io/csi.sock`, and the kubelet
-  plugin and pods directories mounted `Bidirectional`;
-- RBAC for the registrar and for the driver to read its own attachment
-  records through Contents (a service identity with the `contents.attachments`
-  scope, not a user token);
-- a NetworkPolicy allowing the DaemonSet egress to the relay route only.
-
-Install hook: `clouder kubeadm setup` installs storage providers in **Step 7**
-(`clouder/cli/kubeadm/setup.py`); add the driver there, after the cloud
-storage provider, the way `install_storage` installs the EFS CSI driver in
-`clouder/cli/kubeadm/aws/setup.py`. For Terraform-first clusters, the chart is
-deployed by `plane up datalayer-local-csi` like any other.
-
-## 3. Rendering the volume (Operator)
-
-Where: `src/k8s/services/operator/datalayer_operator/services/runtimes.py`,
-in the block that turns `attachment_mounts` into pod volumes (today it handles
-`delivery == "mount"` by mounting a Volume's PersistentVolumeClaim).
-
-For an attachment with `delivery == "local-bridge"`, render instead:
+The Operator renders, for an attachment with `delivery: local-bridge`, an
+**ephemeral inline** CSI volume on the runtime pod:
 
 ~~~yaml
 volumes:
   - name: local-mount-1
     csi:
       driver: local.csi.datalayer.io
-      readOnly: <mode == "ro">
+      readOnly: true                           # == (mount-mode == "ro")
       volumeAttributes:
-        attachmentUid: <attachment uid>
-        sandboxUid: <sandbox uid>
+        bridge-uid: <bridge uid>
+        sandbox-uid: <sandbox uid>
+        mount-mode: ro                         # ro | rw
+        relay-url: wss://<contents host>/api/contents/v1/bridges/<bridge uid>
+      nodePublishSecretRef:
+        name: bridge-<bridge uid>              # key: mount-token
 volumeMounts:
   - name: local-mount-1
     mountPath: <attachment mount_path>
-    readOnly: <mode == "ro">
+    readOnly: true
 ~~~
 
-The attachment already travels on the pod as the
-`contents.datalayer.io/attachments` annotation, so a rebuilt pod spec renders
-the same mounts. A `required: true` attachment that cannot be mounted must
-block readiness, the way a required Volume attachment does today.
+Nothing on the pod names the user's folder. The Secret holds one short-lived
+`mount-token`; kubelet hands it to the driver inside `NodePublishVolume`, so
+the driver needs no permission to read Secrets. The relay speaks websocket:
+the first frame is `{"role": "mount", "token": <mount-token>}`, the rest are
+binary frames carried by the bridge filesystem.
 
-## 4. External sandboxes (Daytona, E2B, Modal)
+## What ships in Clouder
 
-No CSI driver reaches a sandbox that is not a pod. There, the same bridge is
-dialled from **inside** the sandbox by a client the environment must be able to
-run — a FUSE mount — and only environments that can do so may offer local
-mounts:
+| Piece | Where |
+| --- | --- |
+| Driver package | `clouder/csi/` — `driver.py` (Node semantics), `mounter.py` (`ProcessMounter`, `FakeMounter`), `server.py` (gRPC Identity and Node), `health.py`, `bridge_mount.py` (the per-bridge child process), `proto/` (CSI spec v1.11.0 and generated stubs) |
+| Entrypoint | `python -m clouder.csi --endpoint unix:///csi/csi.sock --node-id $NODE_ID` |
+| Image | `plane/etc/dockerfiles/datalayer-local-csi` → `datalayer/local-csi:0.1.0`: Clouder with the `csi` extra, `code-sandboxes` (the bridge FUSE filesystem), `fuse3` |
+| Chart | `plane/etc/helm/charts/datalayer-local-csi` |
+| Install | `plane up datalayer-local-csi` (needs `DATALAYER_LOCAL_CSI_ENABLED=true`) or `clouder kubeadm setup --local-csi` |
+| Check | `clouder local-csi status` |
+| Tests | `clouder/tests/test_csi_driver.py`, `test_csi_server.py`, `test_csi_bridge_mount.py`, `test_csi_chart.py`, `test_local_csi_cli.py` |
 
-1. A provider environment that carries `fuse` and the bridge client advertises
-   `local-bridge-mount` in `SandboxEnvironment.metadata`
-   (`src/ai/code-sandboxes/code_sandboxes/models.py`); the adapters surface it.
-2. Runtimes refuses a `local-bridge` attachment **before launch** for any
-   environment that does not advertise it, with the reason, and offers
-   Synchronize. Never after: a launch that starts and presents an empty folder
-   is the failure this rule exists to prevent.
-3. Where advertised, the adapter's `start()` runs the bridge client with the
-   session token from the attachment manifest and reports `ready`; `stop()`
-   and revocation unmount.
+### The node driver
+
+The driver implements the CSI **Identity** and **Node** services only; there
+is nothing to provision, so no Controller service and no StorageClass. It runs
+one bridge filesystem process per `bridge-uid` on the node and bind-mounts its
+mount point into each pod that names the bridge.
+
+| CSI call | What the driver does |
+| --- | --- |
+| `GetPluginInfo` / `Probe` | `local.csi.datalayer.io`, the Clouder version; always ready |
+| `NodeGetInfo` / `NodeGetCapabilities` | The node name; `GET_VOLUME_STATS` and `VOLUME_CONDITION`, no staging |
+| `NodePublishVolume` | Refuse anything but an ephemeral inline volume (`csi.storage.k8s.io/ephemeral: "true"`, set by kubelet because the `CSIDriver` has `podInfoOnMount`). Read the four attributes and the `mount-token`; refuse a missing token, a `mount-mode` that disagrees with the pod's `readOnly`, a `relay-url` that is not `wss://`, carries credentials, is on another host than `--relay-host`, or does not end in `/bridges/<bridge-uid>`; refuse any attribute that would carry a host path. Start the bridge filesystem for the `bridge-uid` at `/csi/mounts/<bridge-uid>/mnt` if it is not running, wait for it to be mounted, then `mount --bind` it at the target path, remounted `ro` when the mode is `ro`. A second call for the same volume and target is a no-op; a stale mount left at the target by a previous driver incarnation is unmounted first, never bound over. |
+| `NodeUnpublishVolume` | Unmount the target, forget the volume, stop the bridge process when the last volume using it is gone. Idempotent: an unknown volume is not an error, though a stale mount at its target is still unmounted. |
+| `NodeGetVolumeStats` | Usage from `statvfs`, and `volume_condition.abnormal: true` with the stable message `bridge disconnected: <reason>` once the bridge process has exited, `target path is not mounted` if someone unmounted the target. |
+| `GET /healthz`, `GET /mounts` on `:9808` | Liveness, and the bridges and volumes of this node as JSON |
+
+**Revocation, heartbeat expiry, laptop gone.** The bridge filesystem process
+exits when the relay refuses or closes the session. A watcher in the driver
+notices within `--watch-interval` seconds (2 by default), unmounts every
+target the bridge served, stops the process, and keeps the record so that
+stats report the volume abnormal until the pod is unpublished. Nothing stale
+is ever read: a disconnected mount is an unmounted target reported as
+abnormal, not a folder of old bytes. A kubelet retry of `NodePublishVolume`
+after a disconnect starts the bridge again; after a revocation the relay
+refuses the token, the start fails with `UNAVAILABLE`, and the pod stays
+pending with the reason in its events.
+
+**Restricted egress.** The driver dials `relay-url` and nothing else. With
+`--relay-host` (chart value `relay.host`) it refuses a URL on any other host,
+and the chart's NetworkPolicy allows egress to DNS and to the relay port only —
+to `relay.cidr` or `relay.namespace`/`relay.podSelector` when set, since a
+NetworkPolicy cannot select by host name.
+
+**Mounters.** Everything that touches the mount table goes through a
+`Mounter`. `ProcessMounter` runs on the node: it starts
+`python -m clouder.csi.bridge_mount`, which calls
+`code_sandboxes.bridge_mount.run_bridge_mount(relay_url, mount_token, mount_path, mode)`
+with the token in the environment, never on the command line, and exits with
+that function's return value (`4` when the relay refuses the token, `5` when
+the relay ends a session that was up); it binds with
+`mount --bind` and `mount -o remount,bind,ro`, unmounts with `umount`,
+`fusermount3 -u -z`, then `umount -l`, and reads `/proc/self/mounts` so that a
+dead FUSE mount still counts as mounted and gets cleared. `FakeMounter`
+records the same calls in memory for the tests.
+
+### The chart
+
+Objects `datalayer-local-csi` ships, all in `datalayer-runtimes`:
+
+- `CSIDriver` `local.csi.datalayer.io`: `attachRequired: false`,
+  `podInfoOnMount: true`, `volumeLifecycleModes: [Ephemeral]`,
+  `fsGroupPolicy: None`;
+- a `DaemonSet` on the nodes labelled `role.datalayer.io/runtime=true`
+  (`driver.nodeSelector`), with the privileged `driver` container and the
+  upstream `csi-node-driver-registrar` sidecar, `/var/lib/kubelet/plugins/local.csi.datalayer.io`
+  mounted at `/csi` and `/var/lib/kubelet/pods` mounted at the same path, both
+  `Bidirectional`, and `/dev/fuse`;
+- a `ServiceAccount` with a `ClusterRole` limited to `nodes: get` and
+  `events: create, patch` — no Secrets;
+- a `NetworkPolicy` (`networkPolicy.enabled`) allowing egress to DNS and to
+  `relay.port` only.
+
+Values: `driver.image`, `driver.imagePullPolicy`, `driver.healthPort`,
+`driver.logLevel`, `driver.allowInsecureRelay` (development), `registrar.image`,
+`relay.host`, `relay.port`, `relay.cidr`, `relay.namespace`,
+`relay.podSelector`.
+
+## Deploy
+
+The driver joins the system layer after the shared filesystem and before the
+Operator, since the Operator renders the volumes the driver serves.
+
+<Tabs>
+<TabItem value="plane" label="Plane">
+
+Off by default: only clusters serving Local Mounts need a privileged
+DaemonSet on every runtimes node.
+
+~~~bash
+cd plane/etc/dockerfiles/datalayer-local-csi
+make build push
+
+export DATALAYER_LOCAL_CSI_ENABLED=true
+# Optional: the ingress address of the relay, to close the NetworkPolicy.
+export DATALAYER_LOCAL_CSI_RELAY_CIDR=203.0.113.10/32
+plane up datalayer-local-csi
+~~~
+
+`up.sh` derives `relay.host` from `DATALAYER_CONTENTS_URL` (or
+`DATALAYER_RUNTIMES_URL`), the public host of Contents.
+
+</TabItem>
+<TabItem value="kubeadm" label="clouder kubeadm setup">
+
+`clouder kubeadm setup` installs storage providers in **Step 7**. With
+`--local-csi` it installs the driver right after the cloud storage provider,
+packing the chart from `PLANE_HOME`, `DATALAYER_HOME` or the source tree and
+applying it on the master with Helm:
+
+~~~bash
+clouder kubeadm setup my-cluster --local-csi \
+  --local-csi-relay-host r1.datalayer.run \
+  --local-csi-relay-cidr 203.0.113.10/32
+~~~
+
+`--local-csi-image` and `--local-csi-chart` override the image and the chart
+location. The cluster metadata records `local_csi_ready`.
+
+</TabItem>
+</Tabs>
 
 ## Verify
 
-The exit gate the plan names, as commands to run once the driver exists:
-
 ~~~bash
-kubectl -n datalayer-runtimes get csidriver local.csi.datalayer.io
-kubectl -n datalayer-runtimes get daemonset datalayer-local-csi
+kubectl get csidriver local.csi.datalayer.io
+kubectl -n datalayer-runtimes rollout status daemonset/datalayer-local-csi
 kubectl -n datalayer-runtimes logs daemonset/datalayer-local-csi -c driver --tail=50
+clouder local-csi status          # CSIDriver, DaemonSet, per-node bridges and volumes
+clouder local-csi status --json
 # From a laptop, with a sandbox running:
 datalayer contents mount ./project sandbox://my-sandbox/work/project --read-write
 datalayer contents mounts
 datalayer contents unmount MOUNT_UID
 ~~~
 
-The fixtures to pass: `ro` and `rw`, kubelet retry after a driver restart,
-pod deletion, laptop disconnect (mount reads as disconnected, not empty),
-revocation (no read succeeds after `DELETE /attachments/{uid}`), and root
-escape (a path outside the declared root is refused by the local client).
+The fixtures to pass on a cluster: `ro` and `rw`, kubelet retry after a driver
+restart, pod deletion, laptop disconnect (mount reads as disconnected, not
+empty), revocation (no read succeeds after `DELETE /attachments/{uid}`), and
+root escape (a path outside the declared root is refused by the local client).
+The unit tests cover the driver side of each with the `FakeMounter`:
 
-## Deploy
+~~~bash
+cd clouder
+python -m pytest clouder/tests/test_csi_driver.py clouder/tests/test_csi_server.py \
+  clouder/tests/test_csi_bridge_mount.py clouder/tests/test_csi_chart.py \
+  clouder/tests/test_local_csi_cli.py -q
+~~~
 
-Not yet: the chart and the image do not exist. When they do, the driver joins
-the system layer after the shared filesystem and before the Operator, since
-the Operator renders volumes the driver serves.
+## The other two pieces
+
+### The bridge relay (Contents)
+
+Where: `src/k8s/services/contents/datalayer_contents/processes/bridge.py` and
+the chart's `processes.bridge` block, with a dedicated TCP route on `9402`.
+The relay mints the bridge session when an attachment with
+`delivery: local-bridge` is prepared, pairs the local client's stream with the
+node driver's, forwards operations without interpreting paths beyond refusing
+anything outside the declared root, and closes the session on heartbeat loss
+or `DELETE /attachments/{uid}` — token first, so a revoked session cannot serve
+one more read. The driver's side of that contract is the first websocket frame
+`{"role": "mount", "token": <mount-token>}` and a process that exits when the
+relay refuses.
+
+### Rendering the volume (Operator)
+
+Where: `src/k8s/services/operator/datalayer_operator/services/runtimes.py`,
+in the block that turns `attachment_mounts` into pod volumes. For
+`delivery == "local-bridge"` it renders the volume shown under
+[The contract](#the-contract) and creates the `bridge-<bridge uid>` Secret.
+The attachment travels on the pod as the `contents.datalayer.io/attachments`
+annotation, so a rebuilt pod spec renders the same mounts. A `required: true`
+attachment that cannot be mounted blocks readiness, the way a required Volume
+attachment does.
+
+### External sandboxes (Daytona, E2B, Modal)
+
+No CSI driver reaches a sandbox that is not a pod. There, the same bridge is
+dialled from **inside** the sandbox by the same `code_sandboxes.bridge_mount`
+filesystem, and only environments that can run FUSE may offer local mounts:
+an environment advertising `local-bridge-mount` in
+`SandboxEnvironment.metadata` gets the mount from its adapter's `start()`;
+Runtimes refuses a `local-bridge` attachment before launch anywhere else and
+offers Synchronize instead.

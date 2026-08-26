@@ -1207,6 +1207,37 @@ Supported cloud providers: Azure and AWS.
 
 ---
 
+## Local CSI Driver
+
+`clouder kubeadm setup --local-csi` installs the
+[Local CSI driver](/services/system/local-csi/) (`local.csi.datalayer.io`)
+in Step 7, right after the cloud storage provider. It is off by default: only
+clusters serving Local Mounts need a privileged DaemonSet on every runtimes
+node.
+
+```bash
+clouder kubeadm setup my-cluster --local-csi \
+  --local-csi-relay-host r1.datalayer.run \
+  --local-csi-relay-cidr 203.0.113.10/32
+```
+
+| Option | Purpose |
+| --- | --- |
+| `--local-csi` / `--no-local-csi` | Install the driver (default: off) |
+| `--local-csi-relay-host` | The Contents host the driver may dial; empty accepts any `wss://` host |
+| `--local-csi-relay-port` | Relay port (default `443`) |
+| `--local-csi-relay-cidr` | Relay address for the egress NetworkPolicy; empty allows the port to any destination |
+| `--local-csi-image` | Driver image (default `datalayer/local-csi:0.1.0`) |
+| `--local-csi-chart` | Chart path (default: `PLANE_HOME`, `DATALAYER_HOME`, or the source tree) |
+
+The chart is packed into the install script and applied on the master with
+Helm, which is installed there if missing. Check the result with:
+
+```bash
+clouder local-csi status
+clouder local-csi status --json
+```
+
 ## Related: `clouder kubectl`
 
 Run kubectl commands using the persisted kubeconfig for a cluster.

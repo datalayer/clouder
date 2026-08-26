@@ -167,6 +167,32 @@ def register(kubeadm_app: typer.Typer):
                 "Repeatable or comma-separated. Defaults to runtime labels."
             ),
         ),
+        local_csi: bool = typer.Option(
+            False,
+            "--local-csi/--no-local-csi",
+            help="Install the Local CSI driver (local.csi.datalayer.io) after the storage provider. Off by default.",
+        ),
+        local_csi_relay_host: str = typer.Option(
+            "",
+            "--local-csi-relay-host",
+            help="Contents relay host the Local CSI driver may dial (e.g. r1.datalayer.run). Empty accepts any wss:// host.",
+        ),
+        local_csi_relay_port: int = typer.Option(443, "--local-csi-relay-port", help="Contents relay port."),
+        local_csi_relay_cidr: str = typer.Option(
+            "",
+            "--local-csi-relay-cidr",
+            help="CIDR of the relay for the driver's egress NetworkPolicy. Empty allows the port to any destination.",
+        ),
+        local_csi_image: str = typer.Option(
+            "datalayer/local-csi:0.1.0",
+            "--local-csi-image",
+            help="Local CSI driver image.",
+        ),
+        local_csi_chart: str | None = typer.Option(
+            None,
+            "--local-csi-chart",
+            help="Path to the datalayer-local-csi chart (default: PLANE_HOME, DATALAYER_HOME or the source tree).",
+        ),
     ):
         """Set up a kubeadm cluster on previously created VMs.
 
@@ -369,6 +395,25 @@ def register(kubeadm_app: typer.Typer):
                 key_path=key_path,
             )
 
+        # ----- Step 7b: Local CSI driver, after the cloud storage provider -----
+        local_csi_ok = False
+        if local_csi:
+            from .local_csi import install_local_csi
+
+            print("  [bold cyan]Local CSI driver (local.csi.datalayer.io)[/bold cyan]")
+            local_csi_ok = install_local_csi(
+                master=master,
+                resolved_user=resolved_user,
+                key_path=key_path,
+                image=local_csi_image,
+                relay_host=local_csi_relay_host,
+                relay_port=local_csi_relay_port,
+                relay_cidr=local_csi_relay_cidr,
+                chart_path=local_csi_chart,
+            )
+        else:
+            print("  [dim]Local CSI driver not requested (--local-csi to install it).[/dim]")
+
         # ----- Step 8: Install cloud-specific load balancer provider -----
         _print_step_header(8, total_steps, "Installing cloud load balancer provider")
 
@@ -408,5 +453,6 @@ def register(kubeadm_app: typer.Typer):
             "admin_username": resolved_user,
             "node_labels": resolved_node_labels,
             "storage_ready": storage_ok,
+            "local_csi_ready": local_csi_ok,
             "loadbalancer_ready": loadbalancer_ok,
         })
