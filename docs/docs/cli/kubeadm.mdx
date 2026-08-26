@@ -321,7 +321,8 @@ This ensures cleanup is scoped to the correct cloud primitives and avoids cross-
 
 ### `clouder kubeadm use`
 
-Select a kubeadm cluster kubeconfig for local `kubectl` usage.
+Select a kubeadm cluster as the default for Clouder commands and print the
+kubeconfig export needed for local `kubectl` usage.
 
 ```bash
 clouder kubeadm use [name] [OPTIONS]
@@ -342,6 +343,7 @@ Behavior:
 
 - If `~/.clouder/kubeadm/<name>/kubeconfig` exists, it is used directly.
 - If it does not exist, Clouder fetches it from the master (same behavior as `get-config`), then uses it.
+- The selected cluster is persisted as the default shown by `clouder kubeadm ls` and used when a later kubeadm command omits `<name>`.
 - The command prints an export line to apply in your shell.
 
 Examples:
@@ -362,6 +364,11 @@ eval "$(clouder kubeadm use my-cluster --print-export)"
 ### `clouder kubeadm info`
 
 Show cluster information and next steps. Displays the current state of a Kubeadm cluster and lists useful commands for day-to-day operations as well as further setup steps.
+
+The command uses the VM inventory persisted in
+`~/.clouder/kubeadm/<name>/kubeadm.json`. It falls back to cloud discovery when
+that inventory is incomplete, so normal information lookup does not require
+active credentials for the cluster's cloud account.
 
 ```bash
 clouder kubeadm info [name]

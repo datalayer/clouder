@@ -13,7 +13,7 @@ For Contents, operate these recovery units together:
 | Recovery unit | State | Protection |
 | --- | --- | --- |
 | Contents catalog | `contents`, `content-objects`, `content-operations`, `content-audit` Solr collections | Dedicated recurring `SolrBackup` |
-| Managed objects | User Folder, Dataset revision and staging object prefixes | Object-store versioning, retention and replication |
+| Managed objects | User Folder, Dataset revision and staging object prefixes | Object-store versioning, retention and replication, and the object manifest written with each backup |
 | Credential references | Vault secret paths and policies | Vault snapshot and restore procedure |
 | Provider-owned data | External cloud storage and Dataservers | Provider backup policy; Datalayer only restores its references |
 
@@ -24,6 +24,60 @@ shared configset Solr hard-commits every 15 s (`autoCommit`), so a backup can
 be missing at most the last 15 s of writes; a drill that seeds and backs up
 at once must commit first — `make -C contents local-backup-drill` does.
 :::
+
+## The object store, as one unit with the catalog
+
+A Solr backup says which object versions the catalog holds; the bucket
+holds the bytes; nothing in either says whether they still agree. Contents
+ties them together with a **manifest** — every published object, its size
+and its checksum, as of the moment the collections were backed up — and a
+**reconciliation** that compares the restored catalog with the store both
+ways. The operator configures the bucket; Contents writes and checks the
+rest.
+
+What the bucket (`DATALAYER_CONTENTS_STORAGE_BUCKET`) must have:
+
+- **Versioning on.** The catalog names object versions by key; a version's
+  bytes are never rewritten, but a key can be overwritten by a retry and
+  deleted by retention. Versioning is what lets a restore recover the
+  object that was there at the backup's moment rather than whatever came
+  after. The local stack turns it on (`mc version enable`), so a drill
+  behaves as the cluster does.
+- **A retention (lifecycle) rule on non-current versions at least as long
+  as the Solr backup retention** — the supplied schedule keeps 200 snapshots
+  at ten-minute intervals, so about a day and a half; keep non-current
+  object versions for longer than the oldest backup you would restore.
+- **Replication to a second region or account**, when the recovery
+  objectives call for it. A single-region bucket is a single point of
+  failure the Solr backups do not cover.
+- **Deletion of the bucket itself refused** to the service's credentials:
+  Contents deletes objects, never buckets.
+
+What Contents does with it:
+
+```bash
+# Beside each backup: what the store held. Run from the worker's pod, which
+# has the bucket's credentials; keep the file with the backup generation.
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest write /tmp/objects.json
+kubectl cp datalayer-api/$(kubectl get pod -n datalayer-api -l app=contents-worker -o name | head -1 | cut -d/ -f2):/tmp/objects.json ./objects-$(date +%Y%m%d%H%M).json
+
+# After restoring the collections, before trusting the catalog: is the store
+# the one the manifest describes? Exit 1 names what is missing or changed.
+kubectl cp ./objects-YYYYMMDDHHMM.json datalayer-api/<worker-pod>:/tmp/objects.json
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest verify /tmp/objects.json
+
+# Then both ways, against the restored catalog.
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-reconcile --verify --json /tmp/report.json
+```
+
+The worker also reconciles on its own every
+`DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` and answers the last report
+at `GET /operations/reconcile`; the `ContentsReconcileDiscrepancies` alert
+fires when the two sides disagree, which is how drift between a backup and
+a bucket is noticed before a restore needs it. On one machine,
+`make -C contents local-backup-drill` runs the whole loop — backup, manifest,
+drop, restore, verify, reconcile — and `make -C contents test-local-stack`
+runs it as a test.
 
 ## Recovery objectives
 
@@ -56,8 +110,9 @@ plane solr-status content-audit
 ```
 
 Also verify that object-store versioning and retention are active, that a
-recent Vault snapshot exists, and that each reported Solr `s3Prefix` contains
-backup artifacts. See [Solr](/services/system/solr/) for diagnostics and task
+manifest was written with the latest backup generation, that a recent Vault
+snapshot exists, and that each reported Solr `s3Prefix` contains backup
+artifacts. See [Solr](/services/system/solr/) for diagnostics and task
 cleanup commands.
 
 ## Contents recovery drill
@@ -65,9 +120,9 @@ cleanup commands.
 Run this drill regularly in an isolated recovery environment. Never delete or
 overwrite production collections to test a restore.
 
-1. Record the selected Solr backup generation, object-store version or
-   snapshot, and Vault snapshot. They must represent a mutually acceptable
-   recovery point.
+1. Record the selected Solr backup generation, the object manifest written
+   with it, the object-store version or snapshot, and the Vault snapshot.
+   They must represent a mutually acceptable recovery point.
 2. Prevent writes in the recovery environment. Stop the Contents API and any
    enabled worker, Flight, and bridge deployments before restoring state.
 3. Restore Vault and managed object storage according to their provider
@@ -91,7 +146,9 @@ overwrite production collections to test a restore.
    kubectl port-forward -n datalayer-api service/datalayer-contents-svc 9400:9400
    curl --fail http://localhost:9400/api/contents/v1/ready
    ```
-6. Reconcile and verify before reopening writes:
+6. Reconcile and verify before reopening writes — first the store against
+   the manifest (`datalayer-contents-manifest verify`), then the catalog
+   against the store (`datalayer-contents-reconcile --verify`), and then:
    - every Content and grant references an existing object or provider source;
    - immutable Dataset revisions resolve to their recorded object versions;
    - object sizes and checksums match `content-objects` metadata;

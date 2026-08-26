@@ -168,9 +168,12 @@ datalayer contents operations requeue OPERATION_UID
 
 Before a change to what Contents stores goes anywhere near a cluster, the
 whole loop runs on the local stack: seed a source and a version, back the
-four collections up, drop them, restore them, and reconcile the catalog
-against the object store. The drill exits non-zero if a collection comes back
-with a different document count or the reconciliation finds a discrepancy:
+four collections up and write the object manifest beside them, drop the
+collections, restore them, verify the store against the manifest, and
+reconcile the catalog against the object store. The drill exits non-zero if
+a collection comes back with a different document count, if the store no
+longer holds what the manifest says, or if the reconciliation finds a
+discrepancy:
 
 ```bash
 make -C contents local-seed
@@ -192,7 +195,46 @@ catalog names with what the store holds. The command writes nothing and exits
 
 ```bash
 datalayer-contents-reconcile --verify --json report.json
+datalayer-contents-reconcile --sample 1000     # a thousand versions, and no orphan search
 ```
+
+The worker runs the same comparison as a production check, every
+`DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` (six hours by default; `0`
+turns it off), a minute after it starts and then on the interval — sizes
+only unless `DATALAYER_CONTENTS_RECONCILE_VERIFY` is `true`, every version
+unless `DATALAYER_CONTENTS_RECONCILE_SAMPLE` says how many. The last report
+is served to a platform administrator, from every API replica alike:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:9400/api/contents/v1/operations/reconcile
+```
+
+`404 RECONCILE_NOT_RUN` means the first run has not finished. The counts by
+kind are the `contents_reconcile_discrepancies` gauge, and the
+`ContentsReconcileDiscrepancies` and `ContentsReconcileStale` rules fire on
+them (see *Observability*). A full walk reads every version's size from the
+store; on a large catalog sample it, or keep
+`DATALAYER_CONTENTS_WORKER_STALL_SECONDS` above what a walk takes, because
+the worker's liveness tick comes after it.
+
+### The object store, backed up with the catalog
+
+The Solr backup is the catalog's half. The bytes are the bucket's, and a
+manifest of the store — every published object, its size, its checksum —
+written beside the backup is what lets a restore say whether the store it
+found is the store the catalog expects, before the catalog is trusted:
+
+```bash
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest write /tmp/objects.json
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest verify /tmp/objects.json
+```
+
+`verify` exits `1` for a key that is missing, of another size or of another
+checksum, and lists as `extra` what the store holds that the manifest does
+not name (`--strict` makes those a failure too). The local drill does the
+whole loop — backup, manifest, drop, restore, verify, reconcile — and the
+[Continuity](/operations/continuity/) page says what the bucket must be
+configured with for the cluster.
 
 ## What synchronization compares
 
@@ -252,6 +294,12 @@ of moving on.
 | `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
 | `DATALAYER_CONTENTS_VERSION_RETENTION_DAYS` | Retention period for superseded object versions |
 | `DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS` | Worker cleanup/reconciliation interval |
+| `DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` | How often the worker compares the catalog against the object store; default `21600` (six hours), `0` never. `DATALAYER_CONTENTS_RECONCILE_VERIFY` (default `false`) hashes every object rather than checking sizes; `DATALAYER_CONTENTS_RECONCILE_SAMPLE` (default `0`, every version) looks at that many versions and not for orphans. The last report is `GET /operations/reconcile` |
+| `DATALAYER_CONTENTS_MAX_CONCURRENT_QUERIES` | How many queries one actor may have pending or running at once; default `8`, `0` no limit. One more answers `429 QUERY_LIMIT`; cancelling a query makes room |
+| `DATALAYER_CONTENTS_QUERY_MAX_ROWS` / `_BYTES` / `_SECONDS` | The most rows, bytes and seconds any query runs under, whatever its Datasource allows; defaults `1000000`, `1073741824`, `600`, `0` no ceiling. A Datasource's own ceilings are cut to these, never raised; a request above them is cut, not refused |
+| `DATALAYER_CONTENTS_MCP_CALLS_PER_MINUTE` | How many tool calls one MCP session may make in a minute, refused ones included; default `60`, `0` no limit. One more answers `429 MCP_RATE_LIMIT` |
+| `DATALAYER_CONTENTS_MAX_BRIDGES` | How many bridge sessions one person may hold open; default `10`, `0` no limit. One more answers `429 BRIDGE_LIMIT`; reopening the session an attachment already holds is not one more |
+| `DATALAYER_CONTENTS_MAX_TRANSFER_BYTES` | The largest single transfer accepted; default `0`, no limit beyond the quota. A larger one is refused up front with `413 TRANSFER_TOO_LARGE`. The quota (`DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_BYTES`) is charged for every transfer, Dataset destinations included, and for query results and MCP acquisitions the worker lands |
 | `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://r1.datalayer.run` (the runtimes plane, where the NFS lives), local Plane uses `http://localhost:9400` |
 | `DATALAYER_IAM_URL` | IAM endpoint used to resolve the caller's memberships and to read credentials. The chart default is the in-cluster service, correct only where Contents is co-located with IAM; on the runtimes plane `up.sh` overrides it with the platform plane's public endpoint |
 | `DATALAYER_SPACER_URL` | Spacer endpoint used to resolve accessible spaces, overridden the same way as `DATALAYER_IAM_URL` |
@@ -352,13 +400,58 @@ readiness and protocol implementations are available in the selected image.
 
 ## Observability
 
-The API exports structured logs, traces and metrics through the standard
-`OTEL_*` settings. Alert on failed dependency readiness, authorization and
-capability-token rejection, stuck operations, reconciliation retries and
-cleanup backlog. Data-plane processes additionally report transfer bytes,
-Flight batches/rows and active bridge sessions once enabled. Logs and spans
-must never contain JWTs, Vault values, provider credentials, signed URLs or
-Flight tickets.
+Every Contents process — the API, the worker, the Flight gateway, the bridge
+relay — exports logs, traces and metrics through the standard `OTEL_*`
+settings to the observer's collector; `OTEL_SDK_DISABLED=true` silences all
+four. Logs and spans never contain JWTs, Vault values, provider credentials,
+signed URLs or Flight tickets: a UID goes on a span, a credential goes
+nowhere.
+
+The instruments are named once, in `datalayer_contents/metrics.py`, with
+bounded labels — a kind, an outcome, a state, a reason — and reach
+Prometheus through the collector's exporter as:
+
+| Metric | Labels | What it says |
+| --- | --- | --- |
+| `contents_operations_total`, `contents_operation_duration_seconds` | `kind`, `outcome` (`succeeded`, `retry`, `refused`, `failed`, `compensated`) | Every operation the worker ran, and how long |
+| `contents_operations_dead_letter` | | Operations that gave up, as the worker last counted them |
+| `contents_transfer_bytes_total`, `contents_transfers_total` | `direction`; `outcome` | Bytes moved by parts, transfers brought to an end |
+| `contents_queries_total`, `contents_query_rows_total`, `contents_query_bytes_total`, `contents_query_duration_seconds` | `outcome`, `connector` | What the query executor produced |
+| `contents_ticket_validations_total` | `reason` (`valid`, `expired`, `invalid`, `consumed`, `revoked`, `unknown`…) | Tickets presented to `POST /tickets/validate` and to the gateway |
+| `contents_mcp_calls_total`, `contents_mcp_acquisitions_total` | `outcome` | Tool calls run, artifacts fetched |
+| `contents_bridge_sessions_total` | `state` (`connected`, `paired`, `disconnected`, `unauthorized`, `refused`, `ended`) | What the relay saw of each end |
+| `contents_dataserver_lease_sweeps_total`, `contents_dataserver_refusals_total` | `state`; `code` | Dataservers the sweep degraded, queries refused for want of one |
+| `contents_limit_refusals_total` | `limit` (`query-concurrency`, `mcp-rate`, `bridges`, `transfer-size`, `quota`) | Requests a limit refused |
+| `contents_readiness_failures_total` | `process`, `dependency` | Readiness probes that found a required dependency down |
+| `contents_worker_loops_total`, `contents_worker_sweeps_total` | ; `task` | The worker's loop coming round, and what its sweeps moved |
+| `contents_reconcile_runs_total`, `contents_reconcile_discrepancies`, `contents_reconcile_last_run_timestamp_seconds` | `outcome`; `kind` | The scheduled reconciliation |
+
+Spans: one per operation (`contents.operation`, with kind, UID, attempt and
+outcome), per transfer part and completion, per query the executor runs,
+per MCP call and acquisition, per connection the relay pairs, per
+reconciliation.
+
+### Alerts
+
+The chart renders a `PrometheusRule` when `contents.alerts.enabled` is set
+(the CRD comes with the observer chart); the thresholds are
+`contents.alerts.*` in its values, and `reconcileIntervalSeconds` there must
+match `DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS`:
+
+| Alert | Fires when |
+| --- | --- |
+| `ContentsWorkerStalled` | the worker exports but its loop stopped coming round — the same wedge `/health` reports as `stalled` |
+| `ContentsWorkerAbsent` | no worker reports at all: operations are accepted and nothing runs them |
+| `ContentsDeadLetterGrowing`, `ContentsDeadLetterDeep` | operations are giving up, or more than the threshold have |
+| `ContentsReadinessFailing` | a readiness probe keeps finding a required dependency down, by process and dependency |
+| `ContentsBridgeDisconnects` | bridge ends drop off the relay in a burst |
+| `ContentsDataserverUnavailable` | a Dataserver missed three leases, or a routed query was refused `DATASERVER_UNAVAILABLE` |
+| `ContentsReconcileDiscrepancies`, `ContentsReconcileStale` | the catalog and the store disagree, or nobody has checked in two intervals |
+| `ContentsLimitsRefusing` | a limit refuses more than the threshold in fifteen minutes |
+
+`contents/tests/test_alert_rules_chart.py` renders the rules and refuses one
+that names a metric the code does not write; `contents/tests/test_telemetry.py`
+reads every instrument back through an in-memory reader.
 
 ## Tear down
 

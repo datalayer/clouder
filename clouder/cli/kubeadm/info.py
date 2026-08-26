@@ -16,6 +16,28 @@ from ._helpers import (
 )
 
 
+def _cluster_from_metadata(metadata: dict | None, context_id: str) -> dict | None:
+    """Build the cluster inventory from persisted metadata when complete."""
+    if not metadata:
+        return None
+
+    master = metadata.get("master")
+    workers = metadata.get("workers")
+    if not isinstance(master, dict) or not master.get("name") or not master.get("ip"):
+        return None
+    if not isinstance(workers, list):
+        return None
+    if any(not isinstance(worker, dict) or not worker.get("name") or not worker.get("ip") for worker in workers):
+        return None
+
+    return {
+        "cloud": metadata.get("cloud"),
+        "master": dict(master),
+        "workers": [dict(worker) for worker in workers],
+        "context_id": context_id,
+    }
+
+
 def _discover_load_balancer_addresses(cluster_name: str, cluster: dict, metadata: dict | None) -> list[str]:
     """Best-effort discovery of load balancer addresses for kubeadm clusters."""
     addresses: list[str] = []
@@ -91,10 +113,12 @@ def register(kubeadm_app: typer.Typer):
         """
         name = resolve_kubeadm_cluster_name(name)
         cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
-        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
+        metadata = _load_cluster_metadata(name)
+        cluster = _cluster_from_metadata(metadata, context_id) or _resolve_cluster_vms(
+            name, cloud=cloud, context_id=context_id
+        )
         master = cluster["master"]
         workers = cluster["workers"]
-        metadata = _load_cluster_metadata(name)
 
         # --- Cluster status ---
         status_lines = []

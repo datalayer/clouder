@@ -7,7 +7,7 @@ from rich import print
 
 from ...util.utils import kubeadm_kubeconfig_path
 
-from ._helpers import resolve_kubeadm_cluster_name
+from ._helpers import resolve_kubeadm_cluster_name, set_default_kubeadm_cluster
 from .get_config import fetch_kubeadm_config_materials
 
 
@@ -35,6 +35,11 @@ def register(kubeadm_app: typer.Typer):
                 print(f"[yellow]Local kubeconfig not found for cluster '{name}'. Fetching from server...[/yellow]")
             fetch_kubeadm_config_materials(name, user=user, key=key, cloud=cloud)
 
+        # Persist the selection for subsequent Clouder commands. Setting an
+        # environment variable here only affects this short-lived process and
+        # cannot update the shell that invoked Clouder.
+        set_default_kubeadm_cluster(name)
+
         os.environ["KUBECONFIG"] = str(kubeconfig_path)
         export_cmd = f'export KUBECONFIG="{kubeconfig_path}"'
 
@@ -42,7 +47,7 @@ def register(kubeadm_app: typer.Typer):
             typer.echo(export_cmd)
             return
 
-        print(f"[green]Using kubeconfig for cluster '{name}'.[/green]")
+        print(f"[green]Using kubeconfig for cluster '{name}' and set it as default.[/green]")
         typer.echo(export_cmd)
         typer.echo("Run the line above in your shell, or use:")
         typer.echo(f'  eval "$(clouder kubeadm use {name} --print-export)"')
