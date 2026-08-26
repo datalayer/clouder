@@ -14,6 +14,31 @@ The content specifications often rely on secrets the cluster manager will need t
 
 The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-content.yaml) and the following sections show simple examples.
 
+Every content carries a **`spec.uid`** — a ULID assigned once, when the
+content is defined. Runtime Environments select contents by that uid, never
+by name, so a content can be renamed or re-described without every
+Environment that uses it silently pointing elsewhere. A `git` content also
+carries the **`revision`** (commit sha) it is checked out at: one without a
+revision is refused at launch. The Operator's page explains
+[what happens at launch](/services/operator/#runtime-contents-and-environments).
+
+## Apply the platform definitions
+
+The platform's own definitions live in the Services repository under
+`plane/etc/specs/runtime-contents/` (one file per content, each with its uid).
+They are applied with `kubectl`; no Plane command applies them, and
+redeploying the Operator (`plane reup datalayer-operator`) leaves them as
+they are — after an upgrade of the Operator that changed the specification,
+re-apply them:
+
+```bash
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-contents/
+kubectl get runtime-contents -n datalayer-runtimes -o custom-columns=NAME:.metadata.name,UID:.spec.uid,TYPE:.spec.type,REVISION:.spec.revision
+```
+
+Every row must show a `UID`; a content without one cannot be selected by any
+Environment, and the Operator logs `RuntimeContent '<name>' has no spec.uid`.
+
 ## Manage the Contents
 
 ```bash
@@ -37,6 +62,7 @@ metadata:
   name: s3-satellite-sentinels-images-content
   namespace: datalayer-runtimes
 spec:
+  uid: 01M0YX0MXYH92ETBXWPH7A8205
   description: Satellite images from Sentinels mission.
   type: s3
   source: datalayer-dev
@@ -62,13 +88,22 @@ metadata:
   name: jakevdp-sklearn-tutorial-content
   namespace: datalayer-runtimes
 spec:
+  uid: 01M0YX0MXYRP0Q29YWYRE5THZE
   description: Jake VanderPlas scikit-learn tutorial
   type: git
   source: https://github.com/jakevdp/sklearn_tutorial.git
+  revision: 5098cee2a638c56c311aca0c18987e407fe127fd
 EOF
 ```
 
-<!--
+A new uid is minted with `python -c "import ulid; print(ulid.new())"` (or any
+ULID generator); the revision is `git ls-remote <repository> HEAD` at the
+moment you pin it.
+
+```bash
+```
+
+{/*
 
 ## Google Cloud Buckets
 
@@ -102,4 +137,4 @@ open https://console.cloud.google.com/iam-admin/serviceaccounts?project=runtimep
 gcloud projects delete $PROJECT_ID
 ```
 
--->
+*/}

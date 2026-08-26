@@ -20,6 +20,44 @@ Runtime Environments define:
 
 The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-environment.yaml) and the following sections show simple examples.
 
+## Contents: selected by uid
+
+An Environment names what it brings by the **`spec.uid`** of each
+[Runtime Content](./runtime-contents), and where it appears in the runtime:
+
+```yaml
+spec:
+  contents:
+    - uid: 01M0YX0MXYD8YZVMJW016KTB4M # nfs-models-oss-content
+      mount: /home/jovyan/models/datalayer-oss
+      permissions: ro
+```
+
+`permissions` narrows the content's own access and is never wider than it;
+absent means the content's own. The name after `#` is a comment for the
+reader. An entry written the earlier way — `name:` instead of `uid:` — is
+not a selection: the Operator refuses to spawn **any** runtime of that
+Environment, pool pods included, and says so at startup and on every
+reconcile (`plane logs datalayer-operator | grep startup_check`). See
+[the Operator page](/services/operator/#runtime-contents-and-environments)
+for what is resolved and mounted at launch.
+
+## Apply the platform definitions
+
+The platform's Environments live in the Services repository under
+`plane/etc/specs/runtime-environments/{prod,dev,oss}/`. They are applied
+with `kubectl` — no Plane command applies them, and redeploying the Operator
+leaves them as they are — after the Runtime Contents they select:
+
+```bash
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-contents/
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
+Each Environment must list the uids it selects; the Operator picks a
+re-applied Environment up within a minute, without a restart.
+
 ## Manage the Environments
 
 ```bash
