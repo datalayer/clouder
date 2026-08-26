@@ -122,6 +122,44 @@ curl http://localhost:9400/api/contents/v1/ready
 Vault dependencies and returns `503` without including credentials when a
 required dependency is unavailable.
 
+The worker answers the same two questions on a port of its own, because a
+loop that has wedged looks exactly like a loop that is idle unless it says so
+itself:
+
+```bash
+curl http://localhost:9403/health
+curl http://localhost:9403/ready
+```
+
+`health` is the worker's loop coming round — the loop marks it, not a thread
+beside it, so a wedged worker reports `stalled` and its liveness probe
+restarts it. `ready` is the same dependency report the API gives, so a worker
+that cannot reach Solr is taken out of service rather than left to process
+nothing. The chart probes both over HTTP; nothing but the kubelet talks to
+that port.
+
+## Changing the stored shape
+
+The Contents Solr mapping is generated from the DAO codecs and carries a
+version and a fingerprint. CI regenerates it and refuses a codec change whose
+fingerprint moved without a new version, a migration with both directions and
+its fingerprint recorded — a renamed field otherwise leaves the documents in
+the cluster addressed by a name nothing writes any more.
+
+After deploying code that changes the mapping, move the documents:
+
+```bash
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-reindex --dry-run
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-reindex
+```
+
+The walk is resumable, every write is a compare-and-set on the version the
+document was read at, and `--to-version` below the current one rolls a step
+back. Each family records the version it is on as a state document in its own
+collection, so a restored backup knows where it stands. The command exits
+non-zero when it left conflicts behind, so a deployment step notices instead
+of moving on.
+
 ## Configuration
 
 | Variable | Purpose |
@@ -132,8 +170,8 @@ required dependency is unavailable.
 | `DATALAYER_CONTENTS_REQUIRE_SOLR` | Make Solr mandatory for readiness |
 | `DATALAYER_CONTENTS_REQUIRE_VAULT` | Make Vault mandatory for readiness |
 | `DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS` | Timeout for each readiness probe |
-| `DATALAYER_CONTENTS_STORAGE_BACKEND` | Managed-byte backend: `local` for development or `s3` for deployed environments |
-| `DATALAYER_CONTENTS_STORAGE_ROOT` | Root used by the local managed-byte backend |
+| `DATALAYER_CONTENTS_STORAGE_BACKEND` | Where the managed bytes — uploads, transfers, captured versions — are published. `local` (default): under `DATALAYER_CONTENTS_STORAGE_ROOT` inside the container, ephemeral, lost when the pod is replaced; `plane local` and tests only. `shared-fs`: under `objects/` and `staging/` on the shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`, at `DATALAYER_SHARED_FS_MOUNT_PATH`) — the same RWX volume the Operator mounts into runtimes; refuses to start without the claim, because writing managed bytes into the container looks like it worked until the pod is replaced. `s3`: the bucket `DATALAYER_CONTENTS_STORAGE_BUCKET`, through `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` (empty for AWS S3, set for MinIO or another S3-compatible store); credentials come from the workload environment, never from the catalog. All three are versioned object stores keyed by source, path and version — the immutable copy. On completion a transfer also writes its file, as the working copy, into the Home Folder tree (`home/{users\|organizations\|teams}/{uid}/{path}`) on the shared filesystem, where sandboxes mount it and `/sources/home-folder/files` lists it; the staged parts are removed at that point. Without a shared filesystem there is no working copy and the catalog is all. Switching does not move bytes: change it before the first upload, or migrate the objects with it |
+| `DATALAYER_CONTENTS_STORAGE_ROOT` | Root used by the `local` backend; default `/tmp/datalayer-contents` |
 | `DATALAYER_CONTENTS_STORAGE_BUCKET` | S3 bucket for User Folder versions and transfer staging |
 | `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` | Optional S3-compatible endpoint |
 | `DATALAYER_CONTENTS_STORAGE_REGION` | Optional S3 region |
@@ -149,9 +187,10 @@ required dependency is unavailable.
 | `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | Solr identity, supplied through Kubernetes secrets in production |
 | `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim, mounted into the API and the worker at `/mnt/shared-fs` exactly as the Operator mounts it into runtimes. `up.sh` passes it through `contents.sharedFsPVC` |
 | `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
-| `DATALAYER_CONTENTS_STORAGE_BACKEND` (`shared-fs`) | Store managed bytes on the shared filesystem rather than in S3 or a container-local directory. Refuses to start without a claim: writing managed bytes into the container looks like it worked until the pod is replaced |
 | `DATALAYER_CONTENTS_SYNC_HEARTBEAT_GRACE_SECONDS` | How long a `--watch` synchronization session survives without a heartbeat from its client before the worker closes it as failed with `SYNC_CLIENT_LOST`; default `900`. Long enough for a laptop's sleep to come back, short enough that a dead client is not reported as running all day. The next `datalayer contents sync` of the folder resumes from the last accepted manifest |
 | `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
+| `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves `/health` and `/ready`; default `9403`, set by the chart from `contents.workerProbePort` so the port and the probes cannot drift apart |
+| `DATALAYER_CONTENTS_WORKER_STALL_SECONDS` | How long the worker's loop may go without coming round before `/health` reports `stalled`; default `120`. It must outlast the slowest turn of the loop — a full batch of operations — or a busy worker is restarted for being busy |
 | `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
 | standard `DATALAYER_JWT_*` variables | IAM token verification |
 | standard `OTEL_*` variables | Logs, traces and metrics export |
