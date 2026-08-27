@@ -14,37 +14,222 @@ import { Label, Stack } from '@primer/react-brand';
   <Label color="green">MCP</Label>
 </Stack>
 
-The hosted MCP gateway: one endpoint that AI agents — Claude Code, Codex,
-Cursor, VS Code, any MCP client — connect to in order to read, edit and
-execute the Notebooks their user is allowed to reach.
-
-It is a **multi-tenant gateway, not one process per user**. The access token
-identifies the user, their organization and their workspace; the tools then
-expose only what that identity can reach. There is no per-user URL.
+The hosted MCP gateway: one endpoint — `https://mcp.datalayer.run/mcp` — that
+AI agents (Claude Code, Claude Desktop, Codex, Cursor, VS Code, Windsurf,
+Cline, any MCP client) connect to in order to read, edit and execute the
+Notebooks their user is allowed to reach, and to run code in Datalayer
+sandboxes.
 
 The tool vocabulary comes from the open source
 [`jupyter-mcp-server`](https://jupyter-mcp-server.datalayer.tech); this service
-adds identity, tenancy, permissions, durable execution and audit around it.
+adds identity, tenancy, per-item permissions, rate limiting, session-to-sandbox
+affinity and cross-replica routing around it.
 
-## Prerequisites
+The gateway runs on the **platform plane**, in `datalayer-api`, beside IAM and
+Spacer. It owns no notebook, no sandbox and no content: every one of those is
+an authenticated call to the service that does own it, made with the caller's
+own exchanged token. It keeps only what a request must be able to find again
+on another replica — handles, the worker directory and rate windows — and it
+keeps those in Solr, not in the pod.
 
-| | |
-|---|---|
-| `datalayer-iam` | Issues the OAuth 2.1 and personal access tokens this service verifies |
-| `datalayer-spacer` | Answers what a user may do with a Notebook or document |
-| `datalayer-contents` | Answers what a user may do with a Dataset |
-| Solr collections | `oauth-clients`, `oauth-codes`, `oauth-grants`, created by `solr-init` |
+## Processes and ports
 
-The IAM service must be deployed with `DATALAYER_JUPYTER_MCP_SERVER_URL` set to the
-same value used here: IAM stamps it into the audience of every OAuth token,
-and this service refuses a token naming anything else.
+| Process | Purpose | Port |
+| --- | --- | --- |
+| Gateway | The one container of the Deployment: the MCP transport on `/mcp`, the RFC 9728 metadata, the `/api/mcp/*` REST routes, scope and item enforcement, the rate limiter, the worker directory and cross-replica forwarding | `4404` (`PORT`) |
+| Worker | One `jupyter-mcp-server` process **per user**, started by the gateway on demand, reached over loopback only | an ephemeral loopback port per worker |
 
-## Deploy Datalayer Jupyter MCP Server
+Both run from the one image. The gateway is `python -m
+datalayer_jupyter_mcp_server.main` (uvicorn, one worker process, proxy headers
+trusted because TLS is terminated at the ingress); a worker is `python -m
+datalayer_jupyter_mcp_server.worker_main start --transport streamable-http`
+pointed at Spacer for documents and at Runtimes for sandboxes.
+
+### Why a process per user
+
+The open source server keeps state per process: a singleton configuration,
+HTTP clients with a token baked into their session, the notebooks that have
+been used. All of that is correct for one person and none of it is safe to
+share, so the boundary used is the one the operating system already gives —
+a process. Workers are keyed by **user**, not by agent: two agents of the same
+person share a process, which is safe because what each agent may do was
+already decided in the gateway, by scope, before anything was proxied. Two
+people never share one.
+
+A worker holds no credential of its own. The gateway forwards the caller's
+`Authorization` header on every request, and clears
+`DATALAYER_API_KEY`, `DATALAYER_TOKEN`, `DOCUMENT_TOKEN`, `CODE_SANDBOX_TOKEN`
+and `JUPYTER_TOKEN` out of the child's environment before putting back the
+caller's own exchanged token — so a credential configured on the gateway is
+never handed to a user's worker.
+
+Workers are reclaimed after `DATALAYER_MCP_WORKER_IDLE_TIMEOUT` (default 900 s)
+and evicted least-recently-used when `DATALAYER_MCP_MAX_WORKERS` (default 50
+per replica) is reached. Neither the reaper nor the eviction stops a worker
+whose session has a task `working`: the task store is asked first, and when it
+cannot answer the worker is kept.
+
+## Where it sits, and what it calls
+
+| Dependency | Plane | Why |
+| --- | --- | --- |
+| [IAM](/services/iam/) | platform | Issues and signs the tokens this gateway verifies locally; the RFC 8693 exchange that turns a gateway token into one the rest of the platform accepts. **Gates readiness** |
+| Solr (`mcp-gateway`) | platform | Handles, the worker directory and rate windows. **Gates readiness** |
+| [Spacer](/services/spacer/) | platform | Notebooks and the per-notebook permission check |
+| [Runtimes](/services/runtimes/) | runtimes | Sandboxes: launch, look up, terminate — always through the Runtimes API, never a Kubernetes call and never a provider SDK |
+| [Contents](/services/contents/) | runtimes | The per-source permission check, at `/api/contents/v1/sources/{uid}/permissions` |
+| [AI Agents](/services/ai-agents/) | platform | Best-effort activity events, so what an agent does appears in the feed |
+| [OTEL](/services/system/otel/) | platform | Where telemetry is addressed. Never probed, never a readiness condition |
+
+Contents and Runtimes are **cross-plane**: they run on the runtimes plane and
+are reached at their configured public URLs (`https://r1.datalayer.run` in
+production), never at an assumed same-cluster service name. The gateway refuses
+to start on a malformed URL, and reports a missing one through readiness
+instead — a deployment that does without a dependency still serves the rest and
+says which tools will not work. `DATALAYER_CONTENTS_URL` has no fallback and is
+rejected when it names the IAM host.
+
+IAM must be deployed with the same `DATALAYER_JUPYTER_MCP_SERVER_URL` value
+used here: IAM stamps it into the audience of every OAuth token, and this
+service refuses a token naming anything else.
+
+## Routes and authentication boundaries
+
+| Surface | Route | Authentication boundary |
+| --- | --- | --- |
+| MCP | `POST /mcp` | An OAuth 2.1 access token whose `aud` is this gateway, or a personal access token. Refused before the body is read when the scope does not cover the call |
+| Protected-resource metadata | `GET /.well-known/oauth-protected-resource`, `…/oauth-protected-resource/mcp` | None. RFC 9728: the document belongs to the resource, and it is where a `401` from `/mcp` sends a client |
+| Liveness | `GET /api/mcp/healthz` | None — the kubelet has no token |
+| Readiness | `GET /api/mcp/readyz` | None. `200` ready, `503` not; the body reports every dependency on its own line |
+| Version | `GET /api/mcp/version` | None |
+| Handles | `GET /api/mcp/v1/bindings`, `DELETE /api/mcp/v1/bindings/{uid}` | The caller's own token. A `DELETE` of an `sb_…` handle needs `code:execute` and terminates the sandbox through Runtimes |
+| Notebook tasks | `GET /api/mcp/v1/notebooks/{uid}/tasks` | `notebooks:read` plus the item check; answers empty until the durable task store lands |
+| Executions | `GET /api/mcp/v1/executions/{id}`, `POST …/cancel`, `GET /api/mcp/v1/notebooks/{id}/executions` | `notebooks:read` / `code:execute` plus the item check. The registry behind them is per process — see [What is not here yet](#what-is-not-here-yet) |
+| Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
+| OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
+
+The ingress publishes exactly three prefixes on `mcp.datalayer.run`: `/mcp`,
+`/.well-known/oauth-protected-resource` and `/api/mcp`. Nothing else on the
+host is routed to this service.
+
+### The two credentials
+
+**An OAuth 2.1 access token** is a user's authority narrowed to what they
+approved for one agent: it carries `scope`, `client_id` and an `aud` naming
+this gateway. **A personal access token** is the user acting as themselves: no
+`aud`, no `scope`, and therefore all four scopes — `notebooks:read`,
+`notebooks:write`, `code:execute`, `data:read`. Both are Datalayer JWTs signed
+with the shared secret, so verification is local and no round trip to IAM sits
+on the request path.
+
+A client's own URL may narrow what it gets: `…/mcp?scopes=notebooks:read,code:execute`.
+The scopes travel on the `resource` of the protected-resource document, and IAM
+reads them off it rather than trusting what the client asked for. The OpenID
+Connect scopes (`openid`, `profile`, `email`, `offline_access`) pass through so
+one sign-in answers both questions; none of them grants anything here.
+
+Because the `aud` names this gateway, the token cannot be forwarded — every
+other Datalayer API refuses it, which is the point. **RFC 8693 token exchange**
+is the way across: the gateway proves to IAM with `DATALAYER_IAM_API_KEY` that
+it is a Datalayer service and receives a token for another audience, same user,
+never more scope. Exchanged tokens are cached until shortly before they expire.
+Without that key, OAuth callers reach nothing.
+
+Enforcement is layered and deny-by-default. `enforcement.py` reads `Mcp-Method`
+and `Mcp-Name` and refuses a call the scope does not cover *before* the body is
+read, then cross-validates the body against the headers; a tool absent from the
+policy table is treated as requiring the strongest scope. A caller that cannot
+be attributed to a user is refused (`-32001`), never served. The per-item
+`read`/`write`/`execute` decision is asked of Spacer or Contents on every call
+and is never cached.
+
+| JSON-RPC error | Meaning |
+| --- | --- |
+| `-32000` | Refused: scope, item permission, or an unknown handle |
+| `-32001` | The call could not be attributed, or an access check could not be made — fail closed |
+| `-32002` | Rate limited; the data carries `retry_after_ms` |
+| `-32010` | `SANDBOX_LOST`, with the runtime's `ResourceState` |
+| `-32011` | Runtimes could not be reached to launch or check a sandbox |
+
+Client registration is IAM's: clients are registered by **Client ID Metadata
+Document** — a `client_id` that is a URL IAM fetches, validates and caches,
+advertised as `client_id_metadata_document_supported` in the RFC 8414
+metadata — with Dynamic Client Registration kept as the deprecated fallback.
+See [IAM](/services/iam/).
+
+## Sessions and sandboxes
+
+What a person means by "my session" is the sandbox their code has been running
+in. That sandbox **is** the session, and it is an `sb_…` handle in
+`mcp-gateway`:
+
+- one active sandbox per (user, `client_id`) unless a client holds several
+  handles on purpose;
+- every execution of the session resolves the binding first and targets its
+  `sandbox_uid`, on the replica whose worker holds the connection;
+- the Runtimes `pod_name` is **derived from the binding uid**, so a retried
+  launch or two replicas racing cannot make two sandboxes for one session;
+- a sandbox that is gone ends the call with `SANDBOX_LOST` and the runtime's
+  `ResourceState`. Only a binding created with `on_lost: relaunch` gets a
+  replacement, and it says so in the result. There is no silent relaunch;
+- a binding follows the runtime's reservation; closing it ends the session's
+  open tasks.
+
+`GET /api/mcp/v1/bindings` lists a caller's handles in every state, `lost`
+included — a session whose sandbox is gone is exactly what an operator and a
+user want to see, with why.
+
+## What it stores
+
+Three Solr collections belong to this service, all in the **Core** set because
+the gateway runs on the platform plane, and all three are one recovery unit —
+the `mcp` scope. See [Solr](/services/system/solr/) and
+[Continuity](/operations/continuity/).
+
+| Collection | Written today by | Holds |
+| --- | --- | --- |
+| `mcp-gateway` | the gateway | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows |
+| `mcp-tasks` | nothing yet | The task projection. The gateway's task store is in-process until the durable execution service lands; `GET /api/mcp/v1/notebooks/{uid}/tasks` answers empty |
+| `mcp-audit` | nothing yet | The append-only audit trail. IAM already writes its own decisions in the `McpAuditEvent` shape, to a JSON-line logger by default (`DATALAYER_IAM_AUDIT_SINK_CLASS` names another sink); the gateway has no sink and serves no `/audit` route yet |
+
+Every record carries a version, so a write that names the version it read fails
+when the record moved in between, and every record carries an expiry. Nothing
+here is a cache: it is what a request must be able to find again on another
+pod.
+
+The store is chosen by `DATALAYER_MCP_STORE`. Unset, Solr is used when
+`DATALAYER_SOLR_ZK_HOST` is configured and an in-memory store otherwise — which
+is right for `plane local` and wrong in a cluster, where it would give every
+replica its own idea of who holds what.
+
+```bash
+plane solr-backups-apply mcp      # the three collections as one backup unit
+plane solr-backups-status mcp
+plane solr-restore mcp
+```
+
+## Deploy
+
+The gateway needs IAM, Spacer, Runtimes and Contents to be up, and the three
+`mcp-*` collections to exist (`solr-init`). Build and push the image from the
+Services repository:
+
+```bash
+cd plane/etc/dockerfiles/datalayer-jupyter-mcp-server
+make build-dev
+make push
+```
+
+The build asserts that a worker could start — the `spaces` and `sandboxes`
+extensions are on the entry point, `datalayer-core` is new enough, and the
+traceback hook installs — so a missing piece fails the build rather than
+showing up hours later as every user getting the wrong tool list.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
 ```bash
 plane up datalayer-jupyter-mcp-server
+kubectl rollout status deployment/datalayer-jupyter-mcp-server -n datalayer-api
 ```
   </TabItem>
   <TabItem value="terraform" label="Terraform">
@@ -59,25 +244,36 @@ export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
   </TabItem>
 </Tabs>
 
-Check the availability of the Datalayer Jupyter MCP Server Pods.
+`up.sh` passes `DATALAYER_JUPYTER_MCP_SERVER_URL` (default
+`https://mcp.datalayer.run/mcp`), the IAM, Spacer, Runtimes and Contents URLs,
+the Solr identity, the JWT settings and the OTLP endpoints. It leaves the
+scaling values, the worker limits and the rate limits at their chart defaults.
+`plane up` runs a fixed `helm upgrade`, so anything it does not pass is changed
+in the chart's `values.yaml` (or with a `helm upgrade --reuse-values --set` of
+your own) rather than on the `plane` command line.
+
+### Local development
+
+`plane local` starts the gateway beside IAM, Spacer, Runtimes and Contents on
+`http://localhost:4404`, validates `/api/mcp/healthz` and prints the
+`claude mcp add datalayer-local --transport http http://localhost:4404/mcp`
+line to connect a client to it. It runs on the in-memory store.
+
+## Verify
 
 ```bash
-kubectl get pods -n datalayer-api -l app=jupyter-mcp-server
-```
-
-Check the logs of the Datalayer Jupyter MCP Server Pods.
-
-```bash
+kubectl get pods,service,ingress -n datalayer-api -l app=jupyter-mcp-server
 kubectl logs -n datalayer-api -l app=jupyter-mcp-server
 ```
 
-Check the availability of the Datalayer Jupyter MCP Server Certificate.
-
 The gateway is served on a host of its own, so it has a certificate of its own,
-declared by the chart rather than inferred from ingress annotations.
+declared by the chart rather than inferred from ingress annotations — the
+ingress deliberately carries no `cert-manager.io/*` annotation, because two
+owners for one secret is how a certificate ends up repeatedly reissued.
 
 ```bash
 kubectl describe certificate mcp.datalayer.run-datalayer-api-cert -n datalayer-api
+kubectl get certificate,certificaterequest,order,challenge -n datalayer-api | grep mcp
 ```
 
 `Ready: True` means the certificate is issued. While it is still being issued
@@ -86,35 +282,15 @@ what the ACME challenge is waiting for — most often DNS for the new host not
 yet resolving to the ingress.
 
 ```bash
-kubectl get certificate,certificaterequest,order,challenge -n datalayer-api | grep mcp
-```
-
-Check the availability of the Datalayer Jupyter MCP Server Endpoints.
-
-```bash
-open https://mcp.datalayer.run/api/mcp/version
-open https://mcp.datalayer.run/api/mcp/healthz
-open https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp
+curl -s https://mcp.datalayer.run/api/mcp/version
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '.dependencies[] | {name, required, ready, detail}'
+curl -s https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp
 ```
 
 The last one is the document an MCP client reads to discover where to
 authenticate. If it does not answer, no agent can connect.
 
-## Configuration
-
-| Variable | Meaning |
-|---|---|
-| `DATALAYER_JUPYTER_MCP_SERVER_URL` | The resource identifier, and the audience tokens must name. Default `https://mcp.datalayer.run/mcp` |
-| `DATALAYER_JUPYTER_MCP_VERIFY_AUDIENCE` | Refuse a token issued for another resource. Default `true` |
-| `DATALAYER_IAM_URL` | The authorization server |
-| `DATALAYER_SPACER_URL` | Where Notebooks and their permissions live |
-| `DATALAYER_JWT_SECRET` / `_ALGORITHM` / `_ISSUER` | Token verification, shared with IAM |
-| `JUPYTER_MCP_TOKEN_VERIFIER_CLASS` | How MCP clients are authenticated. Defaults to `datalayer_jupyter_mcp_server.verifier:DatalayerTokenVerifier` |
-
-The ingress host is derived from `DATALAYER_JUPYTER_MCP_SERVER_URL`, so the host and
-the token audience cannot drift apart.
-
-## Verify authentication end to end
+### Authentication end to end
 
 An unauthenticated request must be refused *and* must say where to
 authenticate:
@@ -134,22 +310,302 @@ OAuth flow. With a personal access token:
 
 ```bash
 curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
-  https://mcp.datalayer.run/api/mcp/version
+  https://mcp.datalayer.run/api/mcp/v1/bindings
 ```
 
-## Tear Down Datalayer Jupyter MCP Server
+## Scaling and the drain
 
-If needed, tear down.
+The gateway is one Deployment whose replicas are **interchangeable**, and the
+chart says so.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `jupyterMcpServer.replicaCount` | `2` | The floor. Applied only when autoscaling is off — with the HPA enabled the Deployment omits `replicas` so the two do not fight |
+| `jupyterMcpServer.autoscaling` | `enabled`, `minReplicas: 2`, `maxReplicas: 8`, `targetCPUUtilizationPercentage: 70` | An `autoscaling/v2` HPA on CPU, with `scaleDown.stabilizationWindowSeconds: 600` so a quiet minute does not take a pod away from the sessions on it |
+| `jupyterMcpServer.podDisruptionBudget` | `enabled`, `minAvailable: 1` | A node drain never empties the service |
+| `jupyterMcpServer.topologySpread` | `enabled` | `maxSkew: 1` across `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, `ScheduleAnyway` so a small cluster still schedules rather than leaving a replica `Pending` |
+| `strategy.rollingUpdate` | `maxSurge: 1`, `maxUnavailable: 0` | A rolling upgrade is the ordinary case; the new pod is ready before an old one goes |
+| `jupyterMcpServer.terminationGracePeriodSeconds` | `900` | Long enough to finish the streamed responses a pod is holding |
+| node affinity | `role.datalayer.io/api=true` (required) | The API node pool |
+| pod annotation | `karpenter.sh/do-not-disrupt: "true"` | Karpenter does not consolidate a pod holding sessions |
+
+The HPA scales on CPU only. The plan's request-rate and running-worker
+(`mcp.workers{state=running}`) targets are written into the template as a
+comment and are not wired: they need an external-metrics adapter over the OTEL
+service, which is not deployed.
+
+### No affinity at the edge
+
+The ingress round-robins. There is **no cookie affinity** and there are no
+single-replica idle timeouts, because affinity is a **directory lookup**, not a
+cookie: every worker is written into `mcp-gateway` keyed by user *and* by
+sandbox session, naming its replica and an address. A replica that is asked for
+a worker another replica holds forwards the request there over the cluster
+network, carrying `x-datalayer-mcp-hop`; a replica that sees that header serves
+the request itself, so two stale entries can never bounce a request forever. An
+unreachable target answers `502 replica_unreachable` and says to retry. A
+replica that is gone stops refreshing its entries, they expire after
+`DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` (default 180 s), and the caller gets a
+fresh worker with its handles intact.
+
+The ingress keeps `proxy-read-timeout` and `proxy-send-timeout` at `900` to
+match the pod's drain, and `proxy-buffering: off` so a streamed response is not
+collected at the edge. These are `nginx.ingress.kubernetes.io/*` annotations,
+as on the other Datalayer charts; under the default `datalayer-traefik` class
+they are inert and the equivalent limits are Traefik entrypoint settings.
+
+:::warning Set `POD_IP` for forwarding to leave the pod
+
+A replica registers itself at `DATALAYER_MCP_REPLICA_ADDRESS`, or at
+`http://$POD_IP:4404` when `POD_IP` is set, and at `http://127.0.0.1:4404`
+otherwise. The chart sets neither today, so every replica registers the
+loopback address and a forward lands back on the pod that sent it — which then
+serves the request itself, correctly but on the wrong worker, so a session
+mid-execution can be answered by a second sandbox connection. Give the
+Deployment the downward API before relying on session affinity across replicas:
+
+```yaml
+# values.yaml of the datalayer-jupyter-mcp-server chart
+jupyterMcpServer:
+  envValueFrom:
+    POD_IP:
+      fieldRef:
+        fieldPath: status.podIP
+```
+
+`POD_NAME` needs nothing: the replica names itself from `HOSTNAME`, which
+Kubernetes already sets to the pod name.
+:::
+
+### What a pod does when it is told to stop
+
+1. uvicorn stops accepting new connections and lets the in-flight requests and
+   streamed responses finish.
+2. The supervisor marks itself **draining**, so `/api/mcp/readyz` answers `503`
+   with `"draining": true`.
+3. Every worker-directory entry of this replica is given an expiry of *now*, so
+   no other replica forwards a request to a pod on its way out.
+4. Every worker on the pod is stopped and waited on, up to ten seconds each.
+
+Step 4 stops **every** worker, including one under a `working` task — only the
+idle reaper and the capacity eviction consult the task store first. Until runs
+live in a durable engine rather than in the worker's connection, a rolling
+upgrade ends the executions in flight on the pod being replaced. `maxSurge: 1` /
+`maxUnavailable: 0` and the 900 s grace keep that to the sessions of one pod at
+a time.
+
+Handles, sessions and rate windows survive all of it: they are in Solr, and a
+replica restarts empty and is serving in seconds.
+
+```bash
+kubectl scale deployment/datalayer-jupyter-mcp-server -n datalayer-api --replicas=4
+kubectl get hpa datalayer-jupyter-mcp-server -n datalayer-api
+kubectl get pdb datalayer-jupyter-mcp-server -n datalayer-api
+```
+
+To see which replica holds which worker, as a `platform_admin`:
+
+```bash
+curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  https://mcp.datalayer.run/api/mcp/v1/operations/workers | jq
+```
+
+## Health and readiness
+
+| Route | Answers |
+| --- | --- |
+| `/api/mcp/healthz` | Liveness: the process is up. Version and replica name, nothing else |
+| `/api/mcp/readyz` | Readiness: may traffic be sent here. `200` / `503`, plus every dependency on its own line |
+
+Readiness is gated on what **every** request needs: IAM (to verify a token) and
+the store (to find a handle). Spacer, Runtimes and Contents are *reported* and
+never gate — an outage in Contents must read as "Contents unavailable" in the
+Contents tools, not as a gateway that stopped serving notebooks. OTEL is listed
+and **never probed**: telemetry is never a readiness dependency. A draining
+replica is not ready.
+
+Each probe is bounded at three seconds, so a hung dependency is reported as one
+rather than hanging the kubelet's probe with it.
+
+:::note The readiness probe still calls `healthz`
+
+The chart's `jupyterMcpServer.readinessPath` is `/api/mcp/healthz`, so
+Kubernetes acts on liveness for both probes and the dependency gating above is
+only what you see when you query `readyz` yourself. Point the value at the
+readiness route to make the cluster act on it:
+
+```yaml
+# values.yaml of the datalayer-jupyter-mcp-server chart
+jupyterMcpServer:
+  readinessPath: /api/mcp/readyz
+```
+:::
+
+A configuration mistake is one log line at the top of the log, not a permission
+error an hour later: a malformed URL is fatal and the process refuses to start
+naming the setting; a missing one is an error line and a readiness report.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DATALAYER_JUPYTER_MCP_SERVER_URL` | The resource identifier of this gateway: what a token's `aud` must name, what the protected-resource metadata publishes, and what the ingress host is derived from — so the host and the audience cannot drift apart. Default `https://mcp.datalayer.run/mcp` |
+| `DATALAYER_JUPYTER_MCP_VERIFY_AUDIENCE` | Refuse a token issued for another resource; default `true`. Turning it off is for a local run against a token minted before the resource URL was settled, never for a deployment |
+| `DATALAYER_IAM_URL` | The authorization server: token verification metadata, the RFC 8693 exchange, and the readiness probe. Required |
+| `DATALAYER_IAM_API_KEY` | Proves to IAM that this is a Datalayer service, which is what lets it exchange a caller's gateway token for one the rest of the platform accepts. Without it, OAuth callers reach nothing. `DATALAYER_OPERATOR_API_KEY` is accepted as a fallback. Supply it through a Kubernetes Secret |
+| `DATALAYER_SPACER_URL` | Where notebooks and their permissions live; defaults to `DATALAYER_IAM_URL` |
+| `DATALAYER_RUNTIMES_URL` | Where a sandbox is asked for. Provider-neutral: the same URL launches an internal runtime or an external one, and the gateway never sees which SDK is behind it. Defaults to `DATALAYER_IAM_URL` |
+| `DATALAYER_CONTENTS_URL` | Where Contents runs — the runtimes plane, at its own public URL (`https://r1.datalayer.run`). No fallback, and a value equal to `DATALAYER_IAM_URL` is reported as a misconfiguration: a gateway that does not know where Contents is has no Contents, and readiness says so |
+| `DATALAYER_AI_AGENTS_URL` | Where activity events are posted, so what an agent does appears in the feed; defaults to `DATALAYER_IAM_URL`. Every post is best-effort and off the request path |
+| `DATALAYER_MCP_STORE` | `solr` in a deployment, `memory` for a single local process. Unset, Solr is used when `DATALAYER_SOLR_ZK_HOST` is set and memory otherwise. Any other value refuses to start |
+| `DATALAYER_SOLR_ZK_HOST` | The ZooKeeper ensemble the `mcp-gateway` DAO connects through |
+| `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | The Solr identity, supplied through Kubernetes Secrets |
+| `DATALAYER_MCP_MAX_WORKERS` | The most worker processes one replica runs at once; default `50`. Reached, the least recently used idle worker without a working task is stopped to make room, and a caller who cannot be given one is refused `503` with the reason. This is the density limit of a replica — capacity is added by adding pods, not by a bigger pod |
+| `DATALAYER_MCP_WORKER_IDLE_TIMEOUT` | How long a worker may sit unused before it is reclaimed; default `900` seconds. A worker whose session has a task `working` is never idle |
+| `DATALAYER_MCP_WORKER_START_TIMEOUT` | How long to wait for a new worker to answer before giving up on it and quoting its last output; default `30` seconds |
+| `DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` | How long a worker-directory entry lives after its last heartbeat; default `180`. A replica that is gone stops refreshing, its entries expire, and the caller gets a fresh worker rather than a dead address |
+| `DATALAYER_MCP_REPLICA_ADDRESS` | The address other replicas forward to. Defaults to `http://$POD_IP:4404`, or loopback when `POD_IP` is unset — see [the warning above](#no-affinity-at-the-edge) |
+| `DATALAYER_MCP_BINDING_TTL_SECONDS` | How long a handle lives after it was last used, refreshed on every use; default `86400` |
+| `DATALAYER_MCP_CALLS_PER_MINUTE_PER_USER` | Tool calls one user may make in a minute; default `300`, `0` no limit. The refusal is a JSON-RPC error carrying `retry_after_ms`, and the windows live in `mcp-gateway` so the limit means the same thing however many pods answer |
+| `DATALAYER_MCP_CALLS_PER_MINUTE_PER_AGENT` | The same, per `client_id`; default `120` |
+| `DATALAYER_MCP_DEPENDENCY_TIMEOUT` | How long a call to a platform dependency may take before it is a timeout; default `10` seconds |
+| `DATALAYER_SANDBOX_ENVIRONMENT` | The Datalayer environment a sandbox is launched into; default `ai-agents-env`. Set it where a cluster offers different ones, such as a GPU environment — the environments differ per cluster, and picking one that does not exist fails at the first cell rather than at startup |
+| `JUPYTER_MCP_TOKEN_VERIFIER_CLASS` | How the worker authenticates clients; `datalayer_jupyter_mcp_server.verifier:DatalayerTokenVerifier`, which accepts OAuth access tokens and personal access tokens |
+| `DATALAYER_CORS_ORIGIN` | The browser origin allowed on the REST routes; default `*` |
+| `PORT` | The port uvicorn listens on inside the pod; default `4404`, and what the chart's `jupyterMcpServer.port` must agree with |
+| `LOG_LEVEL` | Accepted in either spelling; an unknown value falls back to `INFO` rather than stopping the service |
+| `DATALAYER_MCP_LOG_COLOR` | Whether the request log is coloured; default `true`, and `NO_COLOR` turns it off |
+| standard `DATALAYER_JWT_*` variables | `DATALAYER_JWT_SECRET`, `_ALGORITHM`, `_ISSUER`, `_CACHE_VALIDATE` — token verification, shared with IAM |
+| standard `OTEL_*` variables | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `_METRICS_ENDPOINT`, `_LOGS_ENDPOINT`, `DATALAYER_OTEL_API_KEY`, `OTEL_PYTHON_LOG_LEVEL`, `OTEL_SDK_DISABLED`. Validated and reported by health; see [Observability](#observability) for what is exported today |
+
+Do not place the IAM API key, the JWT secret or the Solr password in chart
+values. Use `jupyterMcpServer.envValueFrom` with Kubernetes Secret references.
+
+## Logs
+
+```bash
+plane logs datalayer-jupyter-mcp-server
+kubectl logs -n datalayer-api -l app=jupyter-mcp-server -f
+```
+
+The gateway logs one line per proxied call, naming the user and the agent that
+asked — a person may have several connected, and both matter when reading back
+why something was refused — plus a `⇢` line whenever a request is forwarded to
+another replica, and the reason for every refusal. A worker's stdout is relayed
+into the gateway's log as it arrives, with the last two hundred lines kept so
+that a worker which dies has its explanation quoted in the death message. The
+startup banner names the resource URL, the replica, where notebooks, sandboxes
+and Contents are, which store is in use and where telemetry is addressed.
+
+Log lines do not carry `trace_id` or a task id yet: the correlated structured
+logging of the plan is not implemented.
+
+## Observability
+
+The chart addresses the [OTEL collector](/services/system/otel/) with the
+standard `OTEL_*` variables, and the metric catalog is declared in one place —
+`datalayer_jupyter_mcp_server/telemetry.py` — with deliberately bounded labels:
+a tool, an outcome, a dependency, a refusal reason. A user, an agent, an
+organization or a sandbox is **never** a metric label; those belong in
+access-controlled spans and in the audit rows.
+
+| Instrument | Kind | Labels | What it says |
+| --- | --- | --- | --- |
+| `mcp.calls` | counter | `tool`, `outcome` | Declared, **not written yet** |
+| `mcp.refusals` | counter | `reason` — `scope`, `item`, `attribution_failed`, `header_body_mismatch`, `access_check_failed`, `unknown_handle`, `sandbox_lost`, `runtimes_unavailable`, `rate_limited:user`, `rate_limited:agent` | Calls refused before they reached a worker |
+| `mcp.workers` | gauge | `state=running` | Worker processes on this replica, set on every directory heartbeat |
+| `mcp.worker_start_seconds` | histogram | `provider=process` | How long a worker took to answer after being started |
+| `mcp.forwards` | counter | `outcome` (`ok`, `unreachable`) | Requests forwarded to another replica |
+| `mcp.dependency.duration` | histogram | `dependency` (`iam`, `store`, `spacer`, `runtimes`, `contents`), `outcome` | How long one call to a dependency took |
+| `mcp.dependency.timeouts` | counter | `dependency` | Calls to a dependency that ran out of time |
+| `mcp.readiness.failures` | counter | `dependency` | Readiness probes that found a required dependency down |
+| `mcp.sandbox.lost` | counter | `provider`, `then` (`reported`, `relaunched`) | Sessions whose sandbox was found gone |
+
+:::warning Nothing is exported yet
+
+The gateway does not install an OpenTelemetry SDK provider — it neither calls
+`datalayer_common.instrumentation.instrument` as the other services do, nor runs
+under `opentelemetry-instrument`. The instruments above are therefore created
+against the global no-op meter and degrade to nothing: no metric, span or log
+record reaches the collector, and the gateway sets no `service.name`. The
+OTLP endpoints are configured, validated and reported by `readyz` so the
+addressing is right the day the provider is installed. Until then, read the
+gateway through its logs, `readyz` and `GET /api/mcp/v1/operations/workers`.
+:::
+
+Also not implemented: spans of any kind, `traceparent` continuation from the
+client's `_meta`, and the call-duration, binding, task, workflow, sandbox-launch
+and audit-write-failure instruments of the plan's catalog. There are no MCP
+dashboards or alert rules on the OTEL service, and no `PrometheusRule` in this
+chart — a gateway outage is caught today by the ordinary Kubernetes deployment
+and ingress alerts, not by an MCP-specific one.
+
+## What is not here yet
+
+Named plainly, because an operator reading a route should know what stands
+behind it:
+
+- **Durable runs.** `/api/mcp/v1/executions/*` is served by an in-process
+  registry, no tool returns an execution id, and `mcp-tasks` is unwritten. A run
+  does not survive the pod, which is why the shutdown drain ends the executions
+  on it.
+- **Audit.** `mcp-audit` is created and backed up; no row is written and no
+  `/api/mcp/v1/audit` route is served.
+- **Telemetry export.** As above.
+- **`server/discover`, activity and the organization overview.** Not served.
+- **The load test** that would state a per-replica capacity is not in the
+  repository, so the numbers behind the HPA targets are unmeasured.
+
+`datalayer mcp trace`, `datalayer mcp metrics`, `datalayer mcp logs` and
+`datalayer mcp audit` exist in the CLI and will report nothing until the routes
+and the exporter above are in place; `datalayer mcp bindings`, `datalayer mcp
+agents` and `datalayer mcp setup` work today.
+
+## Test after a deploy
+
+```bash
+# The gateway, its dependencies and its store
+curl -s https://mcp.datalayer.run/api/mcp/version
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '.dependencies[] | {name, required, ready}'
+curl -s https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp | jq
+curl -i -s https://mcp.datalayer.run/mcp | grep -i www-authenticate
+# Scaling: two replicas, a budget, a spread
+kubectl get deployment,hpa,pdb -n datalayer-api -l app=jupyter-mcp-server
+kubectl get pods -n datalayer-api -l app=jupyter-mcp-server -o wide   # on different nodes
+# As a user
+datalayer mcp setup claude-code                # writes the client configuration
+datalayer mcp bindings list                    # the handles you hold, sandboxes included
+# As a platform administrator
+curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  https://mcp.datalayer.run/api/mcp/v1/operations/workers | jq '.items[] | {replica, user_uid}'
+```
+
+Then connect a real client and run one tool: `claude mcp add datalayer
+--transport http https://mcp.datalayer.run/mcp`, authenticate through the
+browser flow, and ask it to list your notebooks. A `401` that carries
+`WWW-Authenticate`, a consent screen, and a tool result is the whole
+authentication path exercised end to end.
+
+## Tear down
 
 ```bash
 plane down datalayer-jupyter-mcp-server
 ```
 
-## Notes
+Removing the release removes the Deployment, Service, Ingress, HPA, PDB and the
+`mcp.datalayer.run` Certificate. It does **not** delete the `mcp-gateway`,
+`mcp-tasks` or `mcp-audit` collections, their Solr backups, the OAuth grants
+IAM holds for the clients that connected, or any sandbox a session left running.
 
-The execution registry is currently in memory, so a single replica is
-expected: outputs do not yet survive a pod restart. Scaling out and surviving
-restarts is the durable-execution workstream.
+Before tearing down a cluster that agents are connected to:
+
+- terminate the live sessions, or let their reservations expire — a sandbox
+  outlives the gateway, and the binding that named it goes with the release;
+- keep the `mcp` backup unit if the audit trail matters, and follow
+  [Continuity](/operations/continuity/) rather than deleting collections;
+- revoke the OAuth grants in IAM if the endpoint is not coming back, so a
+  client is refused rather than left retrying against a host that no longer
+  resolves.
 
 ## OpenAPI Specification
 

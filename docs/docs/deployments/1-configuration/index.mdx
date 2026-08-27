@@ -367,6 +367,45 @@ TOKEN=$(python -c "import secrets; print(secrets.token_hex(32))")
 
 :::
 
+## Jupyter MCP Server gateway settings
+
+The [Jupyter MCP Server](/services/jupyter-mcp-server/) gateway reads the
+standard IAM JWT, Solr and OpenTelemetry settings above, plus the following.
+Only `DATALAYER_JUPYTER_MCP_SERVER_URL` and the URLs of its dependencies are
+normally exported for a deployment; the rest are chart values with working
+defaults. Supply `DATALAYER_IAM_API_KEY`, `DATALAYER_JWT_SECRET` and the Solr
+password through Kubernetes Secrets (`jupyterMcpServer.envValueFrom`), never in
+Helm values.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DATALAYER_JUPYTER_MCP_SERVER_URL` | `https://mcp.datalayer.run/mcp` | The resource identifier of the gateway: what a token's `aud` must name, what the RFC 9728 protected-resource metadata publishes, and what the ingress host is derived from. IAM must be deployed with the same value, since it stamps it into the audience of every OAuth token |
+| `DATALAYER_JUPYTER_MCP_VERIFY_AUDIENCE` | `true` | Refuse a token issued for another resource. Off only for a local run against a token minted before the resource URL was settled |
+| `DATALAYER_IAM_URL` | – | The authorization server. Required; gates readiness |
+| `DATALAYER_IAM_API_KEY` | – | Proves to IAM that the gateway is a Datalayer service, which is what lets it exchange a caller's gateway token (RFC 8693) for one the rest of the platform accepts. Without it, OAuth callers reach nothing. `DATALAYER_OPERATOR_API_KEY` is accepted as a fallback |
+| `DATALAYER_SPACER_URL` | `DATALAYER_IAM_URL` | Where notebooks and their permissions live |
+| `DATALAYER_RUNTIMES_URL` | `DATALAYER_IAM_URL` | Where a sandbox is asked for; provider-neutral |
+| `DATALAYER_CONTENTS_URL` | – | Where Contents runs: the runtimes plane, at its own public URL (`https://r1.datalayer.run`), never an assumed same-cluster service name. No fallback, and a value equal to `DATALAYER_IAM_URL` is reported as a misconfiguration |
+| `DATALAYER_AI_AGENTS_URL` | `DATALAYER_IAM_URL` | Where the gateway posts best-effort activity events for the feed |
+| `DATALAYER_MCP_STORE` | Solr when `DATALAYER_SOLR_ZK_HOST` is set, else memory | Which store holds handles, the worker directory and rate windows. `solr` in a cluster; `memory` only for a single local process. Any other value refuses to start |
+| `DATALAYER_SANDBOX_ENVIRONMENT` | `ai-agents-env` | The Datalayer environment a sandbox is launched into. Set it where a cluster offers different ones, such as a GPU environment |
+| `DATALAYER_MCP_MAX_WORKERS` | `50` | The most per-user worker processes one replica runs at once — the density limit of a replica. Capacity is added by adding pods |
+| `DATALAYER_MCP_WORKER_IDLE_TIMEOUT` | `900` | Seconds a worker may sit unused before it is reclaimed. A worker whose session has a task working is never idle |
+| `DATALAYER_MCP_WORKER_START_TIMEOUT` | `30` | Seconds to wait for a new worker to answer before giving up and quoting its last output |
+| `DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` | `180` | Seconds a worker-directory entry lives after its last heartbeat, so a replica that is gone stops being forwarded to |
+| `DATALAYER_MCP_REPLICA_ADDRESS` | `http://$POD_IP:4404`, else loopback | The address other replicas forward to. Set this, or give the pod `POD_IP` through the downward API, or cross-replica forwarding never leaves the pod |
+| `DATALAYER_MCP_BINDING_TTL_SECONDS` | `86400` | Seconds a handle lives after it was last used; refreshed on every use |
+| `DATALAYER_MCP_CALLS_PER_MINUTE_PER_USER` | `300` | Tool calls one user may make in a minute; `0` no limit. Counted in Solr so the limit holds across replicas |
+| `DATALAYER_MCP_CALLS_PER_MINUTE_PER_AGENT` | `120` | The same, per OAuth `client_id` |
+| `DATALAYER_MCP_DEPENDENCY_TIMEOUT` | `10` | Seconds a call to a platform dependency may take before it is a timeout |
+| `JUPYTER_MCP_TOKEN_VERIFIER_CLASS` | `datalayer_jupyter_mcp_server.verifier:DatalayerTokenVerifier` | How the worker authenticates clients: Datalayer's own verifier, which accepts OAuth access tokens and personal access tokens |
+| `DATALAYER_MCP_LOG_COLOR` | `true` | Whether the request log is coloured; `NO_COLOR` also turns it off |
+| `PORT` | `4404` | The port the gateway listens on inside the pod; must agree with `jupyterMcpServer.port` |
+
+See [Datalayer Jupyter MCP Server](/services/jupyter-mcp-server/) for the
+scaling values, the drain and the three Solr collections the gateway owns, and
+[Continuity](/operations/continuity/) for the `mcp` recovery unit.
+
 ## Minimal Configuration
 
 The minimal setup for [IAM](/services/iam/), [Runtimes](/services/runtimes/), and [Operator](/services/operator/) is listed here with example values.

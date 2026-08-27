@@ -13,7 +13,7 @@ Use it as your service map before running Plane deployment commands.
 Services are grouped in three layers:
 
 1. System services: cluster foundations such as ingress, certificates, storage and observability.
-2. Core services: IAM, operator, runtimes, spacer, contents, library, AI agents, functions, scheduler, spider, manager, status.
+2. Core services: IAM, operator, runtimes, spacer, contents, library, AI agents, Jupyter MCP Server, functions, scheduler, spider, manager, status.
 3. Optional and addons: extra capabilities you enable depending on your use case.
 
 ## Recommended First Deployment Order
@@ -31,6 +31,7 @@ Services are grouped in three layers:
 	- [Datalayer Spacer](/services/spacer/)
 	- [Datalayer Contents](/services/contents/)
 	- [Datalayer Library](/services/library/)
+	- [Datalayer Jupyter MCP Server](/services/jupyter-mcp-server/) — the hosted MCP endpoint agents connect to; deploy it after IAM, Spacer, Runtimes and Contents
 3. Optional Services and Addons:
 	- [Addons](/services/addons/)
 
