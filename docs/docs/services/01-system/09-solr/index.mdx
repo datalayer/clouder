@@ -247,7 +247,7 @@ kubectl describe pods -n datalayer-solr | grep Node
 
 Solr collections are organized into two sets that can be initialized independently.
 
-### Core Collections (21)
+### Core Collections (24)
 
 Platform collections used by the main Datalayer services:
 
@@ -274,8 +274,16 @@ Platform collections used by the main Datalayer services:
 | `success` | Success tracking |
 | `tool-approvals` | Tool approval requests and decision state |
 | `usage` | Platform usage metrics |
+| `mcp-gateway` | Jupyter MCP Server handles (notebook, toolset and sandbox bindings), the worker directory, rate windows and fired alerts |
+| `mcp-tasks` | Jupyter MCP Server task projection (`mcp_task` roots, bounded `mcp_task_output` children) |
+| `mcp-audit` | Immutable Jupyter MCP Server audit events, one per call and decision |
 
 Note: The `notifications` collection stores user-facing notifications, while `events` stores lifecycle and system events.
+
+The three `mcp-*` collections belong to the **Core** set because the Jupyter
+MCP Server gateway is deployed on the platform plane; together they form the
+`mcp` recovery scope (backup resource `datalayer-solr-mcp-backups`), the way
+the four Contents collections form the `contents` scope on the Runtimes set.
 
 ### Runtimes Collections (8)
 
@@ -294,8 +302,10 @@ Volumes:
 | `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
 | `content-audit` | Immutable Contents audit and provenance events |
 
-The inventory is 21 Core plus 8 Runtimes collections, 29 in total. Always
-verify the arrays and manifests rather than relying on these numbers alone.
+The inventory is 24 Core plus 8 Runtimes collections, 32 in total. Always
+verify the arrays and manifests rather than relying on these numbers alone
+(`scripts/check_solr_collections_parity.py` in the Services repository asserts
+them against both canonical lists).
 
 All four Contents collections — `contents`, `content-objects`,
 `content-operations` and `content-audit` — belong to the **Runtimes** set, and
@@ -350,9 +360,9 @@ The `solr-init` script prompts which collection set to create. This is useful wh
 ```bash
 plane solr-init
 # Select:
-#   1) Core       - Platform collections (21 collections)
+#   1) Core       - Platform collections (24 collections, the three mcp-* included)
 #   2) Runtimes   - Runtimes collections (8 collections, Contents included)
-#   3) All        - All collections (29 collections)
+#   3) All        - All collections (32 collections)
 #
 # The init pod is created, logs are streamed, and the pod is auto-cleaned.
 ```
@@ -391,7 +401,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
+for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -406,15 +416,16 @@ done
 
 Solr collections are backed up to an AWS S3 bucket using the Solr Operator [`SolrBackup`](https://solr.apache.org/operator/articles/solr-backup.html) CRD. The backup relies on the `s3` repository configured in the `SolrCloud` spec (see [Datalayer Solr Cluster](#datalayer-solr-cluster) above).
 
-Four backup definitions are available. Contents has a distinct resource name
-so its coordinated schedule can run beside the full backup:
+Five backup definitions are available. Contents and MCP have distinct
+resource names so their coordinated schedules can run beside the full backup:
 
 | File | Scope | CR Name |
 |------|-------|---------|
-| `datalayer-backup-s3.yaml` | All 29 collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-core.yaml` | 21 Core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3.yaml` | All 32 collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-core.yaml` | 24 Core collections, the three `mcp-*` ones included | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-runtimes.yaml` | 8 Runtimes collections, the four Contents ones included | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
+| `datalayer-backup-s3-mcp.yaml` | 3 Jupyter MCP Server collections | `datalayer-solr-mcp-backups` |
 
 All backups run every 10 minutes and retain up to 200 snapshots.
 

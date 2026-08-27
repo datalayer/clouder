@@ -96,9 +96,11 @@ platform backup without replacing it.
 ```bash
 # Apply the coordinated four-collection schedule.
 plane solr-backups-apply contents
+plane solr-backups-apply mcp      # the Jupyter MCP Server recovery unit
 
 # Inspect the resource and its per-collection results.
 plane solr-backups-status contents
+plane solr-backups-status mcp
 kubectl describe solrbackup datalayer-solr-contents-backups \
   -n datalayer-solr
 
@@ -178,3 +180,30 @@ a separate, audited lifecycle operation.
 object-store and Vault recovery points cannot be aligned.
 
 :::
+
+## The Jupyter MCP Server recovery unit (`mcp`)
+
+The three `mcp-*` collections of the Core set — `mcp-gateway` (handles, the
+worker directory, rate windows, fired alerts), `mcp-tasks` (the task
+projection) and `mcp-audit` (the append-only audit trail) — are one recovery
+unit, the `mcp` scope: `plane solr-backups-apply mcp` creates the distinct
+`datalayer-solr-mcp-backups` resource beside the complete schedule,
+`plane solr-backups-status mcp`, `plane solr-restore mcp`,
+`plane solr-restore-status mcp` and `plane solr-backups-clean-tasks mcp`
+operate on it. What each holds after a restore:
+
+- `mcp-gateway` is hot, short-lived state: a restored copy is at most a few
+  minutes stale, and every record in it expires or is refreshed on use — a
+  handle a client presents that the restore does not know is answered as
+  unknown and the client re-binds; nothing is lost that a reconnect does not
+  rebuild.
+- `mcp-tasks` is a projection: the workflow engine (`datalayer-durable`) is
+  the authority for open runs, and the gateway's startup reconciler repairs
+  the projection from the engine's workflow listing after a restore.
+- `mcp-audit` is the record: append-only, kept for the organization's
+  retention, exported to a SIEM by the forwarder when one is configured. A
+  restore that loses audit rows must be recorded as such; nothing recreates
+  them.
+
+Restore the unit as a whole, in that order of trust: audit first (it cannot
+be rebuilt), then tasks (reconciled), then gateway (rebuilt by use).
