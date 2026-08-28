@@ -97,6 +97,43 @@ curl -sSfL \
 
 The memory cluster hosts the `mem0` database owned by the `mem0` role, with the `vector` (pgvector) extension enabled at bootstrap. The operator automatically generates a connection secret named `datalayer-postgresql-agent-memories-app`.
 
+## Datalayer PostgreSQL DBOS Cluster
+
+A second cluster on the same operator and the same operand image — not a
+second operator. It holds the state of the durable execution service and of
+`agent-runtimes`:
+
+| Database | Owner | Holds |
+| --- | --- | --- |
+| `dbos_durable` | `datalayer-durable` workers | Every workflow, every step's recorded result, every queue |
+| `dbos_agents` | `agent-runtimes` | Its own durable state, reached through `DBOS_DATABASE_URL` injected by the Operator |
+
+```bash
+plane postgresql-dbos-create
+plane postgresql-dbos-status
+```
+
+Three instances, because losing one instance must lose no workflow: a durable
+engine on a single-instance database is durable exactly until that instance
+moves. `max_connections` is set above the sum of the durable queues'
+concurrencies, with room for a rolling upgrade running two versions at once.
+
+`postgresql-dbos-create` will not apply over an existing cluster. For the
+memory cluster a re-apply is an update; this one holds work that is in
+flight, so it points at `-status` and leaves the decision to you.
+
+Neither command prints the connection string. It is what `DBOS_DATABASE_URL`
+is built from, and a password echoed into a terminal is a password in a
+scrollback buffer:
+
+```bash
+kubectl get secret datalayer-postgresql-dbos-app -n datalayer-postgresql
+```
+
+Unlike a cache, this cluster is the record of what work is in flight.
+Restoring it late does not mean stale data — it means replaying workflows
+that already finished. See [Durable](/services/durable/).
+
 ## Operator and Runtime Wiring
 
 `datalayer-operator` (running in `datalayer-runtimes`) reads PostgreSQL memory

@@ -1,0 +1,150 @@
+# Durable
+
+Workflows that outlive the process that started them.
+
+A ten-minute cell, a sandbox's whole life, a Contents query, an approval
+waiting on a person: each is work that must survive the pod that began it. A
+gateway pod replaced mid-cell would otherwise take the cell with it, and the
+only sign would be a task that says `working` forever.
+
+`datalayer-durable` owns that work. The Jupyter MCP Server gateway asks it to
+start, describe, signal and cancel; a client never talks to it and sees the
+result through `mcp-tasks`.
+
+## The engine is a value
+
+`engine: dbos` is what is deployed. There is no server: each worker process
+runs the `dbos` runtime against one PostgreSQL database, recovers whatever was
+pending when it starts, and takes work from a queue. One Deployment per queue
+and one database is the whole of it.
+
+`engine: temporal` is planned and is a *value* of the same chart rather than a
+second service — a Temporal server, two databases, a UI and mTLS, selected by
+changing one setting. The value exists before the second engine does so that
+adding it is a configuration change and not a fork.
+
+## Where it runs, and what it talks to
+
+On the **runtimes plane**, beside the runtimes whose sessions its workflows
+execute in. The gateway is on the platform plane and calls it across planes at
+`DATALAYER_DURABLE_URL` — a public URL, never an in-cluster name, because the
+two are not guaranteed to share a cluster and a name that resolves in one
+works right up until they do not.
+
+It asks the control plane for things and waits on what it reports. It holds no
+Kubernetes permission and no provider SDK, so a workflow can never race the
+Operator for the same pod.
+
+A step carries **no user credential**. It acts with this service's own
+identity on a task that was authorized when it was created: a person's token
+sitting in a workflow history — replayed, inspected, kept — is a token that
+outlives every reason it was issued for.
+
+## The queues
+
+One Deployment per queue, because the queues are how a long run is stopped
+from starving a short one. A ten-minute notebook run and an approval that
+takes milliseconds do not belong in the same line.
+
+| Queue | Runs | Why it is its own |
+| --- | --- | --- |
+| `notebook` | `NotebookRunWorkflow` | Long, and holds a worker while it runs |
+| `sandbox` | `SandboxWorkflow` | A sandbox's life: reserve, launch, expire, terminate |
+| `contents` | `ContentsOperationWorkflow` | Transfers and queries, mirrored as tasks |
+| `approval` | `ApprovalWorkflow` | Waits on people; costs nothing while waiting, so its concurrency is high |
+
+## Deploy
+
+The cluster first. The workers refuse to start without it, deliberately: a
+worker whose state is not in PostgreSQL is not durable, and one that looked
+healthy while losing every workflow at the next rollout would be worse than
+none.
+
+```bash
+plane postgresql-dbos-create
+plane postgresql-dbos-status
+```
+
+That creates `datalayer-postgresql-dbos` on the existing CloudNativePG
+operator — three instances, so losing one loses no workflow — holding two
+databases:
+
+| Database | Owner | Holds |
+| --- | --- | --- |
+| `dbos_durable` | the durable workers | Every workflow, every step's recorded result, every queue |
+| `dbos_agents` | agent-runtimes | Its own durable state, through `DBOS_DATABASE_URL` injected by the Operator |
+
+Then the workers:
+
+```bash
+export DBOS_DATABASE_URL=...   # built from the cluster's application secret
+plane up datalayer-durable
+```
+
+`plane up` refuses without `DBOS_DATABASE_URL` and says to create the cluster
+first. Neither command prints the connection string: it is a password, and a
+password echoed into a terminal is a password in a scrollback buffer.
+
+```bash
+kubectl get secret datalayer-postgresql-dbos-app -n datalayer-postgresql
+```
+
+Finally, tell the gateway where it is — `DATALAYER_DURABLE_URL` in the gateway
+chart, passed by `up.sh`. Left empty the gateway falls back to an in-process
+fake that reports `durable: false`. That is correct for a cluster which has
+not deployed this service, and the thing not to mistake for one that has.
+
+## Health and readiness
+
+| Route | Answers |
+| --- | --- |
+| `/api/durable/healthz` | The process is up. Nothing else is claimed |
+| `/api/durable/readyz` | Whether work may be sent here — and **which part** is not answering |
+
+Three parts, reported apart: this frontend, the database behind the engine,
+and the workers that take from the queues. One unhealthy service with no
+detail has an operator restarting the wrong thing.
+
+```bash
+curl -s https://r1.datalayer.run/api/durable/readyz | jq '.parts'
+```
+
+:::warning Give the probe longer than the endpoint takes
+`readyz` asks the engine about its database, so it is not instantaneous.
+Kubernetes' default `timeoutSeconds` is **1**, and a probe cut off before the
+endpoint can answer leaves a healthy process at `0/1` forever with
+`no available server` at the ingress. The chart states `5`. This is not
+hypothetical — it is exactly what happened to the MCP gateway.
+:::
+
+## The admin endpoints
+
+DBOS exposes list, cancel, resume and fork on port **4407**. That port is on
+the container and deliberately **not** on the Service: those endpoints change
+workflows without passing the API's authentication, and a Service for them is
+a way into the engine that goes around it.
+
+Reach them by exec, when you mean to:
+
+```bash
+kubectl -n datalayer-api exec deploy/datalayer-durable-notebook -- \
+  curl -s localhost:4407/workflows
+```
+
+## Upgrades
+
+`DBOS_APPLICATION_VERSION` comes from the chart's `appVersion`. A worker only
+takes workflows of a version it can run, so a workflow started before an
+upgrade finishes on a worker that still matches its history rather than being
+replayed by code that no longer does. Roll workers freely; let the old
+version's workers drain rather than deleting them.
+
+## Tear down
+
+```bash
+plane down datalayer-durable
+```
+
+The workers go and the workflows do not — they are in PostgreSQL, and a worker
+of the same version picks them up when it starts. Deleting the cluster is a
+separate and deliberate act, because it is the only copy of what is in flight.
