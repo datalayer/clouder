@@ -106,7 +106,8 @@ service refuses a token naming anything else.
 | Readiness | `GET /api/mcp/readyz` | None. `200` ready, `503` not; the body reports every dependency on its own line |
 | Version | `GET /api/mcp/version` | None |
 | Handles | `GET /api/mcp/v1/bindings`, `DELETE /api/mcp/v1/bindings/{uid}` | The caller's own token. A `DELETE` of an `sb_…` handle needs `code:execute` and terminates the sandbox through Runtimes |
-| Notebook tasks | `GET /api/mcp/v1/notebooks/{uid}/tasks` | `notebooks:read` plus the item check; answers empty until the durable task store lands |
+| Notebook tasks | `GET /api/mcp/v1/notebooks/{uid}/tasks` | `notebooks:read` plus the item check. Reads `mcp-tasks`, so every replica answers the same |
+| Tasks | `GET /api/mcp/v1/tasks` | `notebooks:read`, scoped to the caller. `?org=` widens it to the organization, decided by the same rule as the audit. Open tasks only — a finished one is the audit's |
 | Executions | `GET /api/mcp/v1/executions/{id}`, `POST …/cancel`, `GET /api/mcp/v1/notebooks/{id}/executions` | `notebooks:read` / `code:execute` plus the item check. The registry behind them is per process — see [What is not here yet](#what-is-not-here-yet) |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
 | OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
