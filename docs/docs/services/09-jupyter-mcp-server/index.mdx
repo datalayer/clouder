@@ -108,7 +108,8 @@ service refuses a token naming anything else.
 | Handles | `GET /api/mcp/v1/bindings`, `DELETE /api/mcp/v1/bindings/{uid}` | The caller's own token. A `DELETE` of an `sb_…` handle needs `code:execute` and terminates the sandbox through Runtimes |
 | Notebook tasks | `GET /api/mcp/v1/notebooks/{uid}/tasks` | `notebooks:read` plus the item check. Reads `mcp-tasks`, so every replica answers the same |
 | Tasks | `GET /api/mcp/v1/tasks` | `notebooks:read`, scoped to the caller. `?org=` widens it to the organization, decided by the same rule as the audit. Open tasks only — a finished one is the audit's |
-| Executions | `GET /api/mcp/v1/executions/{id}`, `POST …/cancel`, `GET /api/mcp/v1/notebooks/{id}/executions` | `notebooks:read` / `code:execute` plus the item check. The registry behind them is per process — see [What is not here yet](#what-is-not-here-yet) |
+| One task | `GET /api/mcp/v1/tasks/{uid}`, `DELETE …` to cancel, `POST …/input` to answer one waiting on a person, `GET …/events` for its changes as server-sent events | `notebooks:read` to read, `code:execute` to cancel or answer. A task that is not yours is `404` rather than `403`: saying it exists but is not yours is saying it exists |
+| Policy | `GET /api/mcp/v1/policy` | The caller's own effective policy, rule by rule, with the layer that decided each — platform, organization, team or personal. `?org=` widens it by the same rule as the audit |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
 | OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
 
@@ -663,21 +664,42 @@ and ingress alerts, not by an MCP-specific one.
 Named plainly, because an operator reading a route should know what stands
 behind it:
 
-- **Durable runs.** `/api/mcp/v1/executions/*` is served by an in-process
-  registry, no tool returns an execution id, and `mcp-tasks` is unwritten. A run
-  does not survive the pod, which is why the shutdown drain ends the executions
-  on it.
-- **Audit.** `mcp-audit` is created and backed up; no row is written and no
-  `/api/mcp/v1/audit` route is served.
-- **Telemetry export.** As above.
-- **`server/discover`, activity and the organization overview.** Not served.
+- **Durable runs.** `mcp-tasks` is read and `/api/mcp/v1/tasks/*` is served,
+  but the engine that *creates* tasks — `datalayer-durable` — is deployed
+  separately and is not required. Without it the gateway falls back to an
+  in-process workflow backend that reports `durable: false`, and a run does
+  not survive the pod. `GET /api/mcp/v1/operations/workflows` says which you
+  have; do not read an empty task list as "nothing is running" until it says
+  `durable: true`.
+- **The organization and personal policy layers.** `/api/mcp/v1/policy`
+  answers, and the platform layer in it is real — the tool table narrowed by
+  the token's scopes, which is what decides every refusal the gateway makes
+  today. The organization, team and personal layers are fetched from IAM and
+  are empty until IAM serves them, so the page shows "Datalayer default"
+  against every rule.
+- **Policy enforcement beyond scopes.** The layers are *reported* and not yet
+  *enforced*: a client allowlist, a DPoP requirement or a per-minute cap in an
+  organization's policy is visible on the Policies page and does not stop a
+  call.
+- **Audit forwarding.** `siem.py` delivers to a webhook or an object store,
+  signed and retried, and the retention sweep is written — but neither is
+  wired to a schedule yet, so nothing runs them.
+- **Alert rules.** The evaluator is here; `McpAlertRule` is an IAM setting
+  that does not exist yet, so there is nothing for it to evaluate.
 - **The load test** that would state a per-replica capacity is not in the
   repository, so the numbers behind the HPA targets are unmeasured.
 
-`datalayer mcp trace`, `datalayer mcp metrics`, `datalayer mcp logs` and
-`datalayer mcp audit` exist in the CLI and will report nothing until the routes
-and the exporter above are in place; `datalayer mcp bindings`, `datalayer mcp
-agents` and `datalayer mcp setup` work today.
+`datalayer mcp bindings`, `datalayer mcp agents`, `datalayer mcp setup`,
+`datalayer mcp audit` and `datalayer mcp tasks` work today. `datalayer mcp
+trace`, `datalayer mcp metrics` and `datalayer mcp logs` report what the OTEL
+service holds, which is everything the gateway exports.
+
+:::note `/api/mcp/v1/executions/*` is gone
+It was an alias for the task routes while those were being built, backed by a
+per-process registry that lost its contents when a pod was replaced. Use
+`/api/mcp/v1/tasks/*`, which reads `mcp-tasks` and answers the same on every
+replica. Nothing hand-written called the alias.
+:::
 
 ## Test after a deploy
 
