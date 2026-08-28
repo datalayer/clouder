@@ -111,6 +111,7 @@ service refuses a token naming anything else.
 | One task | `GET /api/mcp/v1/tasks/{uid}`, `DELETE …` to cancel, `POST …/input` to answer one waiting on a person, `GET …/events` for its changes as server-sent events | `notebooks:read` to read, `code:execute` to cancel or answer. A task that is not yours is `404` rather than `403`: saying it exists but is not yours is saying it exists |
 | Policy | `GET /api/mcp/v1/policy` | The caller's own effective policy, rule by rule, with the layer that decided each — platform, organization, team or personal. `?org=` widens it by the same rule as the audit |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
+| Periodic work | `GET /api/mcp/v1/operations/jobs` | The `platform_admin` role. Answers for **the replica that happens to serve the request** — see [Periodic work](#periodic-work) before reading the numbers |
 | OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
 
 The ingress publishes on `mcp.datalayer.run`: the `/mcp`,
@@ -640,24 +641,68 @@ access-controlled spans and in the audit rows.
 | `mcp.readiness.failures` | counter | `dependency` | Readiness probes that found a required dependency down |
 | `mcp.sandbox.lost` | counter | `provider`, `then` (`reported`, `relaunched`) | Sessions whose sandbox was found gone |
 
-:::warning Nothing is exported yet
+:::info Exporting depends on one setting
 
-The gateway does not install an OpenTelemetry SDK provider — it neither calls
-`datalayer_common.instrumentation.instrument` as the other services do, nor runs
-under `opentelemetry-instrument`. The instruments above are therefore created
-against the global no-op meter and degrade to nothing: no metric, span or log
-record reaches the collector, and the gateway sets no `service.name`. The
-OTLP endpoints are configured, validated and reported by `readyz` so the
-addressing is right the day the provider is installed. Until then, read the
-gateway through its logs, `readyz` and `GET /api/mcp/v1/operations/workers`.
+`telemetry.start_exporting` installs the SDK providers through
+`datalayer_common.instrumentation.instrument`, which also brings the ASGI
+server span — so a client's `traceparent` is continued rather than replaced,
+and the calls to IAM, Spacer, Contents and Runtimes hang under the request
+that caused them. The gateway registers as `jupyter-mcp-server` and a worker's
+relayed lines as `jupyter-mcp-worker`, which is why the Instrumented Services
+list shows two.
+
+Without `OTEL_EXPORTER_OTLP_ENDPOINT` it exports nothing, on purpose: the
+SDK's default is `localhost:4317`, which in a deployment with no collector is
+a closed port the exporter would retry against forever on a background thread.
+It says so once at startup — `📡 Telemetry is not exported` — rather than
+retrying quietly. `OTEL_SDK_DISABLED=true` turns it off explicitly.
+
+Nothing here can stop the gateway. An unreachable collector, a missing SDK or
+a provider that raises is logged and the gateway serves without telemetry;
+telemetry is never a readiness dependency. Which does mean a misconfigured
+endpoint looks identical to a healthy one from outside, so check the startup
+line rather than assuming.
 :::
 
-Also not implemented: spans of any kind, `traceparent` continuation from the
-client's `_meta`, and the call-duration, binding, task, workflow, sandbox-launch
-and audit-write-failure instruments of the plan's catalog. There are no MCP
-dashboards or alert rules on the OTEL service, and no `PrometheusRule` in this
-chart — a gateway outage is caught today by the ordinary Kubernetes deployment
-and ingress alerts, not by an MCP-specific one.
+Still missing: the MCP dashboards and alert rules on the OTEL service, and a
+`PrometheusRule` in this chart. A gateway outage is caught today by the
+ordinary Kubernetes deployment and ingress alerts, not by an MCP-specific one.
+
+## Periodic work
+
+Some of what the gateway owes an organization has no caller: audit past its
+retention has to be deleted, and alert rules have to be evaluated. Every
+replica runs the scheduler, and a lease in `mcp-gateway` decides which one
+actually does each job.
+
+```
+curl -sH "Authorization: Bearer $DATALAYER_API_KEY" \
+  https://mcp.datalayer.run/api/mcp/v1/operations/jobs | jq
+```
+
+or `datalayer mcp jobs`.
+
+:::caution Read the counts per replica, never summed
+
+The answer is from **whichever replica served the request**, and its `skipped`
+is the ordinary outcome: only one replica holds a job's lease at a time, so
+every other replica skips every tick. A high `skipped` on one replica is the
+scheduler working exactly as designed.
+
+`skipped` climbing on *every* replica at once is the different thing worth
+finding — that is the lease store refusing everybody, and the jobs are not
+running anywhere. There is deliberately no aggregate view, because an
+aggregate is what would hide it.
+:::
+
+| Job | Every | What it does |
+| --- | --- | --- |
+| `audit-retention` | hour | Deletes `mcp-audit` rows past each organization's retention, never one an open export still holds. Registered only when Solr is configured — a deployment without it has no ledger to sweep, and the startup log says so |
+
+A job that fails is counted, named and left on its schedule; the lease is
+released either way, so one bad tick does not cost the next hour as well. A
+job that wedges is stopped after its timeout rather than holding the lease
+until the pod is replaced.
 
 ## What is not here yet
 
@@ -681,9 +726,17 @@ behind it:
   *enforced*: a client allowlist, a DPoP requirement or a per-minute cap in an
   organization's policy is visible on the Policies page and does not stop a
   call.
+- **The organizations retention sweeps.** The scheduler runs the sweep every
+  hour and it finds nothing to do: the gateway cannot yet ask IAM for the
+  organizations and their retention settings, so the list it walks is empty.
+  Deliberately empty rather than defaulted — sweeping every organization
+  under the platform's 90 days would delete an enterprise customer's audit
+  four years early because this service could not read what they are
+  entitled to.
 - **Audit forwarding.** `siem.py` delivers to a webhook or an object store,
-  signed and retried, and the retention sweep is written — but neither is
-  wired to a schedule yet, so nothing runs them.
+  signed and retried, and is not on the schedule: its destinations are an
+  organization setting IAM does not serve, so there is nowhere to deliver
+  to.
 - **Alert rules.** The evaluator is here; `McpAlertRule` is an IAM setting
   that does not exist yet, so there is nothing for it to evaluate.
 - **The load test** that would state a per-replica capacity is not in the
