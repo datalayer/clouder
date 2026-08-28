@@ -94,6 +94,39 @@ chart, passed by `up.sh`. Left empty the gateway falls back to an in-process
 fake that reports `durable: false`. That is correct for a cluster which has
 not deployed this service, and the thing not to mistake for one that has.
 
+## Local development
+
+```bash
+plane local --services durable
+```
+
+Port 9450, with `DATALAYER_DURABLE_URL` published so the gateway,
+`ai-agents` and the scheduler all reach the same one. Left unset, each falls
+back to its own in-process fake and they disagree about what is running.
+
+For the engine itself rather than the API, bring up the database:
+
+```bash
+cd $DATALAYER_SERVICES_HOME/durable
+make local-stack        # PostgreSQL 17 on 5433, dbos_durable + dbos_agents
+export DBOS_DATABASE_URL=postgresql://dbos:dbos@localhost:5433/dbos_durable
+make start
+```
+
+PostgreSQL on **5433** rather than 5432, so it cannot collide with one you
+already run. It is a real PostgreSQL and not SQLite on purpose: the service
+refuses a `sqlite://` URL, so a local stack on one would pass against
+something the deployment will not start on.
+
+```bash
+make test-local-stack   # the scenarios a fake cannot cover
+```
+
+Those skip loudly without the stack, naming the variable that would unlock
+them. The Temporal server and UI are in the same compose file behind a
+`temporal` profile, off by default — milestone 4's engine can be exercised as
+a value here before it is one in a cluster.
+
 ## Health and readiness
 
 | Route | Answers |
