@@ -17,6 +17,30 @@ For Contents, operate these recovery units together:
 | Credential references | Vault secret paths and policies | Vault snapshot and restore procedure |
 | Provider-owned data | External cloud storage and Dataservers | Provider backup policy; Datalayer only restores its references |
 
+For the AI services, two nested units:
+
+| Recovery unit | State | Protection |
+| --- | --- | --- |
+| AI plane | `ai-agents`, `evals`, `tool-approvals`, `mcp-gateway`, `mcp-tasks`, `mcp-audit` Solr collections | Dedicated recurring `SolrBackup` (`datalayer-solr-ai-backups`) |
+| Jupyter MCP Server | `mcp-gateway`, `mcp-tasks`, `mcp-audit` — a subset of the AI unit | Its own tighter `SolrBackup` (`datalayer-solr-mcp-backups`) |
+
+The `mcp` unit exists inside the `ai` one so the gateway can be recovered
+without the rest of the AI plane, and on a tighter schedule. Restoring `ai`
+restores the gateway too; restoring `mcp` leaves `ai-agents`, `evals` and
+`tool-approvals` where they were.
+
+What each gateway collection costs to lose differs, and the schedules follow:
+
+- **`mcp-audit`** is the one with no other copy. It is append-only, one row
+  per call and decision, and it is what an auditor reads. Its retention window
+  is reported by `GET /api/mcp/v1/audit` as `retention_days`; a restore older
+  than that window returns rows that have since aged out elsewhere.
+- **`mcp-gateway`** holds handles, the worker directory and rate windows —
+  short-lived records with their own TTLs. Losing it costs live sessions their
+  handles, which clients recover by calling `use_notebook` again. It is the
+  reason the `mcp` schedule is tight rather than the reason it exists.
+- **`mcp-tasks`** is a projection. It can be behind without being wrong.
+
 
 :::note What a Solr backup holds
 A backup captures the committed index, not the transaction log. Under the
@@ -96,10 +120,12 @@ platform backup without replacing it.
 ```bash
 # Apply the coordinated four-collection schedule.
 plane solr-backups-apply contents
-plane solr-backups-apply mcp      # the Jupyter MCP Server recovery unit
+plane solr-backups-apply ai       # the six AI collections
+plane solr-backups-apply mcp      # the gateway alone, inside the AI unit
 
 # Inspect the resource and its per-collection results.
 plane solr-backups-status contents
+plane solr-backups-status ai
 plane solr-backups-status mcp
 kubectl describe solrbackup datalayer-solr-contents-backups \
   -n datalayer-solr

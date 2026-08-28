@@ -99,6 +99,9 @@ service refuses a token naming anything else.
 | --- | --- | --- |
 | MCP | `POST /mcp` | An OAuth 2.1 access token whose `aud` is this gateway, or a personal access token. Refused before the body is read when the scope does not cover the call |
 | Protected-resource metadata | `GET /.well-known/oauth-protected-resource`, `…/oauth-protected-resource/mcp` | None. RFC 9728: the document belongs to the resource, and it is where a `401` from `/mcp` sends a client |
+| Server Card | `GET /.well-known/mcp-server` | None, deliberately. It is read *before* a client authenticates — it is what lets a registry list this server and a client decide whether authenticating is worth it |
+| Audit | `GET /api/mcp/v1/audit` | The caller's own rows; `organization_security_auditor` or owner for the organization's. Cursor-paged, with the retention window in `retention_days` |
+| Activity | `GET /api/mcp/v1/activity` | The caller's own token. What the home page's Running now grid reads: each client with its `last_call` (tool, item, time, decision, outcome) and its sandbox count |
 | Liveness | `GET /api/mcp/healthz` | None — the kubelet has no token |
 | Readiness | `GET /api/mcp/readyz` | None. `200` ready, `503` not; the body reports every dependency on its own line |
 | Version | `GET /api/mcp/version` | None |
@@ -108,9 +111,31 @@ service refuses a token naming anything else.
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
 | OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
 
-The ingress publishes exactly three prefixes on `mcp.datalayer.run`: `/mcp`,
-`/.well-known/oauth-protected-resource` and `/api/mcp`. Nothing else on the
-host is routed to this service.
+The ingress publishes on `mcp.datalayer.run`: the `/mcp`,
+`/.well-known/oauth-protected-resource` and `/api/mcp` prefixes, and the exact
+path `/.well-known/mcp-server`. Nothing else on the host is routed to this
+service.
+
+A route the app serves and the ingress does not publish is a route that does
+not exist from outside, and it fails as a `404` that looks like a missing
+feature rather than a missing rule — the Server Card was served correctly and
+unreachable for exactly that reason. When adding a `.well-known` document,
+add the ingress path in the same change.
+
+:::note The card needs the chart re-applied
+The `/.well-known/mcp-server` path was added to the ingress on 2026-08-28. A
+deployment created before that serves the card in-pod and answers `404` on the
+host until `p reup datalayer-jupyter-mcp-server` applies the new rule. Check
+which you have by comparing the two:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://mcp.datalayer.run/.well-known/mcp-server
+kubectl -n datalayer-api exec deploy/datalayer-jupyter-mcp-server -- \
+  curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4404/.well-known/mcp-server
+```
+
+`404` outside and `200` inside is the missing ingress rule, not a missing card.
+:::
 
 ### The two credentials
 
@@ -181,16 +206,17 @@ user want to see, with why.
 
 ## What it stores
 
-Three Solr collections belong to this service, all in the **Core** set because
-the gateway runs on the platform plane, and all three are one recovery unit —
-the `mcp` scope. See [Solr](/services/system/solr/) and
+Three Solr collections belong to this service, all in the **AI** set beside
+what `ai-agents` owns, and all three are one recovery unit — the `mcp` scope,
+nested inside the wider `ai` one so the gateway can be restored without the
+rest of the AI plane. See [Solr](/services/system/solr/) and
 [Continuity](/operations/continuity/).
 
 | Collection | Written today by | Holds |
 | --- | --- | --- |
 | `mcp-gateway` | the gateway | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows |
 | `mcp-tasks` | nothing yet | The task projection. The gateway's task store is in-process until the durable execution service lands; `GET /api/mcp/v1/notebooks/{uid}/tasks` answers empty |
-| `mcp-audit` | nothing yet | The append-only audit trail. IAM already writes its own decisions in the `McpAuditEvent` shape, to a JSON-line logger by default (`DATALAYER_IAM_AUDIT_SINK_CLASS` names another sink); the gateway has no sink and serves no `/audit` route yet |
+| `mcp-audit` | the gateway | The append-only audit trail, one row per call and decision, served by `GET /api/mcp/v1/audit`. Rows carry `decision`, `outcome`, `trace_id`, `replica`, `protocol_version`, `refusal_reason`, `duration_ms` and a hash of the arguments rather than the arguments |
 
 Every record carries a version, so a write that names the version it read fails
 when the record moved in between, and every record carries an expiry. Nothing
@@ -206,12 +232,27 @@ replica its own idea of who holds what.
 plane solr-backups-apply mcp      # the three collections as one backup unit
 plane solr-backups-status mcp
 plane solr-restore mcp
+
+plane solr-backups-apply ai       # the wider unit: these three and ai-agents'
 ```
+
+:::note A refusal is a decision, not an error
+`decision` records what *policy* did. A call for a tool that does not exist is
+`decision=allowed, outcome=is_error`: nothing refused it, and the worker
+answered with an error. A call naming a handle bound to nobody is
+`decision=refused, refusal_reason=unknown_handle`, and never reaches a worker.
+Reading the first as a missing refusal is the mistake to avoid when auditing.
+:::
 
 ## Deploy
 
-The gateway needs IAM, Spacer, Runtimes and Contents to be up, and the three
-`mcp-*` collections to exist (`solr-init`). Build and push the image from the
+The gateway needs IAM and Spacer to be up, and the three `mcp-*` collections
+to exist. Create them with `plane solr-init` and choose **4) AI**, which
+creates only that set rather than issuing a create against every Core
+collection the cluster already has. Without `mcp-gateway` the gateway starts,
+serves `/api/mcp/healthz`, and never becomes ready:
+`readyz` reports `store … Unknown collection: mcp-gateway`, the pods stay
+`0/1`, and the ingress answers `no available server`. Build and push the image from the
 Services repository:
 
 ```bash
@@ -285,10 +326,54 @@ yet resolving to the ingress.
 curl -s https://mcp.datalayer.run/api/mcp/version
 curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '.dependencies[] | {name, required, ready, detail}'
 curl -s https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp
+curl -s https://mcp.datalayer.run/.well-known/mcp-server | jq '{name, version, protocolVersions}'
 ```
 
-The last one is the document an MCP client reads to discover where to
-authenticate. If it does not answer, no agent can connect.
+The third is the document an MCP client reads to discover where to
+authenticate. If it does not answer, no agent can connect. The fourth is the
+Server Card: what this server is, before anyone authenticates.
+
+### Calling it by hand
+
+A `tools/list` at 2025-11-25 is an ordinary JSON-RPC POST:
+
+```bash
+curl -s https://mcp.datalayer.run/mcp \
+  -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+**2026-07-28 is not the same request with a different header.** There is no
+`initialize` handshake, so each call carries what the handshake used to
+establish, and repeats its method — and its tool name, for `tools/call` — in
+headers so a proxy can route without parsing a body it may not read:
+
+```bash
+curl -s https://mcp.datalayer.run/mcp \
+  -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "MCP-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+Omitting any of it is a `400` that names what is missing, and it is the
+server being correct:
+
+| Omission | Answer |
+| --- | --- |
+| no `params._meta` envelope | `params._meta must be an object carrying the required … envelope keys` |
+| no `MCP-Method` header | `mcp-method header does not match the request body's method` |
+| no `MCP-Name` on a `tools/call` | `mcp-name header does not match the request body's 'name' parameter` |
+
+Reading those as a gateway that refuses 2026-07-28 is the mistake to avoid;
+they are the gateway enforcing the version it advertises.
 
 ### Authentication end to end
 
@@ -424,22 +509,54 @@ Contents tools, not as a gateway that stopped serving notebooks. OTEL is listed
 and **never probed**: telemetry is never a readiness dependency. A draining
 replica is not ready.
 
-Each probe is bounded at three seconds, so a hung dependency is reported as one
-rather than hanging the kubelet's probe with it.
+Each dependency probe is bounded at three seconds
+(`PROBE_TIMEOUT_SECONDS`), and they run concurrently, so a hung dependency is
+reported as hung rather than hanging the endpoint. **That bound is also the
+endpoint's worst case**: one unreachable dependency — including an optional
+one, which does not gate readiness — costs the full three seconds before
+`readyz` answers `200`.
 
-:::note The readiness probe still calls `healthz`
+:::warning Give the probe more time than the endpoint takes
 
-The chart's `jupyterMcpServer.readinessPath` is `/api/mcp/healthz`, so
-Kubernetes acts on liveness for both probes and the dependency gating above is
-only what you see when you query `readyz` yourself. Point the value at the
-readiness route to make the cluster act on it:
+The Kubernetes default `timeoutSeconds` is **1**, which is shorter than
+`readyz` is designed to take. Left at the default, the kubelet cuts the probe
+off before the endpoint can answer:
+
+```
+Readiness probe failed: Get "http://10.244.2.137:4404/api/mcp/readyz":
+  context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+```
+
+The pods stay `0/1` with a healthy process inside them and the ingress answers
+`no available server`, while `curl` from inside the pod returns `200`. The
+chart states the budget rather than inheriting it:
 
 ```yaml
 # values.yaml of the datalayer-jupyter-mcp-server chart
 jupyterMcpServer:
   readinessPath: /api/mcp/readyz
+  readinessTimeoutSeconds: 5   # must exceed PROBE_TIMEOUT_SECONDS (3)
+  livenessTimeoutSeconds: 2    # healthz reaches nothing
 ```
+
+Raise both together if `PROBE_TIMEOUT_SECONDS` ever rises. This bit on prod1
+when `datalayer-runtimes` — an *optional* dependency — was failing its own
+ping, which is how an optional dependency being down took the gateway out of
+service entirely.
 :::
+
+To see which dependency is slow rather than guessing:
+
+```bash
+kubectl -n datalayer-api exec deploy/datalayer-jupyter-mcp-server -- \
+  python -c "import urllib.request,json;\
+print(json.dumps(json.load(urllib.request.urlopen(\
+'http://127.0.0.1:4404/api/mcp/readyz')),indent=2))"
+```
+
+Each line names the dependency, whether it is `required`, whether it is
+`configured`, whether it is `ready`, and the detail — `ready`, `timed out`, or
+the store's own message such as `Unknown collection: mcp-gateway`.
 
 A configuration mistake is one log line at the top of the log, not a permission
 error an hour later: a malformed URL is fatal and the process refuses to start
