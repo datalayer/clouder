@@ -215,7 +215,7 @@ rest of the AI plane. See [Solr](/services/system/solr/) and
 | Collection | Written today by | Holds |
 | --- | --- | --- |
 | `mcp-gateway` | the gateway | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows |
-| `mcp-tasks` | nothing yet | The task projection. The gateway's task store is in-process until the durable execution service lands; `GET /api/mcp/v1/notebooks/{uid}/tasks` answers empty |
+| `mcp-tasks` | read by the gateway | The task projection. `GET /api/mcp/v1/notebooks/{uid}/tasks` and the Running now panel answer from this collection, so every replica gives the same answer. Tasks are *created* by whatever runs them — the durable execution service, when it lands — so the gateway reads and ends them rather than writing new ones |
 | `mcp-audit` | the gateway | The append-only audit trail, one row per call and decision, served by `GET /api/mcp/v1/audit`. Rows carry `decision`, `outcome`, `trace_id`, `replica`, `protocol_version`, `refusal_reason`, `duration_ms` and a hash of the arguments rather than the arguments |
 
 Every record carries a version, so a write that names the version it read fails
