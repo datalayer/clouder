@@ -126,12 +126,63 @@ that asked for no platform machinery and still names Solr has contradicted
 itself, and honouring the narrower answer is what keeps the flag meaning
 "nothing behind this to go wrong".
 
+### Turning it off
+
+Setting `DATALAYER_MCP_STANDALONE: "false"` does not on its own move the
+records out of the process. It removes the check that kept the deployment to
+one replica; **`DATALAYER_SOLR_ZK_HOST` is what actually decides**, and the
+chart ships it empty.
+
+So the flag off, `autoscaling.enabled` back on, and that host still empty
+gives you two pods with separate bindings, tasks, rate windows and alert
+state. What a person then sees is `use_notebook` answered by one pod and
+`read_cell` by the other: a truthful *"no such notebook"* for a notebook that
+is open. It works about half the time, and every health check stays green
+throughout. Of all the ways this service can be misconfigured it is the only
+one nobody sees.
+
+Three things say so, and none of them infers it from another:
+
+- the **chart refuses to render** more than one replica whose records stay in
+  the process, by the same rule the process follows;
+- **startup** reports it wherever the chart is not — every local run — as a
+  configuration problem naming both halves of the remedy. Not fatal: one
+  replica on memory is a perfectly good gateway, and refusing to start would
+  take that away;
+- **`readyz` answers `records` beside `mode`**, because they are different
+  questions and `platform` on `memory` is the interesting answer.
+
+:::tip The change that turns the flag off
+
+Set `DATALAYER_SOLR_ZK_HOST` in the *same* change as
+`DATALAYER_MCP_STANDALONE: "false"` and `autoscaling.enabled: true`. Then
+check `readyz` before sending traffic — `"records": "memory"` on a platform
+gateway means the pods do not share a session, whatever else the page says.
+:::
+
+```
+helm upgrade ... --set jupyterMcpServer.env.DATALAYER_MCP_STANDALONE=false \
+                 --set jupyterMcpServer.autoscaling.enabled=true
+
+Error: DATALAYER_MCP_STANDALONE is off and the gateway would still keep its
+records in the process: DATALAYER_MCP_STORE names memory, or it names nothing
+and DATALAYER_SOLR_ZK_HOST is empty. [...]
+```
+
 ### Which one is running
 
 ```
-curl -s https://mcp.datalayer.run/api/mcp/readyz | jq .mode
-"standalone"
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records}'
+{
+  "mode": "standalone",
+  "records": "memory"
+}
 ```
+
+`mode` is what the deployment asked for; `records` is where the bindings,
+tasks, audit rows and alert state actually went. They agree in standalone,
+which always keeps them in the process. In platform mode they can differ, and
+that difference is the failure above.
 
 Ask this first when a task is missing or a policy is not applying — for most
 of those questions `standalone` *is* the answer, and working it out from an
@@ -331,6 +382,13 @@ The store is chosen by `DATALAYER_MCP_STORE`. Unset, Solr is used when
 `DATALAYER_SOLR_ZK_HOST` is configured and an in-memory store otherwise — which
 is right for `plane local` and wrong in a cluster, where it would give every
 replica its own idea of who holds what.
+
+One rule decides it, for the bindings, the audit ledger, the task projection
+and the alert state together. They are separate collections but never separate
+answers: a deployment whose audit went to Solr while its bindings stayed in
+the process would be a gateway half in each mode, and nothing would say so.
+`readyz` reports the answer as `records`, and [Turning it
+off](#turning-it-off) is what to read before changing it.
 
 ```bash
 plane solr-backups-apply mcp      # the three collections as one backup unit
@@ -606,6 +664,13 @@ curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
 | `/api/mcp/healthz` | Liveness: the process is up. Version and replica name, nothing else |
 | `/api/mcp/readyz` | Readiness: may traffic be sent here. `200` / `503`, plus every dependency on its own line |
 
+The body also carries `mode` — `standalone` or `platform`, what the deployment
+asked for — and `records` — `memory` or `solr`, where the bindings, tasks,
+audit rows and alert state actually went. Ask for both. They agree in
+standalone; in platform mode `"records": "memory"` means the replicas do not
+share a session, and it is the one misconfiguration every other check here
+reports as healthy. See [Turning it off](#turning-it-off).
+
 Readiness is gated on what **every** request needs: IAM (to verify a token) and
 the store (to find a handle). Spacer, Runtimes and Contents are *reported* and
 never gate — an outage in Contents must read as "Contents unavailable" in the
@@ -678,7 +743,7 @@ naming the setting; a missing one is an error line and a readiness report.
 | `DATALAYER_RUNTIMES_URL` | Where a sandbox is asked for. Provider-neutral: the same URL launches an internal runtime or an external one, and the gateway never sees which SDK is behind it. Defaults to `DATALAYER_IAM_URL` |
 | `DATALAYER_CONTENTS_URL` | Where Contents runs — the runtimes plane, at its own public URL (`https://r1.datalayer.run`). No fallback, and a value equal to `DATALAYER_IAM_URL` is reported as a misconfiguration: a gateway that does not know where Contents is has no Contents, and readiness says so |
 | `DATALAYER_AI_AGENTS_URL` | Where activity events are posted, so what an agent does appears in the feed; defaults to `DATALAYER_IAM_URL`. Every post is best-effort and off the request path |
-| `DATALAYER_MCP_STANDALONE` | Run the MCP endpoint with none of the platform machinery behind it — see [Two modes](#two-modes-and-which-one-you-are-running). `true`/`1`/`yes`/`on`; anything else, including `false`, is off. It wins over `DATALAYER_MCP_STORE` below, and it requires `replicaCount: 1` |
+| `DATALAYER_MCP_STANDALONE` | Run the MCP endpoint with none of the platform machinery behind it — see [Two modes](#two-modes-and-which-one-you-are-running). `true`/`1`/`yes`/`on`; anything else, including `false`, is off. It wins over `DATALAYER_MCP_STORE` below, and it requires `replicaCount: 1`. Turning it **off** does not by itself move the records out of the process — set `DATALAYER_SOLR_ZK_HOST` in the same change, or the chart refuses to render. See [Turning it off](#turning-it-off) |
 | `DATALAYER_MCP_STORE` | `solr` in a deployment, `memory` for a single local process. Unset, Solr is used when `DATALAYER_SOLR_ZK_HOST` is set and memory otherwise. Any other value refuses to start. Ignored under `DATALAYER_MCP_STANDALONE` |
 | `DATALAYER_SOLR_ZK_HOST` | The ZooKeeper ensemble the `mcp-gateway` DAO connects through |
 | `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | The Solr identity, supplied through Kubernetes Secrets |
@@ -816,7 +881,9 @@ behind it.
 The deployment ships with `DATALAYER_MCP_STANDALONE=true`, which turns off
 the durable engine, the scheduled jobs and the policy fetch by design rather
 than by omission. The entries below describe the platform mode; check
-`readyz`'s `mode` before chasing any of them.
+`readyz`'s `mode` before chasing any of them — and its `records` before
+believing the mode, since [turning the flag off](#turning-it-off) does not by
+itself move anything out of the process.
 :::
 
 - **Durable runs.** `mcp-tasks` is read and `/api/mcp/v1/tasks/*` is served,
@@ -877,6 +944,8 @@ replica. Nothing hand-written called the alias.
 ```bash
 # The gateway, its dependencies and its store
 curl -s https://mcp.datalayer.run/api/mcp/version
+# platform + solr, or standalone + memory; platform + memory is the silent one
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records}'
 curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '.dependencies[] | {name, required, ready}'
 curl -s https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp | jq
 curl -i -s https://mcp.datalayer.run/mcp | grep -i www-authenticate
