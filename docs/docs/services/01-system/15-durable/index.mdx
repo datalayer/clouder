@@ -66,6 +66,72 @@ takes milliseconds do not belong in the same line.
 | `contents` | `ContentsOperationWorkflow` | Transfers and queries, mirrored as tasks |
 | `approval` | `ApprovalWorkflow` | Waits on people; costs nothing while waiting, so its concurrency is high |
 
+## The workflow catalog
+
+What this service will run, and nothing else. A caller names a workflow by
+name; a name that is not here is refused rather than started, because a
+workflow the catalog does not describe is one nothing can say the steps of
+afterwards.
+
+| Workflow | Queue | Steps | Notes |
+| --- | --- | --- | --- |
+| `NotebookRunWorkflow` | `notebook` | `resolve_session_sandbox` → `execute` → `write_outputs` → `project_task` | A cell or block, run on the session's sandbox and written back. Heartbeats every 30 s |
+| `SandboxWorkflow` | `sandbox` | `reserve` → `launch` → `await_expiry` → `terminate` → `project_task` | A sandbox's whole life. Blocks — most of it is the timer |
+| `ContentsOperationWorkflow` | `contents` | `claim_operation` → `run_operation` → `mirror_state` → `project_task` | A transfer, query or materialization, mirrored as a task. Heartbeats every 60 s |
+| `ApprovalWorkflow` | `approval` | `request_approval` → `await_decision` → `project_task` | Waits on a person. A timeout is a decision, not a crash |
+
+Two properties every entry carries:
+
+**`resolve_session_sandbox` comes first and separately** in the notebook
+workflow. It decides *which* runtime the work goes to — the one this session
+is bound to. Running a cell in some other runtime would give it none of the
+session's variables, mounts or identity, and it would look like it worked.
+
+**Every workflow ends in `project_task`.** A run whose engine finished but
+whose task still says `working` is a run nobody can see the end of, and the
+projection is the only thing a client reads.
+
+Steps are marked `idempotent=False` where re-running them would repeat a side
+effect — `execute`, `write_outputs`, `launch`, `run_operation`. Those are
+recorded before they are attempted, so a recovered workflow does not run them
+twice.
+
+## The internal API
+
+Every caller uses it, the gateway included. There is no second path into the
+engine and no client-facing route: a client sees a run through `mcp-tasks`
+and never talks to this service.
+
+| Route | Does |
+| --- | --- |
+| `POST /api/durable/v1/workflows` | Start one, by catalog name |
+| `GET /api/durable/v1/workflows` | List runs |
+| `GET /api/durable/v1/workflows/{uid}` | Describe one: status, steps, what it is waiting on |
+| `POST /api/durable/v1/workflows/{uid}/signal` | Answer something it is waiting for — an approval's decision |
+| `POST /api/durable/v1/workflows/{uid}/cancel` | Stop one |
+| `GET /api/durable/v1/operations` | What this deployment is: engine, queues, catalog |
+
+Authenticated with `DATALAYER_DURABLE_API_KEY` in `X-API-Key`, the header
+every Datalayer service proves itself with. **An unset key refuses every
+caller** rather than admitting all of them — a workflow API open to the
+cluster network is a way to start work as anybody.
+
+## Configuration
+
+| Setting | Meaning |
+| --- | --- |
+| `DATALAYER_DURABLE_ENGINE` | `dbos` (deployed) or `temporal` (planned). Any other value refuses to start |
+| `DBOS_DATABASE_URL` | The DBOS system database. **Never the SQLite default in a cluster**: a worker whose state is on its own disk has no state at all the moment it moves |
+| `DATALAYER_DURABLE_API_KEY` | What a caller proves itself with. Empty means nobody may call, which is a refusal and not a wildcard |
+| `DATALAYER_DURABLE_QUEUES` | Which queues this Deployment takes work from, comma-separated. One Deployment per queue is why a long run cannot starve a short one |
+| `DATALAYER_RUNTIMES_URL` | Where Runtimes is, at its **public** URL — the workers and Runtimes are not guaranteed to share a cluster, and an in-cluster name works right up until they do not |
+| `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
+| `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call to a Datalayer API may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever |
+| `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
+
+`check_configuration()` runs at startup and refuses on a setting that would
+fail later and somewhere else — an unknown engine, or no queues at all.
+
 ## Deploy
 
 The cluster first. The workers refuse to start without it, deliberately: a
@@ -184,6 +250,48 @@ takes workflows of a version it can run, so a workflow started before an
 upgrade finishes on a worker that still matches its history rather than being
 replayed by code that no longer does. Roll workers freely; let the old
 version's workers drain rather than deleting them.
+
+## Backup: not configured, and what that means
+
+The workflows **are** the database. There is no second copy, and a run in
+flight exists nowhere else — which is why tearing the workers down is safe
+and losing the cluster is not.
+
+:::danger `datalayer-postgresql-dbos` has no backups today
+The `backup:` block in
+`etc/specs/postgresql/datalayer-postgresql-dbos.yaml` is commented out, and
+unlike the memory cluster there is no `plane postgresql-dbos-backup` or
+`-restore`. `plane postgresql-*` for DBOS is **`create` and `status` only**.
+
+Three instances protect against losing a node. They protect against nothing
+else: a dropped database, a bad migration or a deleted namespace takes every
+in-flight workflow with it, and the only sign in the gateway is a set of
+tasks that say `working` and never stop.
+:::
+
+To enable it, uncomment the block in the spec — it already names the same
+`DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` object store and a `30d`
+retention as every other Datalayer cluster — and recreate. The commands are
+modelled on the memory cluster's, which does have them:
+
+```bash
+plane postgresql-agent-memories-backup       # the recurring schedule
+plane postgresql-agent-memories-backup now   # one off
+plane postgresql-agent-memories-restore      # into a new cluster, optionally to a timestamp
+```
+
+See the [PostgreSQL page](/services/system/postgresql/) for the operator,
+the object store and the retention variables — none of that is specific to
+this service.
+
+:::caution A restore would be a rewind
+Worth knowing before the backups exist rather than after. Restoring puts the
+workflow table back to the moment of the backup, so runs that finished since
+run again from where the backup thought they were — and the steps recorded
+as non-idempotent, `execute`, `launch` and `run_operation`, are exactly the
+ones that would repeat. Cancel what is in flight first, or accept that some
+work happens twice.
+:::
 
 ## Tear down
 

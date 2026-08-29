@@ -369,14 +369,40 @@ rest of the AI plane. See [Solr](/services/system/solr/) and
 
 | Collection | Written today by | Holds |
 | --- | --- | --- |
-| `mcp-gateway` | the gateway | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows |
+| `mcp-gateway` | the gateway, and **IAM** | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows, fired alerts, the scheduler's leases — and IAM's MCP policies and alert rules |
 | `mcp-tasks` | read by the gateway | The task projection. `GET /api/mcp/v1/notebooks/{uid}/tasks` and the Running now panel answer from this collection, so every replica gives the same answer. Tasks are *created* by whatever runs them — [Durable](/services/system/durable/) — so the gateway reads and ends them rather than writing new ones |
 | `mcp-audit` | the gateway | The append-only audit trail, one row per call and decision, served by `GET /api/mcp/v1/audit`. Rows carry `decision`, `outcome`, `trace_id`, `replica`, `protocol_version`, `refusal_reason`, `duration_ms` and a hash of the arguments rather than the arguments |
+
+`mcp-gateway` holds seven document families, told apart by `type_s`:
+
+| `type_s` | Written by | Holds |
+| --- | --- | --- |
+| `mcp_binding` | the gateway | A handle returned to an agent, and its lifecycle |
+| `mcp_worker` | the gateway | Which replica holds the connection for one user's sandbox |
+| `mcp_rate_window` | the gateway | A per-subject counter over one window |
+| `mcp_alert_event` | the gateway | A rule that fired: what, when, whose, acknowledged by |
+| `mcp_lease` | the gateway | Which replica is doing one periodic job right now |
+| `mcp_policy` | **IAM** | One layer's rules for one subject — see [Policy layers](#policy-layers) |
+| `mcp_alert_rule` | **IAM** | What an organization asked to be told about — see [Alert rules](#alert-rules) |
+
+The last two are IAM's to write and the gateway never writes them; they live
+here rather than in an IAM collection because a rule and the events it
+produces are one question, and answering it across two collections is a join
+nobody would write.
 
 Every record carries a version, so a write that names the version it read fails
 when the record moved in between, and every record carries an expiry. Nothing
 here is a cache: it is what a request must be able to find again on another
 pod.
+
+:::info The mapping is generated, versioned and fingerprinted
+`MCP_MAPPING_VERSION` is **6**. The mapping in `mcp_mappings.json` is
+generated from the DAOs' own codecs and a test fails when the checked-in copy
+disagrees with the code, so a field added without a version bump cannot ship.
+Every version so far has been additive — a document written under an earlier
+one reads back correctly — so no deployment needs a reindex to take an
+upgrade.
+:::
 
 The store is chosen by `DATALAYER_MCP_STORE`. Unset, Solr is used when
 `DATALAYER_SOLR_ZK_HOST` is configured and an in-memory store otherwise — which
@@ -835,6 +861,116 @@ Still missing: the MCP dashboards and alert rules on the OTEL service, and a
 `PrometheusRule` in this chart. A gateway outage is caught today by the
 ordinary Kubernetes deployment and ingress alerts, not by an MCP-specific one.
 
+## Policy layers
+
+What an agent may do is decided by four layers, narrowest last. The gateway
+fetches the middle three from IAM on the way to a call and caches each for
+thirty seconds.
+
+| Layer | Written by | Applies to |
+| --- | --- | --- |
+| `platform` | nobody — it is the token's own scopes | Every call. No layer below can add a scope the grant did not carry |
+| `organization` | an organization owner | Tokens carrying that `org_uid` |
+| `team` | a team owner, or the owner of the organization above it | Tokens carrying that `team_uid` |
+| `personal` | the person themselves | Tokens with **no** `org_uid`. A person does not loosen or tighten what their organization decided about work done in its name |
+
+```bash
+# What is in force for this token, rule by rule, with who decided each
+curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://mcp.datalayer.run/api/mcp/v1/policy | jq '.rules'
+
+# Writing one, as an organization owner
+curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"toolDenylist": ["execute_cell"], "maxCallsPerMinute": 30}' \
+  https://iam.datalayer.run/api/iam/v1/mcp-policies/organization/$ORG_UID
+```
+
+Four rules are enforced. **Nothing else may be stored** — IAM refuses a rule
+the gateway does not act on, so a policy page cannot promise something that
+never happens, and `toolDenyList` is rejected as a typo rather than kept as a
+setting that does nothing.
+
+| Rule | Type | Combines by |
+| --- | --- | --- |
+| `toolDenylist` | list of tool names | Union — a layer may add a denial, never lift one |
+| `toolAllowlist` | list of tool names | Intersection. An empty list **as written** is not an allowlist; a half-filled setting must not refuse everything |
+| `allowedClients` | list of CIMD URLs or hostnames | Every layer's list must admit the client. An empty list is not an allowlist, same reason |
+| `maxCallsPerMinute` | whole number, **at least 1** | The smallest wins |
+
+:::caution `maxCallsPerMinute: 0` is refused, and why
+The gateway reads a non-positive cap as *no cap*. A zero written to stop an
+organization's agents would lift its limit instead — the one value whose
+stored meaning is the opposite of its plain reading. To stop an agent, revoke
+its grant or deny the tools.
+:::
+
+:::info Two allowlists that do not overlap admit nothing
+An organization allowing `read_cell` and a team allowing `execute_cell`
+between them allow no tool at all. Each reads fine alone. `GET
+/api/mcp/v1/policy` says so in the rule's `reason` rather than rendering an
+empty list, because the administrator is looking at two sensible settings.
+:::
+
+Reading is wider than writing on purpose: an organization **member** may see
+what their organization's policy is, because "why was my agent refused" is a
+question every member of it will ask, and an answer only owners can see is an
+answer nobody gets. Every change writes an IAM audit row naming who, when and
+which rules — by name, never by value.
+
+## Alert rules
+
+An `McpAlertRule` is an IAM organization setting: a condition, a comparison,
+a threshold and a window. The gateway evaluates every enabled rule on the
+platform once a minute, records a firing in `mcp_alert_event` and delivers it
+as an ai-agents notification.
+
+```bash
+# What this organization watches
+curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/mcp-alert-rules/$ORG_UID | jq '.rules'
+
+# Watching for more than 20 open tasks, told at most once an hour
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"condition":"tasks.open","operator":"gt","threshold":20,
+       "severity":"warning","window_seconds":3600}' \
+  https://iam.datalayer.run/api/iam/v1/mcp-alert-rules/$ORG_UID
+```
+
+| Field | Values |
+| --- | --- |
+| `condition` | `tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits`, `sli.availability`, `sli.latency` |
+| `operator` | `gt`, `gte`, `lt`, `lte`, `eq` |
+| `threshold` | a real number — `nan` and `inf` are refused, since `nan > x` is false for every x and such a rule never fires |
+| `severity` | `info`, `warning`, `critical` — delivered as `info`, `warning`, `error` |
+| `window_seconds` | whole seconds. Also the most often this rule may fire |
+| `scope_kind` / `scope_uid` | `organization`, or `team` / `user` / `agent` with the uid of the thing. A scoped rule without a uid is refused: it would be measured over the whole organization under a name saying otherwise |
+| `enabled` | a rule switched off is kept, not deleted — silencing an alert for a migration should not lose the threshold somebody tuned |
+
+IAM refuses a rule the **evaluator** could not evaluate, by asking the
+evaluator rather than restating its rules. A rule that cannot be evaluated is
+a condition nobody is watching, and that looks exactly like a condition that
+never happens.
+
+:::warning Only `tasks.open` has a reader today
+`spend.credits` needs IAM's ledger and the two `sli.*` need the OTEL service.
+A rule naming one of those is counted `unreadable` on every tick and never
+fires. Deliberately: a reader answering zero would turn "nobody is watching
+this" into "this never happens" — but it is not the same as being watched.
+Read the tick's counters, not the empty alerts list.
+:::
+
+**Once per condition per window.** The idempotency key is the rule, the scope
+and which window we are in, so a condition true for an hour is one event and
+one notification, not sixty — and two replicas ticking together write one
+event between them and send one notification for it, because delivery follows
+the *record* rather than the firing.
+
+A delivery that fails is counted `undelivered` and logged; the event is in
+the alerts list either way. That log line is the only place the difference
+between an alert and a row shows up, since the list looks identical.
+
 ## Periodic work
 
 Some of what the gateway owes an organization has no caller: audit past its
@@ -865,6 +1001,11 @@ aggregate is what would hide it.
 | Job | Every | What it does |
 | --- | --- | --- |
 | `audit-retention` | hour | Deletes `mcp-audit` rows past each organization's retention, never one an open export still holds. Registered only when Solr is configured — a deployment without it has no ledger to sweep, and the startup log says so |
+| `alerts` | minute | Reads every enabled `McpAlertRule` from IAM in one call, evaluates each, records a firing and delivers it. See [Alert rules](#alert-rules) |
+
+Both are registered only where the records are in Solr. Standalone schedules
+neither and says so at startup, because a job that quietly does not run looks
+identical to one that runs and finds nothing.
 
 A job that fails is counted, named and left on its schedule; the lease is
 released either way, so one bad tick does not cost the next hour as well. A
@@ -896,10 +1037,11 @@ itself move anything out of the process.
 - **The organization and personal policy layers.** `/api/mcp/v1/policy`
   answers, and the platform layer in it is real — the tool table narrowed by
   the token's scopes, which is what decides every refusal the gateway makes
-  today. The layers *are* enforced now: a tool denylist or allowlist, a
+  today. The layers *are* enforced: a tool denylist or allowlist, a
   client allowlist and a per-minute cap refuse the call and name the layer
-  that decided. What is missing is IAM serving them, so today every rule
-  still reads "Datalayer default" and nothing narrows.
+  that decided — and **IAM serves them now**, at
+  `/api/iam/v1/mcp-policies/{scope}/{uid}`. See
+  [Policy layers](#policy-layers) for what may be written and by whom.
   A layer only ever narrows. A team cannot re-admit what its organization
   denied, and a cap is taken as the smallest of the platform's, the
   organization's and the team's — a layer that could raise a limit would be a
@@ -922,8 +1064,15 @@ itself move anything out of the process.
   signed and retried, and is not on the schedule: its destinations are an
   organization setting IAM does not serve, so there is nowhere to deliver
   to.
-- **Alert rules.** The evaluator is here; `McpAlertRule` is an IAM setting
-  that does not exist yet, so there is nothing for it to evaluate.
+- **Alert delivery beyond the app.** The rules exist, the evaluator runs on
+  its minute tick and a firing reaches ai-agents as a notification — see
+  [Alert rules](#alert-rules). Email, the organization's webhook and Slack
+  through it are not built. And four of the six conditions have **no
+  reader**: `spend.credits` needs IAM's ledger and the two `sli.*` need the
+  OTEL service, so a rule naming one of those is counted `unreadable` every
+  tick and never fires. That is the honest outcome — a reader answering zero
+  would turn "nobody is watching this" into "this never happens" — but it is
+  not the same as being watched.
 - **The load test** that would state a per-replica capacity is not in the
   repository, so the numbers behind the HPA targets are unmeasured.
 
