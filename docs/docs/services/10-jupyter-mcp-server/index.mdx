@@ -953,13 +953,19 @@ evaluator rather than restating its rules. A rule that cannot be evaluated is
 a condition nobody is watching, and that looks exactly like a condition that
 never happens.
 
-:::warning Only `tasks.open` has a reader today
-`spend.credits` needs IAM's ledger and the two `sli.*` need the OTEL service.
-A rule naming one of those is counted `unreadable` on every tick and never
+:::warning Half the conditions have a reader
+`tasks.open` and `tasks.failed` do. `audit.write_failures`, `spend.credits`
+and the two `sli.*` do not — they need IAM's ledger and the OTEL service —
+so a rule naming one of those is counted `unreadable` on every tick and never
 fires. Deliberately: a reader answering zero would turn "nobody is watching
 this" into "this never happens" — but it is not the same as being watched.
 Read the tick's counters, not the empty alerts list.
 :::
+
+`tasks.failed` counts over the **rule's own window**. Two rules on the same
+condition with different windows are two different questions, and a count
+taken over all of history only grows — so an alert on it would fire once and
+then every window for ever.
 
 **Once per condition per window.** The idempotency key is the rule, the scope
 and which window we are in, so a condition true for an hour is one event and
@@ -1068,11 +1074,11 @@ itself move anything out of the process.
   its minute tick and a firing reaches ai-agents as a notification — see
   [Alert rules](#alert-rules). Email, the organization's webhook and Slack
   through it are not built. And four of the six conditions have **no
-  reader**: `spend.credits` needs IAM's ledger and the two `sli.*` need the
-  OTEL service, so a rule naming one of those is counted `unreadable` every
-  tick and never fires. That is the honest outcome — a reader answering zero
-  would turn "nobody is watching this" into "this never happens" — but it is
-  not the same as being watched.
+  reader**: `audit.write_failures`, `spend.credits` and the two `sli.*` need
+  IAM's ledger and the OTEL service, so a rule naming one of those is counted
+  `unreadable` every tick and never fires. That is the honest outcome — a
+  reader answering zero would turn "nobody is watching this" into "this never
+  happens" — but it is not the same as being watched.
 - **The load test** that would state a per-replica capacity is not in the
   repository, so the numbers behind the HPA targets are unmeasured.
 
