@@ -69,6 +69,79 @@ per replica) is reached. Neither the reaper nor the eviction stops a worker
 whose session has a task `working`: the task store is asked first, and when it
 cannot answer the worker is kept.
 
+## Two modes, and which one you are running
+
+This service is two things at once. It is an **MCP server** that answers a
+client, and it is the **platform surface** around one: Solr-backed bindings
+and tasks, a durable engine, a scheduler, an organization policy fetched from
+IAM on every call.
+
+Every item in that second list is a dependency that can be missing,
+misconfigured or slow — and when one is, what a person sees is *"Claude cannot
+connect"*.
+
+`DATALAYER_MCP_STANDALONE` keeps the first and turns off the second.
+
+| | Standalone | Platform |
+| --- | --- | --- |
+| Tools — notebooks, cells, sandboxes | **unchanged** | unchanged |
+| Authentication and scopes | **unchanged** | unchanged |
+| Bindings, tasks, rate windows | in this process | `mcp-gateway`, `mcp-tasks` |
+| Audit | in this process | `mcp-audit` |
+| Durable runs | the in-process fake (`durable: false`) | [Durable](/services/system/durable/) |
+| Periodic jobs (retention, alerts) | not scheduled | on a lease |
+| Organization policy | not fetched | from IAM, cached, enforced |
+| Replicas | **one** | as many as the HPA gives you |
+
+:::info The tools are not what standalone turns off
+
+A worker still starts, still opens notebooks through Spacer and still launches
+sandboxes through Runtimes, because those *are* the tools. What goes is
+everything that exists to make several replicas agree with each other, which
+one replica does not need.
+
+It is not a lesser gateway. It is the same gateway with nothing behind it to
+go wrong — which is the right thing to deploy while that machinery is being
+brought up, and the right thing for anybody running one of these outside
+Datalayer's own cluster.
+:::
+
+:::caution Standalone means one replica
+
+Every record lives in the process that made it. A second pod would have its
+own idea of every binding and every task, and a session would work or not
+depending on which one answered. The chart ships `replicaCount: 1` alongside
+the flag; raise it back to 2 in the same change that turns the flag off, never
+before.
+:::
+
+Two things it deliberately does **not** touch. **Authentication** — standalone
+is about what is behind the gateway, never about who may reach it, and a flag
+that quietly stopped checking tokens would be a very bad thing to have on by
+default. And the **audit**, which is still written, to this process rather
+than to Solr: a record nobody keeps is not the same as one kept in one place.
+
+The flag also wins over an explicit `DATALAYER_MCP_STORE=solr`. A deployment
+that asked for no platform machinery and still names Solr has contradicted
+itself, and honouring the narrower answer is what keeps the flag meaning
+"nothing behind this to go wrong".
+
+### Which one is running
+
+```
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq .mode
+"standalone"
+```
+
+Ask this first when a task is missing or a policy is not applying — for most
+of those questions `standalone` *is* the answer, and working it out from an
+empty list is how somebody spends an afternoon. The startup log says it too:
+
+```
+🎯 Standalone: the MCP endpoint and the tools, with no durable engine, no
+scheduler, no organization policy and every record in this process.
+```
+
 ## Where it sits, and what it calls
 
 | Dependency | Plane | Why |
@@ -187,6 +260,32 @@ advertised as `client_id_metadata_document_supported` in the RFC 8414
 metadata — with Dynamic Client Registration kept as the deprecated fallback.
 See [IAM](/services/iam/).
 
+:::warning A desktop client's redirect port is not fixed
+
+IAM matches a redirect URI exactly against the client's document — the whole
+string as the client wrote it, never a prefix, never a different scheme, path,
+query or fragment — **except the port of a loopback address**, where any port
+is accepted.
+
+That exception is RFC 8252 §7.3 and it is not optional. Claude Code, Claude
+Desktop and every other native client listen on whatever port the operating
+system hands them *at the moment they start the flow*: `http://localhost:3118/
+callback` today, something else tomorrow. No document can list those ports —
+the client does not know them when it is written.
+
+Matching the port too refuses the client on its own callback:
+
+```json
+{"error":"invalid_request",
+ "error_description":"Redirect URI [http://localhost:3118/callback] is not registered for this client."}
+```
+
+which reads to whoever hit it as the server being broken. If you see that
+error, check whether the host and path match the document — those are still
+compared exactly, and `127.0.0.1` is not `localhost` as far as matching is
+concerned.
+:::
+
 ## Sessions and sandboxes
 
 What a person means by "my session" is the sandbox their code has been running
@@ -220,7 +319,7 @@ rest of the AI plane. See [Solr](/services/system/solr/) and
 | Collection | Written today by | Holds |
 | --- | --- | --- |
 | `mcp-gateway` | the gateway | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows |
-| `mcp-tasks` | read by the gateway | The task projection. `GET /api/mcp/v1/notebooks/{uid}/tasks` and the Running now panel answer from this collection, so every replica gives the same answer. Tasks are *created* by whatever runs them — the durable execution service, when it lands — so the gateway reads and ends them rather than writing new ones |
+| `mcp-tasks` | read by the gateway | The task projection. `GET /api/mcp/v1/notebooks/{uid}/tasks` and the Running now panel answer from this collection, so every replica gives the same answer. Tasks are *created* by whatever runs them — [Durable](/services/system/durable/) — so the gateway reads and ends them rather than writing new ones |
 | `mcp-audit` | the gateway | The append-only audit trail, one row per call and decision, served by `GET /api/mcp/v1/audit`. Rows carry `decision`, `outcome`, `trace_id`, `replica`, `protocol_version`, `refusal_reason`, `duration_ms` and a hash of the arguments rather than the arguments |
 
 Every record carries a version, so a write that names the version it read fails
@@ -579,7 +678,8 @@ naming the setting; a missing one is an error line and a readiness report.
 | `DATALAYER_RUNTIMES_URL` | Where a sandbox is asked for. Provider-neutral: the same URL launches an internal runtime or an external one, and the gateway never sees which SDK is behind it. Defaults to `DATALAYER_IAM_URL` |
 | `DATALAYER_CONTENTS_URL` | Where Contents runs — the runtimes plane, at its own public URL (`https://r1.datalayer.run`). No fallback, and a value equal to `DATALAYER_IAM_URL` is reported as a misconfiguration: a gateway that does not know where Contents is has no Contents, and readiness says so |
 | `DATALAYER_AI_AGENTS_URL` | Where activity events are posted, so what an agent does appears in the feed; defaults to `DATALAYER_IAM_URL`. Every post is best-effort and off the request path |
-| `DATALAYER_MCP_STORE` | `solr` in a deployment, `memory` for a single local process. Unset, Solr is used when `DATALAYER_SOLR_ZK_HOST` is set and memory otherwise. Any other value refuses to start |
+| `DATALAYER_MCP_STANDALONE` | Run the MCP endpoint with none of the platform machinery behind it — see [Two modes](#two-modes-and-which-one-you-are-running). `true`/`1`/`yes`/`on`; anything else, including `false`, is off. It wins over `DATALAYER_MCP_STORE` below, and it requires `replicaCount: 1` |
+| `DATALAYER_MCP_STORE` | `solr` in a deployment, `memory` for a single local process. Unset, Solr is used when `DATALAYER_SOLR_ZK_HOST` is set and memory otherwise. Any other value refuses to start. Ignored under `DATALAYER_MCP_STANDALONE` |
 | `DATALAYER_SOLR_ZK_HOST` | The ZooKeeper ensemble the `mcp-gateway` DAO connects through |
 | `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | The Solr identity, supplied through Kubernetes Secrets |
 | `DATALAYER_MCP_MAX_WORKERS` | The most worker processes one replica runs at once; default `50`. Reached, the least recently used idle worker without a working task is stopped to make room, and a caller who cannot be given one is refused `503` with the reason. This is the density limit of a replica — capacity is added by adding pods, not by a bigger pod |
@@ -709,11 +809,19 @@ until the pod is replaced.
 ## What is not here yet
 
 Named plainly, because an operator reading a route should know what stands
-behind it:
+behind it.
+
+:::note Most of this list is off in standalone anyway
+
+The deployment ships with `DATALAYER_MCP_STANDALONE=true`, which turns off
+the durable engine, the scheduled jobs and the policy fetch by design rather
+than by omission. The entries below describe the platform mode; check
+`readyz`'s `mode` before chasing any of them.
+:::
 
 - **Durable runs.** `mcp-tasks` is read and `/api/mcp/v1/tasks/*` is served,
-  but the engine that *creates* tasks — `datalayer-durable` — is deployed
-  separately and is not required. Without it the gateway falls back to an
+  but the engine that *creates* tasks — [Durable](/services/system/durable/)
+  — is deployed separately and is not required. Without it the gateway falls back to an
   in-process workflow backend that reports `durable: false`, and a run does
   not survive the pod. `GET /api/mcp/v1/operations/workflows` says which you
   have; do not read an empty task list as "nothing is running" until it says
