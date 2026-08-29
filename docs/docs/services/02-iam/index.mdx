@@ -23,6 +23,99 @@ import { Label, Stack } from '@primer/react-brand';
 🛡️ Authorization Policies.
 ```
 
+## The OAuth 2.1 authorization server
+
+IAM is where an MCP client authenticates. It serves the endpoints an agent
+discovers through RFC 8414 metadata — `/api/iam/v1/oauth/authorize`,
+`/token`, `/revoke`, `/register` — and the
+`/.well-known/oauth-authorization-server` document that points at them. The
+[Jupyter MCP Server](/services/jupyter-mcp-server/) is the resource those
+tokens are issued *for*, and refuses one issued for anything else.
+
+### How a client is registered
+
+By **Client ID Metadata Document**: the `client_id` is a URL that IAM
+fetches, validates and caches, and the document at it declares the client's
+name, its redirect URIs and what it may ask for. Advertised as
+`client_id_metadata_document_supported` in the metadata, so a client
+discovers it rather than being told.
+
+Dynamic Client Registration (RFC 7591, `/oauth/register`) still works and is
+the deprecated fallback. A document needs no registration call and no stored
+secret, which is what makes it right for a client that discovers servers at
+runtime.
+
+### Redirect URIs, and the one exception
+
+A redirect URI is matched **exactly** against the client's document — the
+whole string as the client wrote it, never a prefix, never a different
+scheme, path, query or fragment.
+
+The exception is the **port of a loopback address**, where any port is
+accepted.
+
+:::warning This exception is not optional
+
+RFC 8252 §7.3. A native application — Claude Code, Claude Desktop, any
+desktop agent — listens on whatever port the operating system hands it *at
+the moment it starts the flow*: `http://localhost:3118/callback` today,
+something else tomorrow. No document can list those ports, because the
+client does not know them when it is written.
+
+Matching the port too refuses the client on its own callback:
+
+```json
+{"error":"invalid_request",
+ "error_description":"Redirect URI [http://localhost:3118/callback] is not registered for this client."}
+```
+
+which reads to whoever hit it as the server being broken. If you see this
+error, the host and the path are what to check — those are still compared
+exactly, and `127.0.0.1` is a different address from `localhost` as far as
+matching is concerned.
+:::
+
+Nothing else is relaxed. A public redirect gets no exception at all: there
+the port *is* part of the address the client promised to be at.
+
+### PKCE
+
+Required, `S256` only. An authorization request without `code_challenge`, or
+with `plain`, is refused before any browser is redirected — so the consent
+screen only ever shows a request that would succeed.
+
+### Scopes
+
+What the `resource` parameter names wins over what the client asked for. The
+resource is chosen by the person setting the client up, and it is the only
+say they have over a client that sends whatever scopes it likes.
+
+The OpenID Connect scopes — `openid`, `profile`, `email`, `offline_access` —
+pass through so one sign-in answers both questions. None of them grants
+anything on the MCP server.
+
+### What is not here yet
+
+Named plainly, because the [MCP plan](/services/jupyter-mcp-server/) refers
+to several of these and an operator should know which exist:
+
+- **DPoP.** Not implemented, and deliberately not built ahead of the Agent
+  Identity Working Group's finalized MCP profile.
+- **`client_credentials` and `jwt-bearer` grants**, and **service agents** as
+  principals of their own with keys and rotation. The client half is written
+  in `agent-runtimes`; IAM does not yet issue these.
+- **Organization and personal MCP policy.** The gateway fetches, caches and
+  *enforces* these layers already — a tool denylist, a client allowlist, a
+  per-minute cap — but IAM serves none of them, so every rule currently
+  reads "Datalayer default" and nothing narrows.
+- **Quotas** as the agent dimension of the plan limits, and **`McpAlertRule`**.
+  The reservation side of quotas has landed: a credits reservation now
+  carries which client and which service agent asked for it, so usage can be
+  grouped by agent. What is missing is the limit to enforce against.
+- **`org_uid`/`team_uid` claims** chosen at consent. The gateway reads them
+  from the token and narrows audit, policy and spend by them; until IAM
+  stamps them, every session is personal scope.
+
 ## Deploy Datalayer IAM
 
 <Tabs groupId="k8s">
