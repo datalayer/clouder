@@ -151,18 +151,25 @@ absence is a refusal, not a wildcard. The keys are read on each request, not
 when the route is defined, so a rotated key takes effect without a restart —
 which matters most in the case you usually rotate for.
 
-:::warning Only the gateway's key is in the chart today
-`datalayer-durable`'s Deployment injects
-`DATALAYER_JUPYTER_MCP_SERVER_API_KEY` and not the Contents or Operator ones.
-Both of those callers therefore get `401` in a deployment, silently as far as
-this service is concerned — Contents cannot run its operations here and the
-Operator cannot read them. Add them to the release secret when those paths
-are wanted.
+:::info Which keys the chart carries
+All three are on the Deployment as **optional** secret references, so listing
+them costs nothing until the release secret has them — and a key the secret
+does not carry refuses that caller rather than admitting everybody. Put a
+caller's key in the secret when that path is wanted:
 
-The chart also injects `DATALAYER_DURABLE_API_KEY`, which **nothing reads**.
-It is declared in `config.py` with a docstring saying it is what the gateway
-calls with, and that has never been true: the gateway calls with its own key
-against this service's audience. Setting it changes nothing.
+```bash
+kubectl -n datalayer-api create secret generic datalayer-durable \
+  --from-literal=DATALAYER_JUPYTER_MCP_SERVER_API_KEY=... \
+  --from-literal=DATALAYER_CONTENTS_API_KEY=... \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+There is no `DATALAYER_DURABLE_API_KEY`. The name existed, was injected by
+the chart and read by nothing, and its docstring claimed it was what the
+gateway calls with — which was never true, since the gateway calls with its
+own key against this service's audience. Both are gone. The gateway's own
+`DATALAYER_DURABLE_API_KEY` is a different variable in a different service:
+there it is real, and it is the key the gateway *sends*.
 :::
 
 No route takes a **user's** token. A workflow is started *for* a person by a
