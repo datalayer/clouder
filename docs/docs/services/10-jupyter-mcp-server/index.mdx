@@ -6,7 +6,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# 🪐 🔧 Datalayer Jupyter MCP Server
+# ☰ 🪐 Datalayer Jupyter MCP Server
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
@@ -236,9 +236,26 @@ service refuses a token naming anything else.
 | Policy | `GET /api/mcp/v1/policy` | The caller's own effective policy, rule by rule, with the layer that decided each — platform, organization, team or personal. `?org=` widens it by the same rule as the audit |
 | Alerts | `GET /api/mcp/v1/alerts`, `POST …/{uid}/acknowledge` | An organization's owners and security auditors, the same rule as the audit. Acknowledging is idempotent; somebody else's organization's alert is `404`, because the uid of an alert is enough to know one fired |
 | Audit forwarding | `GET /api/mcp/v1/audit/forwarding` | The same rule again. Says whether the audit is reaching the organization's own system of record — never the destination or the secret |
+| Organization overview | `GET /api/mcp/v1/organizations/{uid}/overview` | An organization owner or security auditor, `?team=` to narrow. The enterprise console's first page: agents, spend, tasks and alerts for one organization |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
+| Sandbox ended | `POST /api/mcp/v1/operations/runtime-ended` | Runtimes' own key. How an **external** sandbox's loss reaches the gateway — see below |
+| Workflow backend | `GET /api/mcp/v1/operations/workflows` | The `platform_admin` role. Says whether a run would survive this pod: `durable: true` is [Durable](/services/system/durable/), `false` is the in-process fallback |
 | Periodic work | `GET /api/mcp/v1/operations/jobs` | The `platform_admin` role. Answers for **the replica that happens to serve the request** — see [Periodic work](#periodic-work) before reading the numbers |
 | OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
+
+:::info Why `runtime-ended` exists
+A Datalayer runtime can be *asked* about — the gateway polls Runtimes and
+finds it gone. A Daytona, E2B or Modal sandbox that its provider reaped, whose
+credentials expired, or that idled out is known to Runtimes and to nobody
+else. Without this webhook the binding stays `active` and the next call fails
+somewhere far from the cause, with the agent believing its session is fine.
+
+The sessions are marked `lost`, not closed: `lost` carries the reason and the
+resource state, and is what `SANDBOX_LOST` reports to an agent holding the
+handle. A session created with `on_lost: relaunch` gets its replacement on
+its next call rather than here — a lifecycle event is news, not an
+instruction to spend money.
+:::
 
 The ingress publishes on `mcp.datalayer.run`: the `/mcp`,
 `/.well-known/oauth-protected-resource` and `/api/mcp` prefixes, and the exact
@@ -779,6 +796,11 @@ naming the setting; a missing one is an error line and a readiness report.
 | `DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` | How long a worker-directory entry lives after its last heartbeat; default `180`. A replica that is gone stops refreshing, its entries expire, and the caller gets a fresh worker rather than a dead address |
 | `DATALAYER_MCP_REPLICA_ADDRESS` | The address other replicas forward to. Defaults to `http://$POD_IP:4404`, or loopback when `POD_IP` is unset — see [the warning above](#no-affinity-at-the-edge) |
 | `DATALAYER_MCP_BINDING_TTL_SECONDS` | How long a handle lives after it was last used, refreshed on every use; default `86400` |
+| `DATALAYER_MCP_RESERVATION_TTL_SECONDS` | How long a *reservation* may sit before another caller may take the session back; default `300`. A reservation says "a launch is in flight", which is a question of seconds — it once inherited the binding's day-long lifetime, so a launch that never concluded blocked every later launch for that session for a day. `abandon()` returns it when the gateway sees the failure; this bounds the case where nothing sees it because the replica died mid-launch |
+| `DATALAYER_MCP_POLICY_TTL` | How long a policy layer is cached; default `30` seconds. Deliberately short: a policy is what somebody changes *in order to* stop an agent, and a revocation that takes ten minutes to arrive is one the person watching will assume did not work. See [Policy layers](#policy-layers) |
+| `DATALAYER_MCP_AUDIT_RETENTION_DAYS` | Per-plan audit retention, as `plan:days` pairs — `free:30,pro:365`. A malformed pair is skipped rather than raising, because this is read at import and a typo must not be a crash loop; a non-positive value is skipped too, since audit readable for no time at all can only be a mistake |
+| `DATALAYER_DURABLE_URL` | Where [Durable](/services/system/durable/) is, at its own public URL on the runtimes plane. Left empty the gateway falls back to an in-process workflow backend that reports `durable: false` — correct for a cluster that has not deployed it, and the thing not to mistake for one that has |
+| `DATALAYER_DURABLE_API_KEY` | What the gateway proves itself to Durable with. Falls back to `DATALAYER_JUPYTER_MCP_SERVER_API_KEY`, which is the name Durable knows this caller by |
 | `DATALAYER_MCP_CALLS_PER_MINUTE_PER_USER` | Tool calls one user may make in a minute; default `300`, `0` no limit. The refusal is a JSON-RPC error carrying `retry_after_ms`, and the windows live in `mcp-gateway` so the limit means the same thing however many pods answer |
 | `DATALAYER_MCP_CALLS_PER_MINUTE_PER_AGENT` | The same, per `client_id`; default `120` |
 | `DATALAYER_MCP_DEPENDENCY_TIMEOUT` | How long a call to a platform dependency may take before it is a timeout; default `10` seconds |
@@ -789,7 +811,13 @@ naming the setting; a missing one is an error line and a readiness report.
 | `LOG_LEVEL` | Accepted in either spelling; an unknown value falls back to `INFO` rather than stopping the service |
 | `DATALAYER_MCP_LOG_COLOR` | Whether the request log is coloured; default `true`, and `NO_COLOR` turns it off |
 | standard `DATALAYER_JWT_*` variables | `DATALAYER_JWT_SECRET`, `_ALGORITHM`, `_ISSUER`, `_CACHE_VALIDATE` — token verification, shared with IAM |
-| standard `OTEL_*` variables | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `_METRICS_ENDPOINT`, `_LOGS_ENDPOINT`, `DATALAYER_OTEL_API_KEY`, `OTEL_PYTHON_LOG_LEVEL`, `OTEL_SDK_DISABLED`. Validated and reported by health; see [Observability](#observability) for what is exported today |
+| standard `OTEL_*` variables | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `DATALAYER_OTEL_API_KEY`, `OTEL_PYTHON_LOG_LEVEL`, `OTEL_SDK_DISABLED`. Validated and reported by health; see [Observability](#observability) for what is exported today |
+
+One variable is set **by** the gateway rather than read by it:
+`JUPYTER_MCP_STATEFUL=true` is put into every worker's environment. The open
+source server defaults to stateless Streamable HTTP; a worker holds one
+user's session and must not, so the gateway states it rather than relying on
+a default it does not own.
 
 Do not place the IAM API key, the JWT secret or the Solr password in chart
 values. Use `jupyterMcpServer.envValueFrom` with Kubernetes Secret references.
@@ -1082,10 +1110,7 @@ itself move anything out of the process.
 - **The load test** that would state a per-replica capacity is not in the
   repository, so the numbers behind the HPA targets are unmeasured.
 
-`datalayer mcp bindings`, `datalayer mcp agents`, `datalayer mcp setup`,
-`datalayer mcp audit` and `datalayer mcp tasks` work today. `datalayer mcp
-trace`, `datalayer mcp metrics` and `datalayer mcp logs` report what the OTEL
-service holds, which is everything the gateway exports.
+See [the CLI](#the-cli) for what `datalayer mcp` can answer today.
 
 :::note `/api/mcp/v1/executions/*` is gone
 It was an alias for the task routes while those were being built, backed by a
@@ -1093,6 +1118,27 @@ per-process registry that lost its contents when a pod was replaced. Use
 `/api/mcp/v1/tasks/*`, which reads `mcp-tasks` and answers the same on every
 replica. Nothing hand-written called the alias.
 :::
+
+## The CLI
+
+`datalayer mcp` reads this gateway with the caller's own token, so an
+administrator sees what an administrator may and a user sees their own. It is
+the fastest way to answer most of the questions on this page without curl.
+
+| Command | Answers |
+| --- | --- |
+| `datalayer mcp setup <client>` | Writes an MCP client's configuration for this endpoint — `claude-code`, and the other registered clients |
+| `datalayer mcp agents` | The agents connected to your account |
+| `datalayer mcp bindings list` | The handles you hold: notebooks, toolsets, sandboxes — `lost` ones included, with why |
+| `datalayer mcp bindings terminate <uid>` | Ends one, terminating the sandbox through Runtimes |
+| `datalayer mcp tasks list` / `describe` / `cancel` / `input` | The runs the agents started, and answering one that is waiting on a person |
+| `datalayer mcp audit` | The rows: your own, or the organization's with the role for it |
+| `datalayer mcp policy` | The effective policy for your token, rule by rule, with the layer that decided each |
+| `datalayer mcp alerts list` / `ack` | The rules that fired. `ack` names **who** acknowledged rather than showing a tick — "who saw this" is the question |
+| `datalayer mcp activity` | What each connected client last did |
+| `datalayer mcp forwarding` | Whether the audit is reaching the organization's own system of record |
+| `datalayer mcp jobs` | The periodic work, per replica — read [Periodic work](#periodic-work) before the numbers |
+| `datalayer mcp trace` / `metrics` / `logs` | What the [OTEL service](/services/system/otel/) holds, which is everything the gateway exports |
 
 ## Test after a deploy
 

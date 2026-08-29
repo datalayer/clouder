@@ -96,6 +96,30 @@ effect — `execute`, `write_outputs`, `launch`, `run_operation`. Those are
 recorded before they are attempted, so a recovered workflow does not run them
 twice.
 
+### What a step touches
+
+Worth knowing before reading a stuck run, because the answer is rarely this
+service.
+
+| Step | Reaches |
+| --- | --- |
+| `resolve_session_sandbox` | Runtimes, `GET /api/runtimes/v1/runtimes/{name}` — which runtime this session is bound to |
+| `execute` | The runtime's own Jupyter, through the session it resolved |
+| `write_outputs` | The notebook, through the same runtime |
+| `reserve` / `launch` / `terminate` | Runtimes |
+| `await_expiry` | Nothing. It is a timer, and it costs a worker nothing while it waits |
+| `project_task` | **Solr directly**, `mcp-tasks` |
+
+`project_task` writing Solr rather than calling the gateway is deliberate and
+is why `DATALAYER_SOLR_ZK_HOST` is required here. A run's outcome must reach
+the task a client is polling even when the gateway that started it is being
+rolled — a projection routed through the gateway would be lost exactly when
+the run needed it most.
+
+Every step acts with **this service's** identity, never a credential
+belonging to the person the work is for. A user token in a workflow history
+is a token that outlives its reasons.
+
 ## The internal API
 
 Every caller uses it, the gateway included. There is no second path into the
@@ -111,10 +135,40 @@ and never talks to this service.
 | `POST /api/durable/v1/workflows/{uid}/cancel` | Stop one |
 | `GET /api/durable/v1/operations` | What this deployment is: engine, queues, catalog |
 
-Authenticated with `DATALAYER_DURABLE_API_KEY` in `X-API-Key`, the header
-every Datalayer service proves itself with. **An unset key refuses every
-caller** rather than admitting all of them — a workflow API open to the
-cluster network is a way to start work as anybody.
+Authentication is **per caller, with scopes**, in `X-API-Key`. There is no
+single key for the service: three identities are known, each with the least
+it needs, and a key naming another audience is refused even when it is a real
+key — so a leaked Contents key cannot start workflows.
+
+| Caller | Key variable | May |
+| --- | --- | --- |
+| `jupyter-mcp-server` | `DATALAYER_JUPYTER_MCP_SERVER_API_KEY` | start, read, signal, cancel |
+| `contents` | `DATALAYER_CONTENTS_API_KEY` | start, read, cancel — not signal |
+| `operator` | `DATALAYER_OPERATOR_API_KEY` | read. It watches; it never starts anything |
+
+**An unset key refuses that caller** rather than admitting all of them:
+absence is a refusal, not a wildcard. The keys are read on each request, not
+when the route is defined, so a rotated key takes effect without a restart —
+which matters most in the case you usually rotate for.
+
+:::warning Only the gateway's key is in the chart today
+`datalayer-durable`'s Deployment injects
+`DATALAYER_JUPYTER_MCP_SERVER_API_KEY` and not the Contents or Operator ones.
+Both of those callers therefore get `401` in a deployment, silently as far as
+this service is concerned — Contents cannot run its operations here and the
+Operator cannot read them. Add them to the release secret when those paths
+are wanted.
+
+The chart also injects `DATALAYER_DURABLE_API_KEY`, which **nothing reads**.
+It is declared in `config.py` with a docstring saying it is what the gateway
+calls with, and that has never been true: the gateway calls with its own key
+against this service's audience. Setting it changes nothing.
+:::
+
+No route takes a **user's** token. A workflow is started *for* a person by a
+service that has already decided they may, and re-deciding it here with a
+weaker view of the request would be a second answer to a question that
+already has one.
 
 ## Configuration
 
@@ -122,15 +176,28 @@ cluster network is a way to start work as anybody.
 | --- | --- |
 | `DATALAYER_DURABLE_ENGINE` | `dbos` (deployed) or `temporal` (planned). Any other value refuses to start |
 | `DBOS_DATABASE_URL` | The DBOS system database. **Never the SQLite default in a cluster**: a worker whose state is on its own disk has no state at all the moment it moves |
-| `DATALAYER_DURABLE_API_KEY` | What a caller proves itself with. Empty means nobody may call, which is a refusal and not a wildcard |
+| `DATALAYER_JUPYTER_MCP_SERVER_API_KEY` | The gateway's key, for calls **in**. Empty refuses that caller |
+| `DATALAYER_CONTENTS_API_KEY` | Contents' key, for calls in. Not in the chart today |
+| `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for calls in. Not in the chart today |
+| `DATALAYER_SOLR_ZK_HOST` | Where `mcp-tasks` is. The `project_task` step writes the projection **directly**, so this is required and not optional |
+| `DBOS_APPLICATION_VERSION` | Set from the chart's `appVersion`. A worker only takes workflows of a version it can run — see [Upgrades](#upgrades) |
 | `DATALAYER_DURABLE_QUEUES` | Which queues this Deployment takes work from, comma-separated. One Deployment per queue is why a long run cannot starve a short one |
 | `DATALAYER_RUNTIMES_URL` | Where Runtimes is, at its **public** URL — the workers and Runtimes are not guaranteed to share a cluster, and an in-cluster name works right up until they do not |
 | `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
 | `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call to a Datalayer API may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
 
-`check_configuration()` runs at startup and refuses on a setting that would
-fail later and somewhere else — an unknown engine, or no queues at all.
+`check_configuration()` runs at startup and refuses rather than failing later
+and somewhere else:
+
+- an engine that is not `dbos` or `temporal`;
+- **no queues at all** — a worker with no queue runs nothing and looks
+  healthy doing it;
+- a `DBOS_DATABASE_URL` naming **SQLite**. A durable engine on a file local to
+  one pod loses every in-flight workflow when that pod moves, which is the one
+  thing this service exists to prevent. That is why the local stack runs a real
+  PostgreSQL: a local run on SQLite would pass against something the
+  deployment refuses to start on.
 
 ## Deploy
 
