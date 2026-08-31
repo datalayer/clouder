@@ -356,6 +356,28 @@ and Vault retention before applying a production schedule.
 See [Datalayer Contents](/services/contents/),
 [Solr](/services/system/solr/) and [Continuity](/operations/continuity/).
 
+## Mount gateway settings
+
+The [mount gateway](/services/system/local-csi/#the-mount-gateway) binds home
+folders into runtime pods that are already running, so a launch that mounts
+the Home Folder is served from the prewarmed pool instead of a cold pod. It is
+off by default and has two halves, which are turned on in this order:
+
+| Setting | Where | Meaning |
+| --- | --- | --- |
+| `gateway.enabled`, `gateway.sharedFilesystemClaim` | `datalayer-local-csi` chart | Run the node agent and name the RWX claim it binds from. Installing the chart with the first and not the second fails. |
+| `DATALAYER_MOUNT_GATEWAY_ENABLED` | `datalayer-operator` | Give pooled pods the gateway volume and serve Home Folder launches from the pool. |
+| `DATALAYER_MOUNT_GATEWAY_READY_TIMEOUT_SECONDS` | `datalayer-operator` | How long a launch waits for the node agent to confirm the mounts (default 20). |
+| `DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD` | `datalayer-operator` | The most folders one sandbox may be granted (default 32). |
+| `gateway.maxMountsPerNode` | `datalayer-local-csi` chart | The most the node agent will hold at once (default 512). |
+| `apiServer.cidr` | `datalayer-local-csi` chart | The control-plane address the agent's NetworkPolicy allows. The pod watch is the agent's only input; without this egress it mounts nothing. |
+
+Deploy the node agent **first**. With the Operator setting on and no agent,
+pooled pods carry the volume and wait for mounts nobody makes. The nodes must
+also have shared mount propagation on the kubelet directory
+(`findmnt -no PROPAGATION --target /var/lib/kubelet`); without it a grant
+succeeds on the node and is invisible in the sandbox.
+
 :::tip
 
 Use any of the following command to generate tokens.

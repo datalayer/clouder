@@ -136,6 +136,9 @@ def test_status_command_reports_nodes(monkeypatch):
             return _Result(json.dumps(pods))
         if "/mounts" in command:
             return _Result(json.dumps(mounts))
+        if "/gateway" in command:
+            # 404 body: the gateway is not enabled on this node.
+            return _Result('{"error": "the mount gateway is not enabled on this node"}')
         raise AssertionError(command)
 
     monkeypatch.setattr(local_csi_cli, "_infer_cluster_name", lambda cluster: "demo")
@@ -156,3 +159,63 @@ def test_status_command_reports_nodes(monkeypatch):
     assert "present" in result.stdout
     assert "1/2" in result.stdout
     assert "relay refused" in result.stdout
+
+
+def test_status_reports_the_mount_gateway_when_a_node_runs_one(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "200")
+    pod_uid = "3f2b1a0c-1111-2222-3333-444455556666"
+    gateway = {
+        "gateway_root": "/var/lib/datalayer/mount-gateway",
+        "shared_root": "/mnt/shared-fs",
+        "counters": {"granted": 2, "revoked": 0, "failed": 0, "released": 0, "leaked": 1},
+        "pods": {
+            pod_uid: {
+                "published": True,
+                "mounts": {
+                    "eric": {"source": "home/users/01H", "mode": "rw", "mounted": True},
+                    "datalayer": {"source": "home/organizations/01J", "mode": "ro", "mounted": True},
+                },
+            }
+        },
+    }
+    pods = {
+        "items": [
+            {
+                "metadata": {"name": "datalayer-local-csi-abcde"},
+                "spec": {"nodeName": "worker-1"},
+                "status": {"phase": "Running", "containerStatuses": [{"ready": True}, {"ready": True}]},
+            }
+        ]
+    }
+
+    def fake_ssh(ip, user, key_path, command, check=True):
+        if "get csidriver" in command:
+            return _Result("local.csi.datalayer.io")
+        if "get daemonset" in command:
+            return _Result(json.dumps({"status": {"desiredNumberScheduled": 1, "numberReady": 1}}))
+        if "get pods" in command:
+            return _Result(json.dumps(pods))
+        if "/mounts" in command:
+            return _Result(json.dumps({"driver": "local.csi.datalayer.io", "bridges": {}, "volumes": {}}))
+        if "/gateway" in command:
+            return _Result(json.dumps(gateway))
+        raise AssertionError(command)
+
+    monkeypatch.setattr(local_csi_cli, "_infer_cluster_name", lambda cluster: "demo")
+    monkeypatch.setattr(local_csi_cli, "resolve_kubeadm_cloud_context", lambda cloud, cluster_name: ("aws", "acc"))
+    monkeypatch.setattr(
+        local_csi_cli,
+        "_resolve_cluster_vms",
+        lambda name, cloud, context_id: {"master": {"ip": "1.2.3.4"}, "workers": []},
+    )
+    monkeypatch.setattr(local_csi_cli, "_resolve_ssh_key_for_cluster", lambda name: "/k")
+    monkeypatch.setattr(local_csi_cli, "_ssh_cmd", fake_ssh)
+
+    result = runner.invoke(local_csi_cli.local_csi_app, ["status"])
+
+    assert result.exit_code == 0, result.output
+    assert "Mount gateway" in result.stdout
+    assert "eric" in result.stdout and "datalayer" in result.stdout
+    # A leaked mount is the one failure that must not be a log line nobody
+    # reads: it is why a Pod sticks in Terminating.
+    assert "could not be unmounted" in result.stdout

@@ -356,9 +356,28 @@ kubectl get pod -n datalayer-runtimes POD \
   -o jsonpath='{.metadata.annotations.runtime-pools\.datalayer\.io/gateway-mounts-ready}'
 ~~~
 
-The `leaked` counter is the one to alert on. It is incremented when a mount
-would not come down, which is exactly what makes a Pod stick in `Terminating`
-— kubelet is about to attempt the same unmount and fail the same way.
+The driver serves Prometheus metrics at `/metrics` on the same port, and the
+DaemonSet pods carry `prometheus.io/scrape` annotations
+(`monitoring.annotations`, on by default):
+
+| Metric | Meaning |
+| --- | --- |
+| `datalayer_mount_gateway_leaked_total` | Mounts that would not unmount. **Each one is a Pod that will stick in `Terminating`.** |
+| `datalayer_mount_gateway_failed_total` | Grants that could not be applied — a runtime started without folders it asked for. |
+| `datalayer_mount_gateway_mounts` / `_pods` | Folders currently bound, and the pods holding a tree. |
+| `datalayer_mount_gateway_granted_total` / `_revoked_total` / `_released_total` | What the agent has done since it started. |
+| `datalayer_local_csi_bridges` / `_disconnected` | The CSI driver's bridge filesystems. |
+
+`monitoring.prometheusRule=true` installs the rules — a critical alert on any
+increase of `leaked`, a warning on repeated grant failures, and one on a
+bridge disconnected for ten minutes. It needs the Prometheus operator's CRD,
+so it is off where there is none: an unappliable manifest fails the whole
+release.
+
+The `leaked` counter is the one that must never be only a log line. It is
+incremented when a mount would not come down, which is exactly what makes a
+Pod stick in `Terminating` — kubelet is about to attempt the same unmount and
+fail the same way.
 
 **Recovering a stuck pod.** Find the mount and take it down on the node, then
 let kubelet finish:

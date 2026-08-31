@@ -155,17 +155,27 @@ def serve(
     endpoint: str,
     version: str,
     health_port: int | None = 9808,
+    gateway_agent=None,
 ) -> None:
-    """Run the plugin until SIGTERM/SIGINT."""
+    """Run the plugin until SIGTERM/SIGINT.
+
+    ``gateway_agent``, when given, is the mount gateway: the same node, the
+    same privilege and the same process, because a node has one mount table
+    and two components pretending to own it is how a leak goes unnoticed.
+    """
     address = _prepare_endpoint(endpoint)
     server = build_server(driver, version)
     server.add_insecure_port(address)
 
-    health = HealthServer(driver, port=health_port) if health_port else None
+    health = (
+        HealthServer(driver, port=health_port, gateway=gateway_agent) if health_port else None
+    )
     if health is not None:
         health.start()
 
     driver.start()
+    if gateway_agent is not None:
+        gateway_agent.start()
     server.start()
     if health is not None:
         health.serving = True
@@ -189,6 +199,8 @@ def serve(
             pass
     finally:
         server.stop(grace=5).wait()
+        if gateway_agent is not None:
+            gateway_agent.close()
         driver.close()
         if health is not None:
             health.stop()

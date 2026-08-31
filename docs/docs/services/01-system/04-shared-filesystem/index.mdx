@@ -13,6 +13,47 @@ Datalayer user data is stored on a Shared File System. The File System Storage c
 - [Azure Files NFS](https://learn.microsoft.com/en-us/azure/storage/files/files-nfs-protocol) mounted through the Azure CSI driver.
 - [Ceph](https://docs.ceph.com/) Filesystem deployed and managed by [Rook](https://rook.io/).
 
+## Who mounts the claim
+
+The RWX claim is read and written by four things, and they must agree on the
+layout below or a path recorded by one is unresolvable in another:
+
+| Component | How it mounts it |
+| --- | --- |
+| Runtime pods (Operator) | Whole claim in the companion container at `DATALAYER_SHARED_FS_MOUNT_PATH`; one `subPath` per home folder in the runtime container, at `/home/jovyan/<handle>`. |
+| `datalayer-contents` | Whole claim, at the same path. It serves the Home Folder browser from the same bytes the sandbox sees. |
+| [Mount gateway](/services/system/local-csi/#the-mount-gateway) | Whole claim, **once per node** in the `datalayer-local-csi` DaemonSet, at `gateway.sharedFilesystemMountPath`. It binds sub-paths of it into pods that are already running. |
+| `plane` provisioning | Creates the top-level directories and their ownership. |
+
+### The layout
+
+~~~text
+/mnt/shared-fs/
+  home/
+    users/<user uid>/
+    organizations/<organization uid>/
+    teams/<team uid>/
+  public/  datasets/  tmp/
+~~~
+
+The names under `/home/jovyan` are the account handles, not the uids, and they
+are produced in one place — `datalayer_common.home_folders` — because the
+Operator, Contents and the gateway all have to call one folder by one name. A
+team is named after its organization and itself joined by a double underscore
+(`datalayer__research`).
+
+### The mount set is the boundary
+
+Every runtime runs as `1000:100` and the folders are created `0775`, so the
+shared filesystem gives every sandbox the same POSIX identity. **What a
+sandbox cannot reach is what was not mounted into it** — the mount set is the
+access decision, not a file permission. That is why the set is resolved in
+Runtimes against IAM with the caller's own credentials, and why a client
+naming a folder in a request is never a way to mount it. It holds for a
+gateway bind exactly as it holds for a `subPath` mount: the gateway refuses a
+source that does not resolve beneath this claim, and it never takes a path
+from anywhere but the pod annotation the Operator wrote.
+
 ## AWS EFS
 
 Define the storage provider as `aws`.

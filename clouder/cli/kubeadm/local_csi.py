@@ -54,6 +54,25 @@ def pack_chart(chart_dir: Path) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+#: The node check the mount gateway depends on. A bind made inside the agent's
+#: tree reaches a pod only if the kubelet directory is in a shared peer group:
+#: on a node whose mounts are `private`, every grant succeeds on the node and
+#: is invisible in the sandbox, which is the worst way for this to fail.
+PROPAGATION_CHECK = """
+GATEWAY_PROPAGATION="$(findmnt -no PROPAGATION --target /var/lib/kubelet 2>/dev/null || true)"
+case "$GATEWAY_PROPAGATION" in
+    *shared*)
+        echo "  mount propagation on /var/lib/kubelet: $GATEWAY_PROPAGATION"
+        ;;
+    *)
+        echo "  WARNING: /var/lib/kubelet propagation is '${GATEWAY_PROPAGATION:-unknown}', not shared."
+        echo "  The mount gateway needs a shared peer group to reach pods."
+        echo "  Fix it with: mount --make-rshared / (and make it persistent)."
+        ;;
+esac
+"""
+
+
 def build_local_csi_install_script(
     chart_dir: Path,
     *,
@@ -61,6 +80,8 @@ def build_local_csi_install_script(
     relay_host: str = "",
     relay_port: int = 443,
     relay_cidr: str = "",
+    gateway: bool = False,
+    shared_filesystem_claim: str = "",
 ) -> str:
     """Return a bash script that installs the chart on the master."""
     values = [
@@ -70,8 +91,17 @@ def build_local_csi_install_script(
     ]
     if relay_cidr:
         values.append(f"--set relay.cidr={shlex.quote(relay_cidr)}")
+    if gateway:
+        if not shared_filesystem_claim:
+            raise ValueError(
+                "the mount gateway needs the shared filesystem claim: "
+                "pass --local-csi-shared-claim <claim name>"
+            )
+        values.append("--set gateway.enabled=true")
+        values.append(f"--set gateway.sharedFilesystemClaim={shlex.quote(shared_filesystem_claim)}")
     set_args = " \\\n    ".join(values)
     return f"""set -euo pipefail
+{PROPAGATION_CHECK if gateway else ""}
 
 if ! command -v helm >/dev/null 2>&1; then
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
@@ -104,6 +134,8 @@ def install_local_csi(
     relay_port: int = 443,
     relay_cidr: str = "",
     chart_path: str | None = None,
+    gateway: bool = False,
+    shared_filesystem_claim: str = "",
 ) -> bool:
     """Install the Local CSI driver on an initialized cluster; True on success."""
     from ._helpers import _ssh_cmd_stream
@@ -119,13 +151,19 @@ def install_local_csi(
         print("  Pass --local-csi-relay-host <contents host> to pin it.")
 
     print(f"  Installing Local CSI driver from [dim]{chart_dir}[/dim] (image {image})...")
-    script = build_local_csi_install_script(
-        chart_dir,
-        image=image,
-        relay_host=relay_host,
-        relay_port=relay_port,
-        relay_cidr=relay_cidr,
-    )
+    try:
+        script = build_local_csi_install_script(
+            chart_dir,
+            image=image,
+            relay_host=relay_host,
+            relay_port=relay_port,
+            relay_cidr=relay_cidr,
+            gateway=gateway,
+            shared_filesystem_claim=shared_filesystem_claim,
+        )
+    except ValueError as exc:
+        print(f"[red]  {exc}[/red]")
+        return False
     rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, script)
     if rc != 0:
         print("[red]  Local CSI driver installation failed.[/red]")

@@ -15,6 +15,13 @@ import sys
 
 from .._version import __version__
 from .driver import DRIVER_NAME, LocalCsiDriver
+from .gateway import (
+    DEFAULT_GATEWAY_ROOT,
+    DEFAULT_KUBELET_DIR,
+    DEFAULT_MAX_MOUNTS_PER_NODE,
+    DEFAULT_MAX_MOUNTS_PER_POD,
+    DEFAULT_SHARED_ROOT,
+)
 from .mounter import ProcessMounter
 
 DEFAULT_ENDPOINT = "unix:///csi/csi.sock"
@@ -56,6 +63,46 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("DATALAYER_LOCAL_CSI_ALLOW_INSECURE_RELAY", "").lower() in ("1", "true", "yes"),
         help="Accept ws:// relay URLs (development only).",
     )
+    parser.add_argument(
+        "--mount-gateway",
+        action="store_true",
+        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_ENABLED", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Run the mount gateway beside the CSI driver: bind folders of the shared "
+            "filesystem into running pods from their gateway-mounts annotation. "
+            "Env: DATALAYER_MOUNT_GATEWAY_ENABLED."
+        ),
+    )
+    parser.add_argument(
+        "--shared-root",
+        default=os.environ.get("DATALAYER_SHARED_FS_MOUNT_PATH", DEFAULT_SHARED_ROOT),
+        help="Where this DaemonSet mounts the shared filesystem claim.",
+    )
+    parser.add_argument(
+        "--gateway-root",
+        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_ROOT", DEFAULT_GATEWAY_ROOT),
+        help="The agent's own per-pod trees. Must propagate to the host.",
+    )
+    parser.add_argument(
+        "--kubelet-dir",
+        default=os.environ.get("DATALAYER_KUBELET_DIR", DEFAULT_KUBELET_DIR),
+        help="The kubelet directory holding pod volume directories.",
+    )
+    parser.add_argument(
+        "--gateway-namespace",
+        default=os.environ.get("DATALAYER_RUNTIMES_NAMESPACE", ""),
+        help="Limit the pod watch to one namespace; empty watches the node.",
+    )
+    parser.add_argument(
+        "--max-mounts-per-pod",
+        type=int,
+        default=int(os.environ.get("DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD", DEFAULT_MAX_MOUNTS_PER_POD)),
+    )
+    parser.add_argument(
+        "--max-mounts-per-node",
+        type=int,
+        default=int(os.environ.get("DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_NODE", DEFAULT_MAX_MOUNTS_PER_NODE)),
+    )
     parser.add_argument("--watch-interval", type=float, default=2.0, help="Seconds between bridge process checks.")
     parser.add_argument("--mount-timeout", type=float, default=30.0, help="Seconds to wait for a bridge to mount.")
     parser.add_argument("--log-level", default=os.environ.get("DATALAYER_LOCAL_CSI_LOG_LEVEL", "INFO"))
@@ -75,19 +122,36 @@ def main(argv: list[str] | None = None) -> int:
 
     from .server import serve
 
+    mounter = ProcessMounter(mount_timeout=args.mount_timeout)
     driver = LocalCsiDriver(
-        mounter=ProcessMounter(mount_timeout=args.mount_timeout),
+        mounter=mounter,
         node_id=args.node_id,
         state_dir=args.state_dir,
         relay_host=args.relay_host or None,
         allow_insecure_relay=args.allow_insecure_relay,
         watch_interval=args.watch_interval,
     )
+    gateway_agent = None
+    if args.mount_gateway:
+        from .gateway_agent import build_agent
+
+        gateway_agent = build_agent(
+            mounter=mounter,
+            node_name=args.node_id,
+            namespace=args.gateway_namespace or None,
+            shared_root=args.shared_root,
+            gateway_root=args.gateway_root,
+            kubelet_dir=args.kubelet_dir,
+            max_mounts_per_pod=args.max_mounts_per_pod,
+            max_mounts_per_node=args.max_mounts_per_node,
+        )
+
     serve(
         driver=driver,
         endpoint=args.endpoint,
         version=__version__,
         health_port=args.health_port or None,
+        gateway_agent=gateway_agent,
     )
     return 0
 

@@ -9,6 +9,11 @@ table goes through a :class:`Mounter`:
   point at the pod's target path with ``mount --bind`` — remounted read-only
   when the bridge is — and unmounts with ``umount``.
 - :class:`FakeMounter` records the same calls in memory for the tests.
+
+The mount gateway uses the same mounter for a different job: ``bind_dir``,
+``make_shared`` and ``set_attrs`` bind a directory of the shared filesystem
+into a running pod. One mounter, because there is one mount table on a node
+and two things pretending to own it is how a leak goes unnoticed.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+
+from .linux import UnsupportedKernel, mount_setattr
 
 log = logging.getLogger("clouder.csi.mounter")
 
@@ -73,6 +80,26 @@ class Mounter(abc.ABC):
     @abc.abstractmethod
     def is_mount_point(self, path: str) -> bool:
         """Whether ``path`` is a mount point, including a dead FUSE one."""
+
+    # -- what the mount gateway needs on top of a bridge bind ---------------
+
+    @abc.abstractmethod
+    def bind_dir(self, source: str, target: str, *, recursive: bool = False) -> None:
+        """Bind the directory ``source`` at ``target``.
+
+        Unlike :meth:`bind`, ``source`` is a directory on the node rather than
+        a bridge filesystem this mounter started, and the read-only decision
+        is :meth:`set_attrs`' — a remount is not recursive, and the gateway
+        needs one that is.
+        """
+
+    @abc.abstractmethod
+    def make_shared(self, path: str) -> None:
+        """Put ``path`` in a shared peer group, so submounts propagate out of it."""
+
+    @abc.abstractmethod
+    def set_attrs(self, path: str, *, read_only: bool, noexec: bool, recursive: bool = True) -> None:
+        """Apply mount attributes to ``path``, recursively by default."""
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +258,36 @@ class ProcessMounter(Mounter):
                 self.unmount(target)
                 raise
 
+    def bind_dir(self, source: str, target: str, *, recursive: bool = False) -> None:
+        self._run(["mount", "--rbind" if recursive else "--bind", source, target])
+
+    def make_shared(self, path: str) -> None:
+        self._run(["mount", "--make-rshared", path])
+
+    def set_attrs(self, path: str, *, read_only: bool, noexec: bool, recursive: bool = True) -> None:
+        try:
+            mount_setattr(
+                path,
+                read_only=read_only,
+                nosuid=True,
+                nodev=True,
+                noexec=noexec,
+                recursive=recursive,
+            )
+            return
+        except UnsupportedKernel as exc:
+            # A kernel without `mount_setattr` can still be told read-only,
+            # but only for this mount: a nested mount underneath it stays
+            # writable, so say so rather than letting the caller believe the
+            # subtree is protected.
+            log.warning("mount_setattr unavailable (%s); falling back to remount for %s", exc, path)
+        options = ["remount", "bind", "nosuid", "nodev"]
+        if read_only:
+            options.append("ro")
+        if noexec:
+            options.append("noexec")
+        self._run(["mount", "-o", ",".join(options), path])
+
     def unmount(self, path: str) -> None:
         if not self.is_mount_point(path):
             return
@@ -297,9 +354,12 @@ class FakeMounter(Mounter):
     """
 
     fail_start: str | None = None
+    fail_bind_dir: str | None = None
     processes: dict[str, FakeProcess] = field(default_factory=dict)
     mounts: set[str] = field(default_factory=set)
     binds: dict[str, tuple[str, bool]] = field(default_factory=dict)
+    shared: set[str] = field(default_factory=set)
+    attrs: dict[str, dict] = field(default_factory=dict)
     calls: list[tuple] = field(default_factory=list)
 
     def start(self, *, bridge_uid: str, relay_url: str, mount_token: str, mount_path: str, mode: str) -> MountHandle:
@@ -343,10 +403,29 @@ class FakeMounter(Mounter):
         self.binds[target] = (source, read_only)
         self.mounts.add(target)
 
+    def bind_dir(self, source: str, target: str, *, recursive: bool = False) -> None:
+        self.calls.append(("bind_dir", source, target, recursive))
+        if self.fail_bind_dir:
+            raise MountError(self.fail_bind_dir)
+        self.binds[target] = (source, False)
+        self.mounts.add(target)
+
+    def make_shared(self, path: str) -> None:
+        self.calls.append(("make_shared", path))
+        self.shared.add(path)
+
+    def set_attrs(self, path: str, *, read_only: bool, noexec: bool, recursive: bool = True) -> None:
+        self.calls.append(("set_attrs", path, read_only, noexec, recursive))
+        if path not in self.mounts:
+            raise MountError(f"{path} is not mounted")
+        self.attrs[path] = {"read_only": read_only, "noexec": noexec, "recursive": recursive}
+
     def unmount(self, path: str) -> None:
         self.calls.append(("unmount", path))
         self.mounts.discard(path)
         self.binds.pop(path, None)
+        self.shared.discard(path)
+        self.attrs.pop(path, None)
 
     def is_mount_point(self, path: str) -> bool:
         return path in self.mounts

@@ -48,6 +48,34 @@ def rendered() -> dict[tuple[str, str], dict]:
     return {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents}
 
 
+@pytest.fixture(scope="module")
+def with_gateway() -> dict[tuple[str, str], dict]:
+    if not CHART.is_dir():
+        pytest.skip(f"chart not found at {CHART}")
+    result = subprocess.run(
+        [
+            "helm",
+            "template",
+            "datalayer-local-csi",
+            str(CHART),
+            "--namespace",
+            "datalayer-runtimes",
+            "--set",
+            "relay.host=r1.datalayer.run",
+            "--set",
+            "gateway.enabled=true",
+            "--set",
+            "gateway.sharedFilesystemClaim=datalayer-shared-fs",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    return {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents}
+
+
 def test_csidriver(rendered):
     csidriver = rendered[("CSIDriver", "local.csi.datalayer.io")]
     spec = csidriver["spec"]
@@ -106,3 +134,118 @@ def test_rbac_and_service_account(rendered):
     verbs = {verb for rule in role["rules"] for verb in rule["verbs"]}
     assert verbs <= {"get", "create", "patch"}, "nodes: get and events: create, patch, nothing more"
     assert not any("secrets" in rule["resources"] for rule in role["rules"]), "the token arrives in the request"
+
+
+# ---------------------------------------------------------------------------
+# The mount gateway
+# ---------------------------------------------------------------------------
+
+
+def test_the_gateway_is_off_by_default(rendered):
+    driver = rendered[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]["containers"][0]
+    assert "--mount-gateway" not in driver["args"]
+    assert not any(m["mountPath"] == "/mnt/shared-fs" for m in driver["volumeMounts"])
+    role = rendered[("ClusterRole", "datalayer-local-csi")]
+    assert not any("pods" in rule["resources"] for rule in role["rules"])
+
+
+def test_the_gateway_mounts_the_claim_and_its_own_tree(with_gateway):
+    pod = with_gateway[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]
+    driver = pod["containers"][0]
+    assert "--mount-gateway" in driver["args"]
+
+    mounts = {m["mountPath"]: m for m in driver["volumeMounts"]}
+    # Bidirectional, or a bind made inside the tree never reaches the host,
+    # and a mount that does not reach the host never reaches a pod.
+    assert mounts["/var/lib/datalayer/mount-gateway"]["mountPropagation"] == "Bidirectional"
+    assert "/mnt/shared-fs" in mounts
+
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert volumes["gateway-root"]["hostPath"]["type"] == "DirectoryOrCreate"
+    assert volumes["shared-fs"]["persistentVolumeClaim"]["claimName"] == "datalayer-shared-fs"
+
+
+def test_the_gateway_needs_a_claim_named(tmp_path):
+    if not CHART.is_dir():
+        pytest.skip(f"chart not found at {CHART}")
+    result = subprocess.run(
+        [
+            "helm",
+            "template",
+            "datalayer-local-csi",
+            str(CHART),
+            "--set",
+            "gateway.enabled=true",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Turning the gateway on without the claim would deploy an agent with
+    # nothing to bind, and the failure would surface as launches that never
+    # become ready. Fail at install instead.
+    assert result.returncode != 0
+    assert "sharedFilesystemClaim is required" in (result.stderr + result.stdout)
+
+
+def test_the_gateway_may_read_pods_and_write_one_annotation(with_gateway):
+    role = with_gateway[("ClusterRole", "datalayer-local-csi")]
+    pods = [rule for rule in role["rules"] if "pods" in rule["resources"]]
+    assert pods and set(pods[0]["verbs"]) == {"get", "list", "watch", "patch"}
+    # Not delete, not create, not eviction, and still no Secret: the pod
+    # annotation is the whole of the gateway's interface.
+    assert not {"delete", "create", "update"} & set(pods[0]["verbs"])
+    assert not any("pods/eviction" in rule["resources"] for rule in role["rules"])
+    assert not any("secrets" in rule["resources"] for rule in role["rules"])
+
+
+def test_the_gateway_may_reach_the_api_server(with_gateway):
+    egress = with_gateway[("NetworkPolicy", "datalayer-local-csi")]["spec"]["egress"]
+    # The first rule is the API server, and it carries no `to`: with no CIDR
+    # configured the port is open to any destination, which is what an
+    # unconfigured control-plane address has to mean.
+    assert egress[0]["ports"] == [{"protocol": "TCP", "port": 443}]
+    assert "to" not in egress[0]
+
+
+def test_the_gateway_runs_in_the_driver_that_already_has_the_privilege(with_gateway):
+    containers = with_gateway[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]["containers"]
+    # One node component, not two: a node has one mount table, and two things
+    # pretending to own it is how a leak goes unnoticed.
+    assert {c["name"] for c in containers} == {"driver", "registrar"}
+
+
+def test_the_metrics_are_scraped_and_the_leak_is_alerted(tmp_path):
+    if not CHART.is_dir():
+        pytest.skip(f"chart not found at {CHART}")
+    result = subprocess.run(
+        [
+            "helm", "template", "datalayer-local-csi", str(CHART),
+            "--set", "gateway.enabled=true",
+            "--set", "gateway.sharedFilesystemClaim=datalayer-shared-fs",
+            "--set", "monitoring.prometheusRule=true",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    documents = {
+        (doc["kind"], doc["metadata"]["name"]): doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc
+    }
+
+    pod = documents[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["metadata"]
+    assert pod["annotations"]["prometheus.io/path"] == "/metrics"
+
+    rules = documents[("PrometheusRule", "datalayer-local-csi")]["spec"]["groups"][0]["rules"]
+    leak = next(rule for rule in rules if rule["alert"] == "DatalayerMountGatewayLeakedMount")
+    # A leaked mount is the failure that ends in a Pod stuck Terminating. It
+    # must not depend on somebody running a CLI to notice it.
+    assert leak["labels"]["severity"] == "critical"
+    assert "datalayer_mount_gateway_leaked_total" in leak["expr"]
+
+
+def test_there_is_no_rule_where_there_is_no_prometheus_operator(rendered):
+    # An unappliable manifest fails the whole release, so the CRD-dependent
+    # object is opt-in.
+    assert not any(kind == "PrometheusRule" for kind, _ in rendered)

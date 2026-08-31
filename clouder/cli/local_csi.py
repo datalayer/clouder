@@ -81,7 +81,15 @@ def _collect_status(master_ip: str, user: str, key_path: str, namespace: str, re
         ready = all(
             c.get("ready") for c in pod.get("status", {}).get("containerStatuses", [])
         ) and bool(pod.get("status", {}).get("containerStatuses"))
-        entry = {"pod": name, "node": node, "phase": phase, "ready": ready, "mounts": None, "error": ""}
+        entry = {
+            "pod": name,
+            "node": node,
+            "phase": phase,
+            "ready": ready,
+            "mounts": None,
+            "gateway": None,
+            "error": "",
+        }
         if ready:
             result = _ssh_cmd(
                 master_ip,
@@ -94,6 +102,20 @@ def _collect_status(master_ip: str, user: str, key_path: str, namespace: str, re
                 entry["mounts"] = json.loads(result.stdout) if result.stdout.strip() else None
             except json.JSONDecodeError:
                 entry["error"] = "unreadable /mounts"
+            result = _ssh_cmd(
+                master_ip,
+                user,
+                key_path,
+                f"kubectl -n {namespace} exec {name} -c driver -- wget -qO- http://127.0.0.1:{health_port}/gateway 2>/dev/null || true",
+                check=False,
+            )
+            try:
+                gateway = json.loads(result.stdout) if result.stdout.strip() else None
+            except json.JSONDecodeError:
+                gateway = None
+            # 404 means the gateway is not enabled on this node, which is a
+            # deployment choice rather than a fault: report it as absent.
+            entry["gateway"] = gateway if isinstance(gateway, dict) and "pods" in gateway else None
         status["pods"].append(entry)
     return status
 
@@ -171,3 +193,56 @@ def local_csi_status(
             "\n".join(disconnected) or "-",
         )
     print(table)
+
+    _print_gateway(status)
+
+
+def _print_gateway(status: dict) -> None:
+    """The mount gateway, per node and per pod: what is bound and what leaked.
+
+    A node without the gateway prints nothing rather than an empty table: it
+    is off there, which is a deployment choice, not a fault.
+    """
+    nodes = [entry for entry in status["pods"] if entry.get("gateway")]
+    if not nodes:
+        return
+
+    table = Table(title="Mount gateway")
+    table.add_column("Node", style="cyan")
+    table.add_column("Runtime pod", style="dim")
+    table.add_column("Published", style="green")
+    table.add_column("Mounts", style="magenta")
+    table.add_column("Leaked", style="red")
+
+    for entry in nodes:
+        gateway = entry["gateway"]
+        counters = gateway.get("counters", {}) or {}
+        pods = gateway.get("pods", {}) or {}
+        leaked = str(counters.get("leaked", 0) or 0)
+        if not pods:
+            table.add_row(entry["node"], "-", "-", "0", leaked)
+            continue
+        for pod_uid, detail in sorted(pods.items()):
+            mounts = detail.get("mounts", {}) or {}
+            names = ", ".join(
+                f"{target}{'' if spec.get('mounted') else ' (gone)'}"
+                f"{' ro' if spec.get('mode') == 'ro' else ''}"
+                for target, spec in sorted(mounts.items())
+            )
+            table.add_row(
+                entry["node"],
+                pod_uid,
+                "yes" if detail.get("published") else "no",
+                names or "-",
+                leaked,
+            )
+    print(table)
+
+    total_leaked = sum((entry["gateway"].get("counters", {}) or {}).get("leaked", 0) for entry in nodes)
+    if total_leaked:
+        # A mount that would not come down is what makes a Pod stick in
+        # Terminating; kubelet is about to try the same unmount and fail too.
+        print(
+            f"[red]{total_leaked} gateway mount(s) could not be unmounted. "
+            "Pods holding them will stay in Terminating; see the local-csi runbook.[/red]"
+        )
