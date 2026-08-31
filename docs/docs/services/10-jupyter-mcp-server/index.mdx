@@ -1327,6 +1327,20 @@ condition with different windows are two different questions, and a count
 taken over all of history only grows — so an alert on it would fire once and
 then every window for ever.
 
+Owners write rules on the **Alerts** page of the organization's MCP tab, or
+through IAM's API. The page's dropdowns are generated from the evaluator's
+own `CONDITIONS`, `OPERATORS` and `SEVERITIES`, so a rule written there
+cannot be one the evaluator refuses; a `422` from the API carries the
+evaluator's own words about what is wrong.
+
+`sli.latency` is listed and **not selectable**, because nothing reads it yet.
+A rule on a condition with no reader is stored, evaluated every minute,
+counted `unreadable` and never fires — which looks configured, and is the
+silence alerting exists to break. A test in the gateway's suite holds the
+console's list against `alerts.CONDITIONS` and `jobs.alert_readers()` in both
+directions, so adding a reader without offering it, or offering one without a
+reader, fails CI rather than shipping quietly.
+
 ### Being told
 
 A firing is delivered as an **ai-agents notification**, POSTed to
