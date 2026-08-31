@@ -236,6 +236,7 @@ service refuses a token naming anything else.
 | Policy | `GET /api/mcp/v1/policy` | The caller's own effective policy, rule by rule, with the layer that decided each — platform, organization, team or personal. `?org=` widens it by the same rule as the audit |
 | Alerts | `GET /api/mcp/v1/alerts`, `POST …/{uid}/acknowledge` | An organization's owners and security auditors, the same rule as the audit. Acknowledging is idempotent; somebody else's organization's alert is `404`, because the uid of an alert is enough to know one fired |
 | Audit forwarding | `GET /api/mcp/v1/audit/forwarding` | The same rule again. Says whether the audit is reaching the organization's own system of record — never the destination or the secret |
+| Organization usage | `GET /api/mcp/v1/organizations/{uid}/usage` | The same roles as the overview. Spend, running sandboxes and the per-minute cap, each beside the limit in force — see [The two sandbox quotas](#the-two-sandbox-quotas) |
 | Organization overview | `GET /api/mcp/v1/organizations/{uid}/overview` | An organization owner or security auditor, `?team=` to narrow. The enterprise console's first page: agents, spend, tasks and alerts for one organization |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
 | Sandbox ended | `POST /api/mcp/v1/operations/runtime-ended` | Runtimes' own key. How an **external** sandbox's loss reaches the gateway — see below |
@@ -975,6 +976,26 @@ stop an agent using what it is already paying for.
 
 At the budget, not over it: a budget of 100 that admits the launch taking you
 to 140 is a budget of 140.
+
+`GET /api/mcp/v1/organizations/{uid}/usage` puts the use beside the limit —
+spend from IAM's ledger, running sandboxes from `mcp-gateway`, the limits
+from the policy. It is the page for "are we near a limit, and which one".
+
+:::info Unknown is not absent
+A figure the page could not read is reported `unknown` by name rather than
+left out. Both render as no number beside a heading and they mean opposite
+things: one is "no limit set", the other is "we cannot tell you what your
+limit is". A reader who confuses them either relaxes about a quota they are
+close to, or chases one that does not exist.
+
+An unknown figure gets no `fraction` either — a share of a number nobody read
+is a number somebody will act on. And one unreadable figure does not lose the
+page: it is opened when something is already wrong.
+:::
+
+**No route on this gateway writes a quota.** Limits are policy rules and IAM
+owns that document; a second way to write it would be a second answer to what
+an organization is allowed. The usage page names where they are set.
 
 The concurrency count is asked first. It is a Solr read this process already
 makes, where the budget is a round trip to IAM — so an organization at its
