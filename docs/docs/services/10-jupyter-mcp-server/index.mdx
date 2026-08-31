@@ -984,6 +984,13 @@ curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
   https://iam.datalayer.run/api/iam/v1/mcp-policies/organization/$ORG_UID
 ```
 
+The **personal layer** is written by each person at `/settings/policies`,
+over the same form and the same six rules. It only narrows: a personal value
+wider than an organization's changes nothing, and the page says so beside the
+field rather than refusing it — the same layer governs that person's
+personal-scope work, where no organization narrows anything, so a refusal
+would make their own policy unwritable because of their employer.
+
 Four rules are enforced. **Nothing else may be stored** — IAM refuses a rule
 the gateway does not act on, so a policy page cannot promise something that
 never happens, and `toolDenyList` is rejected as a typo rather than kept as a
