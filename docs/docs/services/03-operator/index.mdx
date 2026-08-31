@@ -325,14 +325,11 @@ attachments it just had Contents **prepare** for that pod name (see
 [Runtimes](/services/runtimes/#contents-attachments)). The Operator refuses
 the launch (`4xx`) when an attachment is not in `preparing` state, names
 another sandbox or another provider than `datalayer`, or when two of them
-share a mount path or one is not an absolute path. A sandbox with attachments
-always gets a pod of its own: a pre-warmed pool pod was built before the
-request named anything to mount, so it is never handed one. Then, per
-`delivery`:
+share a mount path or one is not an absolute path. Then, per `delivery`:
 
 | Attachment | What the pod gets |
 | --- | --- |
-| Home Folder (a `files` source, stamped by Runtimes) | subpaths of the platform shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`), one per membership the caller has — their own, each organization, each team — at `/home/jovyan/<handle>`; an init container creates the folders and hands them to the runtime user. The list of memberships is resolved by Runtimes from IAM and travels on the pod as `runtime-pools.datalayer.io/home-folder-mounts`. Contents reads the same claim at the same path, which is why the two services' mount paths must agree |
+| Home Folder (a `files` source, stamped by Runtimes) | subpaths of the platform shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`), one per membership the caller has — their own, each organization, each team — at `/home/jovyan/<handle>`; an init container creates the folders and hands them to the runtime user. The list of memberships is resolved by Runtimes from IAM and travels on the pod as `runtime-pools.datalayer.io/home-folder-mounts`. Contents reads the same claim at the same path, which is why the two services' mount paths must agree. With the mount gateway on, the same folders reach the same paths through a pooled pod instead — see below |
 | `mount` of a Volume | the Volume's PVC, at the attachment's `mount_path` (default `/home/jovyan/volumes/<volume name>`), read-only when the `mode` is `ro`. A Volume of another account refuses the launch; a required Volume that cannot be found refuses it, an optional one is dropped |
 | `local-bridge` (a person's own folder over the relay) | an inline `csi:` volume of the `local.csi.datalayer.io` driver — `content-bridge-<n>`, attributes `bridge-uid`, `sandbox-uid`, `mount-mode`, `relay-url` — with `nodePublishSecretRef` pointing at the Secret **`bridge-<bridge uid>`** (key `mount-token`, label `contents.datalayer.io/bridge-uid`). The Secret is created right after the pod and owned by it, so the token goes when the pod goes; the pod spec names the bridge and never carries the token. The [Local CSI driver](/services/system/local-csi/) on the node dials the relay and binds the filesystem before the container starts. An attachment Contents did not prepare a bridge session for is reported `failed` with `BRIDGE_NOT_PREPARED`: a required one refuses the launch, an optional one is left out — never rendered as an empty directory |
 | `environment` (brought by the Environment, see above) | the pinned git checkout, the shared-filesystem subpath or the Datashim claim; no Contents record, nothing reported |
@@ -378,6 +375,48 @@ is no record to update.
 | `DATALAYER_CONTENTS_URL` | Where the Operator reports (`operator.env` in the chart; default the in-cluster `datalayer-contents-svc`, `https://r1.datalayer.run` in the code). |
 | `DATALAYER_OPERATOR_API_KEY` | The Operator's identity to Contents — one key per calling process, so it can be rotated without touching Runtimes' and the audit trail says which acted. Required as soon as one attachment exists: without it the report raises. |
 | `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim the Home Folders live on. Contents mounts the same claim at the same path (`DATALAYER_SHARED_FS_MOUNT_PATH`); a mismatch makes a path recorded by one unresolvable in the other. |
+| `DATALAYER_MOUNT_GATEWAY_ENABLED` | Whether pooled pods carry the mount gateway and a Home Folder launch is served from the pool. Off by default. Turn it on **after** the node agent is deployed: pods would otherwise carry the volume and wait for mounts nobody makes. |
+| `DATALAYER_MOUNT_GATEWAY_READY_TIMEOUT_SECONDS` | How long the Operator waits for the node agent to report a grant applied (default 20). Past it the launch is reported without its folders, loudly. |
+| `DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD` | The most folders one sandbox may be granted (default 32). |
+
+### Pool or its own pod: which launches pay for a cold start
+
+A Pod's volumes are fixed when it is created, so a launch that mounts
+something used to need a pod of its own — scheduling, an image pull, the init
+containers and a Jupyter startup probe — while a launch that mounts nothing
+cost one `PATCH` against a prewarmed pod.
+
+With `DATALAYER_MOUNT_GATEWAY_ENABLED` that is no longer true of the Home
+Folder. What decides, per launch:
+
+| The launch | Where the pod comes from |
+| --- | --- |
+| Mounts nothing | The pool. |
+| Home Folder only (the `home-folder` capability, or a `files` attachment), gateway on, a pooled pod carrying the gateway | **The pool**, with a hot attach: the Operator writes the mount set on the pod and the node agent binds it in. |
+| Home Folder only, gateway off | Its own pod. |
+| A Volume, a Local Mount, or anything else the gateway cannot serve | Its own pod, whatever the gateway setting. A Volume has a PVC nothing staged on the node; a Local Mount is an inline CSI volume fixed at creation. |
+| Home Folder only, gateway on, but the pool holds only pods built before it | Its own pod. Handing out a pre-gateway pod would start a runtime whose folders never arrive. |
+
+The hot-attach path writes `runtime-pools.datalayer.io/gateway-mounts` on the
+pod and waits for the node agent's answer on `…/gateway-mounts-ready` — the
+hash it asked for, not merely a recent answer — then asks the companion to
+link `/home/jovyan/<handle>` to the gateway path. The mount set is resolved
+from the memberships Runtimes resolved against IAM with the caller's own
+credentials, never from what the request named. The whole node side is on the
+[Local CSI driver](/services/system/local-csi/#the-mount-gateway) page.
+
+Endpoints, for a runtime that is already running:
+
+~~~bash
+GET    /api/operator/v1/runtimes/{runtime}/mounts            # granted, and what is applied
+POST   /api/operator/v1/runtimes/{runtime}/mounts            # mount the caller's home folders
+DELETE /api/operator/v1/runtimes/{runtime}/mounts/{target}   # take one out
+~~~
+
+`POST` answers `409` when the gateway is off in this deployment or the pod was
+created without it, `422` for an attachment the gateway cannot serve, and
+`504` when the node agent did not apply the mounts in time — never `200` for a
+mount nobody confirmed.
 
 ## Tear Down Datalayer Operator
 

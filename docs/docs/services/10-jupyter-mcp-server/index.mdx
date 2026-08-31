@@ -438,7 +438,7 @@ here is a cache: it is what a request must be able to find again on another
 pod.
 
 :::info The mapping is generated, versioned and fingerprinted
-`MCP_MAPPING_VERSION` is **7**. The mapping in `mcp_mappings.json` is
+`MCP_MAPPING_VERSION` is **9**. The mapping in `mcp_mappings.json` is
 generated from the DAOs' own codecs and a test fails when the checked-in copy
 disagrees with the code, so a field added without a version bump cannot ship.
 Every version so far has been additive — a document written under an earlier
@@ -926,6 +926,35 @@ thirty seconds.
 | `organization` | an organization owner | Tokens carrying that `org_uid` |
 | `team` | a team owner, or the owner of the organization above it | Tokens carrying that `team_uid` |
 | `personal` | the person themselves | Tokens with **no** `org_uid`. A person does not loosen or tighten what their organization decided about work done in its name |
+
+### Which organization an agent acts in
+
+`org_uid` on the token is what all of this keys on — the layers here, the
+quotas, the alerts and the audit scoping. It is **chosen at consent** and
+stamped by IAM into the access token as a top-level claim, beside `scope` and
+`client_id`.
+
+Chosen rather than inferred: somebody may belong to three organizations, and
+which one an agent acts in is a fact about *that grant*. A token naming none
+is personal scope — what a person with no organizations gets, and what every
+OAuth token was before IAM issued this claim.
+
+:::info The claim is earned, never taken
+IAM checks membership when the authorization code is issued, and a refused
+claim never reaches the store. A person who could name an organization they
+do not belong to would read its policy, spend against its budget and write
+rows into its audit.
+
+A **team** additionally needs membership of the team *and* must be inside the
+named organization — a team uid in a request is a claim about a team, not
+proof of which organization it is in.
+:::
+
+It rides on the grant, so a refresh mints the same scope: a refreshed token
+that quietly lost its organization would move an agent from its employer's
+policy to no policy at all, with nobody asked. The token exchange carries it
+for the same reason.
+
 
 ```bash
 # What is in force for this token, rule by rule, with who decided each

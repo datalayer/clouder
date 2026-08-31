@@ -11,14 +11,24 @@ import { Label, Stack } from '@primer/react-brand';
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
   <Label color="green">Node driver shipped</Label>
+  <Label color="green">Mount gateway shipped</Label>
   <Label color="yellow">Relay and Operator rendering: see their pages</Label>
 </Stack>
 
-The `datalayer-local-csi` driver presents a folder of a user's own computer
-inside a Datalayer Code Sandbox, through the Contents **local bridge**. This
-page describes what ships in Clouder — the node driver, its image and its
-chart — how it is installed, and what it expects from the two other pieces:
-the bridge relay in Contents and the volume rendering in the Operator.
+The `datalayer-local-csi` DaemonSet runs **two node services** in one
+privileged container, because a node has one mount table and two components
+owning it is how a leaked mount goes unnoticed:
+
+- the **CSI node driver**, which presents a folder of a user's own computer
+  inside a Datalayer Code Sandbox through the Contents **local bridge**;
+- the **mount gateway**, which binds folders of the shared filesystem into a
+  pod that is **already running**, so a launch that mounts the Home Folder is
+  served from the prewarmed pool instead of a cold pod.
+
+This page describes what ships in Clouder — both node services, the image and
+the chart — how they are installed, and what they expect from the other
+pieces: the bridge relay in Contents, and the volume rendering and grants in
+the Operator.
 
 The user-facing behaviour it implements is described under
 [Local Mounts](https://datalayer.ai/docs/contents/local-mounts). The contract it
@@ -220,8 +230,148 @@ The unit tests cover the driver side of each with the `FakeMounter`:
 cd clouder
 python -m pytest clouder/tests/test_csi_driver.py clouder/tests/test_csi_server.py \
   clouder/tests/test_csi_bridge_mount.py clouder/tests/test_csi_chart.py \
-  clouder/tests/test_local_csi_cli.py -q
+  clouder/tests/test_local_csi_cli.py clouder/tests/test_csi_gateway.py \
+  clouder/tests/test_csi_gateway_agent.py clouder/tests/test_csi_linux.py -q
 ~~~
+
+## The mount gateway
+
+A Pod's `volumes` and its containers' `volumeMounts` are fixed when the Pod is
+created, and Kubernetes has no in-place update for either. A launch that
+mounted the Home Folder therefore cost a **cold pod** — scheduling, an image
+pull, the init containers and a Jupyter startup probe — where a launch that
+mounted nothing cost one `PATCH` against a prewarmed pod.
+
+The gateway lifts that without mutating anything. Every pooled pod carries an
+empty directory its runtime container mounts `HostToContainer`; the agent, in
+this DaemonSet and outside the tenant pod, binds real filesystems into it once
+the pod is running.
+
+~~~mermaid
+flowchart TB
+  claim["Shared filesystem claim<br/>home/users · home/organizations · home/teams"]
+  agent["Mount gateway<br/>DaemonSet, privileged"]
+  tree["/var/lib/datalayer/mount-gateway/POD_UID<br/>the agent's own tree, rshared"]
+  vol["kubelet emptyDir of the pod<br/>one mount, ever: that tree"]
+  pod["Runtime container<br/>/mnt/datalayer/HANDLE<br/>HostToContainer"]
+  home["/home/jovyan/HANDLE<br/>symlink, written by the companion"]
+  claim --> agent --> tree --> vol --> pod --> home
+~~~
+
+### Why the volume is memory-backed
+
+Not for speed. When a Pod goes away, kubelet tears its volumes down; for a
+disk-backed `emptyDir` that teardown is a recursive delete of the node
+directory, and a recursive delete removes a directory's children **before** it
+tries to remove the directory. A bind mount left standing underneath would be
+walked into, and the delete would land on a user's home folder on the shared
+claim.
+
+A memory-backed `emptyDir` is a tmpfs, so kubelet must unmount it first, and
+unmounting a mount that still has children fails with `EBUSY`. A leaked mount
+therefore leaves the Pod stuck in `Terminating` — visible, alertable and
+recoverable — instead of causing silent data loss. It follows that the gateway
+volume holds mount points and nothing else: it carries a 1 MiB size limit, and
+it is not the home directory the sandbox writes to.
+
+### The node requirement
+
+Mount propagation only reaches a pod if the kubelet directory is in a
+**shared** peer group. On a node whose mounts are `private`, every grant
+succeeds on the node and is invisible in the sandbox — the worst way for this
+to fail. `clouder kubeadm setup --local-csi --local-csi-gateway` checks it
+during the install; check it by hand with:
+
+~~~bash
+findmnt -no PROPAGATION --target /var/lib/kubelet   # must contain "shared"
+mount --make-rshared /                              # if it does not
+~~~
+
+### The grant is an annotation
+
+The agent takes no requests over the network. Its only input is the Kubernetes
+API:
+
+| Annotation on the runtime pod | Written by | Meaning |
+| --- | --- | --- |
+| `runtime-pools.datalayer.io/gateway-mounts` | Operator | The mount set: `{"hash": …, "mounts": [{"source": "home/users/UID", "target": "HANDLE", "mode": "rw", "allow_exec": true}]}`. `source` is relative to the claim; `target` is one path segment. |
+| `runtime-pools.datalayer.io/gateway-mounts-ready` | Gateway agent | What it applied: `{"hash": …, "state": "ready\|degraded\|failed", "mounted": [...], "failed": {...}}`. The Operator waits for the **hash it asked for** — an answer for the previous set is not an answer for this one. |
+| `runtime-pools.datalayer.io/mount-gateway` (label) | Operator | Whether the pod carries the gateway volume. A pool built before the gateway still holds pods without it, and one of those must never be handed to a hot attach. |
+
+There is no gateway port to authenticate, no key to rotate, and nothing inside
+the tenant pod that can reach it: **authorization is RBAC on patching a runtime
+pod**, which only the Operator's ServiceAccount has. It is also reconcilable by
+construction — an agent that restarts, or a node that reboots, converges by
+reading the API.
+
+Before it mounts anything the agent checks that the pod is on this node and is
+not terminating, resolves each `source` beneath the claim with `openat2` and
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` (no traversal, no symlink race), and
+holds the set to the per-pod and per-node caps. Every mount is made with
+`mount_setattr` — `nosuid` and `nodev` always, `AT_RECURSIVE` always, and
+read-only recursively when the grant says `ro`, because a remount is not
+recursive and a nested mount under a "read-only" bind is not read-only.
+
+### Chart values
+
+| Value | Default | What it is |
+| --- | --- | --- |
+| `gateway.enabled` | `false` | Run the gateway beside the CSI driver. |
+| `gateway.sharedFilesystemClaim` | *(required when enabled)* | The RWX claim holding every home folder. Installing without it fails rather than deploying an agent with nothing to bind. |
+| `gateway.sharedFilesystemMountPath` | `/mnt/shared-fs` | Where the DaemonSet mounts that claim. |
+| `gateway.root` | `/var/lib/datalayer/mount-gateway` | The agent's own per-pod trees; a host path, propagated `Bidirectional`. |
+| `gateway.namespace` | `datalayer-runtimes` | Watch one namespace rather than the whole node. |
+| `gateway.maxMountsPerPod` | `32` | A user in many organizations is real; a thousand mounts on one pod is not. |
+| `gateway.maxMountsPerNode` | `512` | |
+| `apiServer.port` / `apiServer.cidr` | `443` / *(any)* | The egress the NetworkPolicy opens for the pod watch. Without it the agent mounts nothing. |
+
+With the gateway on, the `ClusterRole` gains `pods: get, list, watch, patch`
+and nothing else — no create, no delete, no eviction, and still no Secrets.
+
+### Deploying it
+
+~~~bash
+export DATALAYER_LOCAL_CSI_ENABLED=true
+export DATALAYER_MOUNT_GATEWAY_ENABLED=true
+export DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME=datalayer-shared-fs
+plane up datalayer-local-csi
+
+# or, on kubeadm:
+clouder kubeadm setup my-cluster --local-csi --local-csi-gateway \
+  --local-csi-shared-claim datalayer-shared-fs
+~~~
+
+The Operator must have `DATALAYER_MOUNT_GATEWAY_ENABLED=true` as well, or it
+never writes a grant and every mounting launch keeps spawning its own pod.
+Turning it on in the Operator without the agent is the worse order: pods would
+carry the volume and wait for mounts nobody makes.
+
+### Watching it
+
+~~~bash
+clouder local-csi status        # adds a "Mount gateway" table: per pod, what is bound
+kubectl -n datalayer-runtimes exec ds/datalayer-local-csi -c driver -- \
+  wget -qO- http://127.0.0.1:9808/gateway
+kubectl get pod -n datalayer-runtimes POD \
+  -o jsonpath='{.metadata.annotations.runtime-pools\.datalayer\.io/gateway-mounts-ready}'
+~~~
+
+The `leaked` counter is the one to alert on. It is incremented when a mount
+would not come down, which is exactly what makes a Pod stick in `Terminating`
+— kubelet is about to attempt the same unmount and fail the same way.
+
+**Recovering a stuck pod.** Find the mount and take it down on the node, then
+let kubelet finish:
+
+~~~bash
+# On the node holding the pod:
+findmnt -R /var/lib/datalayer/mount-gateway/POD_UID
+umount -R /var/lib/kubelet/pods/POD_UID/volumes/kubernetes.io~empty-dir/mount-gateway
+umount -R /var/lib/datalayer/mount-gateway/POD_UID
+~~~
+
+Never `rm -rf` the pod's `emptyDir` directory while a bind is standing under
+it: that is the delete the memory-backed volume exists to prevent.
 
 ## The other two pieces
 
