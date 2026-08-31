@@ -1024,7 +1024,7 @@ curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
 
 | Field | Values |
 | --- | --- |
-| `condition` | `tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits`, `sli.availability`, `sli.latency` |
+| `condition` | `tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits`, `spend.budget_fraction`, `sli.availability`, `sli.latency` |
 | `operator` | `gt`, `gte`, `lt`, `lte`, `eq` |
 | `threshold` | a real number — `nan` and `inf` are refused, since `nan > x` is false for every x and such a rule never fires |
 | `severity` | `info`, `warning`, `critical` — delivered as `info`, `warning`, `error` |
@@ -1037,14 +1037,23 @@ evaluator rather than restating its rules. A rule that cannot be evaluated is
 a condition nobody is watching, and that looks exactly like a condition that
 never happens.
 
-:::warning Five of the six conditions have a reader
-`tasks.open`, `tasks.failed`, `audit.write_failures` and `spend.credits` do.
-The two `sli.*` do not — they need the OTEL service — so a rule naming one of
+:::warning Five of the seven conditions have a reader
+`tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits` and
+`spend.budget_fraction` do. The two `sli.*` do not — they need the OTEL service — so a rule naming one of
 those is counted `unreadable` on every tick and never fires. Deliberately: a
 reader answering zero would turn "nobody is watching this" into "this never
 happens" — but it is not the same as being watched. Read the tick's counters,
 not the empty alerts list.
 :::
+
+Use `spend.budget_fraction` rather than `spend.credits` for a "tell me at
+80%" rule. Written as `spend.credits > 80` beside a `maxCreditsPerDay` of
+100, the threshold is a second copy of the budget that nothing keeps in sync
+— raise the budget to 500 and the rule now fires at 16%, with nothing saying
+so. The fraction's denominator is the budget in force, narrowed across the
+layers, so the rule follows the setting instead of shadowing it. An
+organization with no budget reads `unreadable`, because a fraction of no
+budget is not a number.
 
 `spend.credits` is asked of **IAM**, not counted here. The credits ledger is
 IAM's and there is exactly one of it; a count kept beside it would be a second
