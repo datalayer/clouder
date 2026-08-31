@@ -94,6 +94,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit the pod watch to one namespace; empty watches the node.",
     )
     parser.add_argument(
+        "--gateway-credentials",
+        action="store_true",
+        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_CREDENTIALS", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Let the gateway read a Secret a grant names, to make a mount that needs a "
+            "credential. Off by default: reading Secrets is the one thing the agent does "
+            "that its RBAC otherwise forbids. Env: DATALAYER_MOUNT_GATEWAY_CREDENTIALS."
+        ),
+    )
+    parser.add_argument(
+        "--gateway-local-bridges",
+        action="store_true",
+        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_LOCAL_BRIDGES", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Serve `local-bridge` grants through the gateway, mounting a person's own "
+            "folder into a sandbox that is already running. Needs --gateway-credentials: "
+            "the mount token is in the pod's Secret. "
+            "Env: DATALAYER_MOUNT_GATEWAY_LOCAL_BRIDGES."
+        ),
+    )
+    parser.add_argument(
+        "--gateway-buckets",
+        action="store_true",
+        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_BUCKETS", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Serve `cloud-storage` grants through the gateway with Mountpoint for S3. "
+            "Needs --gateway-credentials: the session is in the pod's Secret, and the "
+            "agent serves it to the mount so it can be refreshed without remounting. "
+            "Env: DATALAYER_MOUNT_GATEWAY_BUCKETS."
+        ),
+    )
+    parser.add_argument(
         "--max-mounts-per-pod",
         type=int,
         default=int(os.environ.get("DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD", DEFAULT_MAX_MOUNTS_PER_POD)),
@@ -144,6 +176,11 @@ def main(argv: list[str] | None = None) -> int:
             kubelet_dir=args.kubelet_dir,
             max_mounts_per_pod=args.max_mounts_per_pod,
             max_mounts_per_node=args.max_mounts_per_node,
+            credentials=args.gateway_credentials,
+            local_bridges=args.gateway_local_bridges,
+            buckets=args.gateway_buckets,
+            relay_host=args.relay_host,
+            allow_insecure_relay=args.allow_insecure_relay,
         )
 
     serve(

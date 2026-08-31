@@ -27,7 +27,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from .linux import UnsupportedKernel, mount_setattr
+from .linux import UnsupportedKernel, attach_mount, mount_setattr
 
 log = logging.getLogger("clouder.csi.mounter")
 
@@ -75,7 +75,19 @@ class Mounter(abc.ABC):
 
     @abc.abstractmethod
     def unmount(self, path: str) -> None:
-        """Unmount ``path`` if it is mounted; a no-op otherwise."""
+        """Unmount ``path`` until nothing is mounted there; a no-op otherwise."""
+
+    @abc.abstractmethod
+    def unmount_once(self, path: str) -> None:
+        """Remove exactly the topmost mount at ``path``, and raise if it will not go.
+
+        The gateway stacks its tree on top of kubelet's `emptyDir` tmpfs, so
+        "unmount until nothing is left there" would take kubelet's own volume
+        out from under a running pod. It also must not fall back to a lazy
+        unmount: a mount that will not come down is the leak the whole design
+        wants to be loud about, and detaching it quietly is how a Pod stuck in
+        `Terminating` becomes a mystery.
+        """
 
     @abc.abstractmethod
     def is_mount_point(self, path: str) -> bool:
@@ -94,12 +106,35 @@ class Mounter(abc.ABC):
         """
 
     @abc.abstractmethod
+    def attach(self, source: str, target: str, *, read_only: bool, noexec: bool) -> None:
+        """Bind ``source`` at ``target`` with its attributes already set.
+
+        One call, not a bind followed by :meth:`set_attrs`, because **mount
+        attributes do not propagate to peers**: a mount is copied to every peer
+        when it is attached, with the flags it has at that instant, and
+        changing one copy afterwards leaves the others as they were. A `ro`
+        grant made read-only a moment after the bind reaches the sandbox
+        writable.
+        """
+
+    @abc.abstractmethod
     def make_shared(self, path: str) -> None:
         """Put ``path`` in a shared peer group, so submounts propagate out of it."""
 
     @abc.abstractmethod
     def set_attrs(self, path: str, *, read_only: bool, noexec: bool, recursive: bool = True) -> None:
         """Apply mount attributes to ``path``, recursively by default."""
+
+    @abc.abstractmethod
+    def mount_identity(self, path: str) -> tuple[str, str] | None:
+        """What is mounted at ``path``: its device and its root within that device.
+
+        ``None`` when nothing is. Two paths showing the same pair are the same
+        filesystem subtree — which is how the gateway tells a mount **it**
+        made from one somebody else did. `is_mount_point` cannot: kubelet's
+        own `emptyDir` tmpfs is a mount point too, and treating it as "already
+        published" is a gateway that binds nothing and reports success.
+        """
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +165,33 @@ def _read_mount_table(path: str = "/proc/self/mounts") -> set[str]:
     return mounts
 
 
+def _mount_identity(mount_point: str, path: str = "/proc/self/mountinfo") -> tuple[str, str] | None:
+    """The device and subtree root of the topmost mount at ``mount_point``.
+
+    `mountinfo` lists mounts in order and a later entry shadows an earlier one
+    at the same path, so the last match is what is actually visible there.
+    """
+    identity: tuple[str, str] | None = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 5:
+                    continue
+                point = (
+                    fields[4]
+                    .replace("\\040", " ")
+                    .replace("\\011", "\t")
+                    .replace("\\012", "\n")
+                    .replace("\\134", "\\")
+                )
+                if point == mount_point:
+                    identity = (fields[2], fields[3])
+    except OSError:
+        return None
+    return identity
+
+
 def _tail(path: str, lines: int = 3) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
@@ -149,11 +211,13 @@ class ProcessMounter(Mounter):
         mount_timeout: float = 30.0,
         stop_timeout: float = 10.0,
         mount_table: str = "/proc/self/mounts",
+        mount_info: str = "/proc/self/mountinfo",
     ):
         self._python = python or sys.executable
         self._mount_timeout = mount_timeout
         self._stop_timeout = stop_timeout
         self._mount_table = mount_table
+        self._mount_info = mount_info
         self._procs: dict[str, subprocess.Popen] = {}
         self._logs: dict[str, str] = {}
 
@@ -261,6 +325,20 @@ class ProcessMounter(Mounter):
     def bind_dir(self, source: str, target: str, *, recursive: bool = False) -> None:
         self._run(["mount", "--rbind" if recursive else "--bind", source, target])
 
+    def attach(self, source: str, target: str, *, read_only: bool, noexec: bool) -> None:
+        try:
+            attach_mount(source, target, read_only=read_only, nosuid=True, nodev=True, noexec=noexec)
+        except UnsupportedKernel as exc:
+            # The fallback would bind first and set the flags after, which
+            # leaves every propagated copy — the sandbox's included — with the
+            # flags the mount had when it was attached. A folder that is
+            # read-only on this node and writable in the sandbox is worse than
+            # one that was refused, so refuse it.
+            raise MountError(
+                f"this kernel cannot attach a mount with its attributes set ({exc}); "
+                "the mount gateway needs Linux 5.12 or newer"
+            ) from exc
+
     def make_shared(self, path: str) -> None:
         self._run(["mount", "--make-rshared", path])
 
@@ -287,6 +365,11 @@ class ProcessMounter(Mounter):
         if noexec:
             options.append("noexec")
         self._run(["mount", "-o", ",".join(options), path])
+
+    def unmount_once(self, path: str) -> None:
+        if not self.is_mount_point(path):
+            return
+        self._run(["umount", path])
 
     def unmount(self, path: str) -> None:
         if not self.is_mount_point(path):
@@ -315,6 +398,9 @@ class ProcessMounter(Mounter):
             return os.path.ismount(normalized)
         except OSError:
             return False
+
+    def mount_identity(self, path: str) -> tuple[str, str] | None:
+        return _mount_identity(os.path.normpath(path), self._mount_info)
 
     @staticmethod
     def _run(command: list[str]) -> None:
@@ -355,11 +441,13 @@ class FakeMounter(Mounter):
 
     fail_start: str | None = None
     fail_bind_dir: str | None = None
+    fail_unmount_once: str | None = None
     processes: dict[str, FakeProcess] = field(default_factory=dict)
     mounts: set[str] = field(default_factory=set)
     binds: dict[str, tuple[str, bool]] = field(default_factory=dict)
     shared: set[str] = field(default_factory=set)
     attrs: dict[str, dict] = field(default_factory=dict)
+    foreign: set[str] = field(default_factory=set)
     calls: list[tuple] = field(default_factory=list)
 
     def start(self, *, bridge_uid: str, relay_url: str, mount_token: str, mount_path: str, mode: str) -> MountHandle:
@@ -410,6 +498,14 @@ class FakeMounter(Mounter):
         self.binds[target] = (source, False)
         self.mounts.add(target)
 
+    def attach(self, source: str, target: str, *, read_only: bool, noexec: bool) -> None:
+        self.calls.append(("attach", source, target, read_only, noexec))
+        if self.fail_bind_dir:
+            raise MountError(self.fail_bind_dir)
+        self.binds[target] = (source, read_only)
+        self.mounts.add(target)
+        self.attrs[target] = {"read_only": read_only, "noexec": noexec, "recursive": True}
+
     def make_shared(self, path: str) -> None:
         self.calls.append(("make_shared", path))
         self.shared.add(path)
@@ -426,9 +522,38 @@ class FakeMounter(Mounter):
         self.binds.pop(path, None)
         self.shared.discard(path)
         self.attrs.pop(path, None)
+        self.foreign.discard(path)
+
+    def unmount_once(self, path: str) -> None:
+        self.calls.append(("unmount_once", path))
+        if self.fail_unmount_once:
+            raise MountError(self.fail_unmount_once)
+        self.binds.pop(path, None)
+        self.attrs.pop(path, None)
+        self.shared.discard(path)
+        if path not in self.foreign:
+            self.mounts.discard(path)
 
     def is_mount_point(self, path: str) -> bool:
         return path in self.mounts
+
+    def mount_identity(self, path: str) -> tuple[str, str] | None:
+        """Whatever this mounter bound there, named by its source.
+
+        `foreign(path)` stands in for a mount somebody else made — kubelet's
+        `emptyDir` tmpfs, in the case that matters — which is a mount point
+        with an identity of its own that no bind of ours will ever match.
+        """
+        if path in self.foreign:
+            return ("0:1", f"foreign:{path}")
+        if path in self.binds:
+            return ("0:2", self.binds[path][0])
+        return ("0:2", path) if path in self.mounts else None
+
+    def foreign_mount(self, path: str) -> None:
+        """Say that something not this mounter's is mounted at ``path``."""
+        self.foreign.add(path)
+        self.mounts.add(path)
 
     # -- helpers for assertions ------------------------------------------
 

@@ -31,6 +31,7 @@ import stat
 
 __all__ = [
     "AT_RECURSIVE",
+    "attach_mount",
     "MOUNT_ATTR_NODEV",
     "MOUNT_ATTR_NOEXEC",
     "MOUNT_ATTR_NOSUID",
@@ -39,6 +40,7 @@ __all__ = [
     "UnsupportedKernel",
     "have_mount_setattr",
     "have_openat2",
+    "make_beneath",
     "mount_setattr",
     "open_beneath",
     "resolve_beneath",
@@ -62,8 +64,15 @@ RESOLVE_BENEATH = 0x08
 # anything else the wrapper reports the call as unavailable rather than
 # invoking a syscall that means something different there.
 _UNIFIED_ARCHES = ("x86_64", "aarch64", "arm64", "riscv64")
+_NR_OPEN_TREE = 428
+_NR_MOVE_MOUNT = 429
 _NR_OPENAT2 = 437
 _NR_MOUNT_SETATTR = 442
+
+# open_tree(2) / move_mount(2).
+OPEN_TREE_CLONE = 1
+MOVE_MOUNT_F_EMPTY_PATH = 0x00000004
+AT_FDCWD = -100
 
 
 class UnsupportedKernel(RuntimeError):
@@ -129,6 +138,102 @@ def have_openat2() -> bool:
     return ctypes.get_errno() != errno.ENOSYS
 
 
+def _attr_of(read_only: bool, nosuid: bool, nodev: bool, noexec: bool) -> "_MountAttr":
+    attr_set = 0
+    attr_clr = 0
+    for flag, wanted in (
+        (MOUNT_ATTR_RDONLY, read_only),
+        (MOUNT_ATTR_NOSUID, nosuid),
+        (MOUNT_ATTR_NODEV, nodev),
+        (MOUNT_ATTR_NOEXEC, noexec),
+    ):
+        if wanted:
+            attr_set |= flag
+        else:
+            attr_clr |= flag
+    return _MountAttr(attr_set=attr_set, attr_clr=attr_clr, propagation=0, userns_fd=0)
+
+
+def _setattr_fd(libc, dir_fd: int, attr: "_MountAttr", *, recursive: bool, where: str) -> None:
+    flags = AT_EMPTY_PATH | (AT_RECURSIVE if recursive else 0)
+    result = libc.syscall(
+        ctypes.c_long(_NR_MOUNT_SETATTR),
+        ctypes.c_int(dir_fd),
+        ctypes.c_char_p(b""),
+        ctypes.c_uint(flags),
+        ctypes.byref(attr),
+        ctypes.c_size_t(ctypes.sizeof(attr)),
+    )
+    if result != 0:
+        code = ctypes.get_errno()
+        if code == errno.ENOSYS:
+            raise UnsupportedKernel("mount_setattr is not available on this kernel")
+        raise MountAttrError(code, f"mount_setattr({where}) failed: {os.strerror(code)}")
+
+
+def attach_mount(
+    source: str,
+    target: str,
+    *,
+    read_only: bool = False,
+    nosuid: bool = True,
+    nodev: bool = True,
+    noexec: bool = False,
+) -> None:
+    """Bind ``source`` at ``target`` with its attributes already set.
+
+    Not a bind followed by :func:`mount_setattr`, because that is not the same
+    thing: **mount attributes do not propagate to peers.** A mount created in
+    a shared peer group is copied to every peer at the instant it is attached,
+    with the flags it has then; setting `MOUNT_ATTR_RDONLY` on one copy
+    afterwards leaves every other copy writable. For the gateway that means a
+    `ro` grant, bound in the agent's tree and made read-only a moment later,
+    reaches the sandbox **writable** — which is not a slow read-only mount, it
+    is no read-only mount at all.
+
+    So the mount is built detached and attached once it is already right:
+    ``open_tree(OPEN_TREE_CLONE)`` clones the subtree without putting it
+    anywhere, ``mount_setattr`` sets the flags on the clone, and
+    ``move_mount`` attaches it. Every propagated copy is then created from a
+    mount that is already read-only, `nosuid` and `nodev`.
+    """
+    libc = _libc()
+    fd = libc.syscall(
+        ctypes.c_long(_NR_OPEN_TREE),
+        ctypes.c_int(AT_FDCWD),
+        ctypes.c_char_p(source.encode("utf-8")),
+        ctypes.c_uint(OPEN_TREE_CLONE | AT_RECURSIVE | os.O_CLOEXEC),
+    )
+    if fd < 0:
+        code = ctypes.get_errno()
+        if code == errno.ENOSYS:
+            raise UnsupportedKernel("open_tree is not available on this kernel")
+        raise MountAttrError(code, f"open_tree({source}) failed: {os.strerror(code)}")
+    try:
+        _setattr_fd(
+            libc,
+            fd,
+            _attr_of(read_only, nosuid, nodev, noexec),
+            recursive=True,
+            where=source,
+        )
+        result = libc.syscall(
+            ctypes.c_long(_NR_MOVE_MOUNT),
+            ctypes.c_int(fd),
+            ctypes.c_char_p(b""),
+            ctypes.c_int(AT_FDCWD),
+            ctypes.c_char_p(target.encode("utf-8")),
+            ctypes.c_uint(MOVE_MOUNT_F_EMPTY_PATH),
+        )
+        if result != 0:
+            code = ctypes.get_errno()
+            if code == errno.ENOSYS:
+                raise UnsupportedKernel("move_mount is not available on this kernel")
+            raise MountAttrError(code, f"move_mount({source} -> {target}) failed: {os.strerror(code)}")
+    finally:
+        os.close(fd)
+
+
 def mount_setattr(
     path: str,
     *,
@@ -148,35 +253,10 @@ def mount_setattr(
     exists rather than a remount.
     """
     libc = _libc()
-    attr_set = 0
-    attr_clr = 0
-    for flag, wanted in (
-        (MOUNT_ATTR_RDONLY, read_only),
-        (MOUNT_ATTR_NOSUID, nosuid),
-        (MOUNT_ATTR_NODEV, nodev),
-        (MOUNT_ATTR_NOEXEC, noexec),
-    ):
-        if wanted:
-            attr_set |= flag
-        else:
-            attr_clr |= flag
-    attr = _MountAttr(attr_set=attr_set, attr_clr=attr_clr, propagation=0, userns_fd=0)
-    flags = AT_EMPTY_PATH | (AT_RECURSIVE if recursive else 0)
+    attr = _attr_of(read_only, nosuid, nodev, noexec)
     dir_fd = os.open(path, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
-        result = libc.syscall(
-            ctypes.c_long(_NR_MOUNT_SETATTR),
-            ctypes.c_int(dir_fd),
-            ctypes.c_char_p(b""),
-            ctypes.c_uint(flags),
-            ctypes.byref(attr),
-            ctypes.c_size_t(ctypes.sizeof(attr)),
-        )
-        if result != 0:
-            code = ctypes.get_errno()
-            if code == errno.ENOSYS:
-                raise UnsupportedKernel("mount_setattr is not available on this kernel")
-            raise MountAttrError(code, f"mount_setattr({path}) failed: {os.strerror(code)}")
+        _setattr_fd(libc, dir_fd, attr, recursive=recursive, where=path)
     finally:
         os.close(dir_fd)
 
@@ -246,6 +326,50 @@ def open_beneath(root: str, relative: str) -> int:
             raise
     finally:
         os.close(root_fd)
+
+
+def make_beneath(root: str, relative: str, mode: int = 0o755) -> str:
+    """Create ``relative`` under ``root``, one component at a time.
+
+    Each component is created with ``mkdirat`` relative to the previous one's
+    descriptor and reopened with ``O_NOFOLLOW``, so a symlink appearing
+    mid-walk is refused rather than followed — the same guarantee
+    :func:`open_beneath` gives for reading, applied to writing. Returns the
+    absolute path of the leaf.
+
+    Existing components are left exactly as they are, including their mode and
+    ownership: this creates what is missing, and never re-permissions what is
+    already there.
+    """
+    parts = [part for part in str(relative or "").split("/") if part]
+    for part in parts:
+        if part in (".", ".."):
+            raise PermissionError(errno.EACCES, f"'{relative}' walks outside {root}")
+    if not parts:
+        return os.path.realpath(root)
+
+    current = os.open(root, os.O_PATH | os.O_CLOEXEC | os.O_DIRECTORY)
+    try:
+        for index, part in enumerate(parts):
+            try:
+                os.mkdir(part, mode, dir_fd=current)
+            except FileExistsError:
+                pass
+            flags = os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY
+            nxt = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = nxt
+            if stat.S_ISLNK(os.fstat(current).st_mode):
+                raise PermissionError(
+                    errno.ELOOP, f"'{relative}' passes through a symlink at '{part}'"
+                )
+            del index
+        try:
+            return os.readlink(f"/proc/self/fd/{current}")
+        except OSError:
+            return os.path.join(os.path.realpath(root), *parts)
+    finally:
+        os.close(current)
 
 
 def resolve_beneath(root: str, relative: str) -> str:

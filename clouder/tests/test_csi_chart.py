@@ -249,3 +249,93 @@ def test_there_is_no_rule_where_there_is_no_prometheus_operator(rendered):
     # An unappliable manifest fails the whole release, so the CRD-dependent
     # object is opt-in.
     assert not any(kind == "PrometheusRule" for kind, _ in rendered)
+
+
+def _render(**settings):
+    if not CHART.is_dir():
+        pytest.skip(f"chart not found at {CHART}")
+    args = ["helm", "template", "datalayer-local-csi", str(CHART)]
+    for key, value in settings.items():
+        args += ["--set", f"{key.replace('__', '.')}={value}"]
+    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    return {
+        (doc["kind"], doc["metadata"]["name"]): doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc
+    }
+
+
+def test_the_gateway_reads_no_secret_by_default(with_gateway):
+    # A Home Folder is a sub-path of a claim the agent already holds, so the
+    # default deployment needs no Secret and is not given one.
+    assert not any(kind == "Role" for kind, _ in with_gateway)
+    role = with_gateway[("ClusterRole", "datalayer-local-csi")]
+    assert not any("secrets" in rule["resources"] for rule in role["rules"])
+    driver = with_gateway[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]["containers"][0]
+    assert "--gateway-credentials" not in driver["args"]
+
+
+def test_credentials_are_a_namespaced_role_and_never_the_cluster_role():
+    rendered = _render(
+        gateway__enabled="true",
+        gateway__sharedFilesystemClaim="datalayer-shared-fs",
+        gateway__credentials="true",
+    )
+
+    role = rendered[("Role", "datalayer-local-csi-credentials")]
+    # In the runtimes namespace and nowhere else: a ClusterRole rule would let
+    # the agent read every Secret in the cluster, which is not what a mount
+    # needs and is not what a compromised agent should be able to take.
+    assert role["metadata"]["namespace"] == "datalayer-runtimes"
+    assert role["rules"] == [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]}]
+
+    cluster_role = rendered[("ClusterRole", "datalayer-local-csi")]
+    assert not any("secrets" in rule["resources"] for rule in cluster_role["rules"])
+
+    binding = rendered[("RoleBinding", "datalayer-local-csi-credentials")]
+    assert binding["roleRef"]["kind"] == "Role"
+    assert binding["subjects"][0]["name"] == "datalayer-local-csi"
+
+
+def test_credentials_cannot_be_turned_on_without_the_gateway():
+    # The switch is inside the gateway's own: an agent that mounts nothing has
+    # no mount to read a credential for.
+    rendered = _render(gateway__credentials="true")
+    assert not any(kind == "Role" for kind, _ in rendered)
+
+
+def test_local_bridges_need_credentials_to_be_useful():
+    rendered = _render(
+        gateway__enabled="true",
+        gateway__sharedFilesystemClaim="datalayer-shared-fs",
+        gateway__credentials="true",
+        gateway__localBridges="true",
+    )
+    args = rendered[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]["containers"][0]["args"]
+
+    assert "--gateway-local-bridges" in args
+    # The mount token lives in the pod's Secret, so the two switches go
+    # together; the agent refuses the grant otherwise, which is a mount a user
+    # asked for and did not get.
+    assert "--gateway-credentials" in args
+
+
+def test_local_bridges_are_off_by_default(with_gateway):
+    args = with_gateway[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert "--gateway-local-bridges" not in args
+
+
+def test_buckets_are_a_switch_of_their_own():
+    rendered = _render(
+        gateway__enabled="true",
+        gateway__sharedFilesystemClaim="datalayer-shared-fs",
+        gateway__credentials="true",
+        gateway__buckets="true",
+    )
+    args = rendered[("DaemonSet", "datalayer-local-csi")]["spec"]["template"]["spec"]["containers"][0]["args"]
+
+    assert "--gateway-buckets" in args
+    # Serving a bucket and serving a local bridge are separate decisions: a
+    # cluster may want one without the other.
+    assert "--gateway-local-bridges" not in args

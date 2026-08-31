@@ -13,6 +13,10 @@ import pytest
 
 from ..csi.gateway import (
     ERROR_INVALID_SOURCE,
+    ERROR_MOUNT_DEAD,
+    ERROR_PROCESS_UNSUPPORTED,
+    ERROR_SECRET_REFUSED,
+    GatewayError,
     ERROR_MOUNT_FAILED,
     ERROR_NOT_READY,
     ERROR_TOO_MANY_MOUNTS,
@@ -57,6 +61,16 @@ def kubelet(tmp_path):
 @pytest.fixture
 def mounter() -> FakeMounter:
     return FakeMounter()
+
+
+@pytest.fixture
+def as_root(monkeypatch):
+    """The agent is root on a node; a test runner is not.
+
+    Only `chown` needs it, so that is all this stands in for — the walk, the
+    modes and the refusals are exercised for real.
+    """
+    monkeypatch.setattr(os, "chown", lambda *args, **kwargs: None)
 
 
 @pytest.fixture
@@ -173,6 +187,19 @@ def test_read_only_is_recursive_and_nosuid_is_not_optional(gateway, mounter):
     assert attrs == {"read_only": True, "noexec": True, "recursive": True}
 
 
+def test_a_grant_is_attached_with_its_attributes_never_bound_and_then_set(gateway, mounter):
+    gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric", "ro"))))
+
+    target = os.path.join(gateway.pod_tree(POD), "eric")
+    # Mount attributes do not propagate to peers: a mount is copied to every
+    # peer when it is attached, with the flags it has then. Binding first and
+    # setting `ro` after leaves the sandbox's copy writable — measured, in
+    # test_csi_kernel.py. So the grant must be one atomic attach.
+    assert ("attach", str(gateway.shared_root) + "/home/users/01H-eric", target, True, False) in mounter.calls
+    assert not any(call[0] == "bind_dir" and call[2] == target for call in mounter.calls)
+    assert not any(call[0] == "set_attrs" and call[1] == target for call in mounter.calls)
+
+
 def test_a_home_folder_stays_executable(gateway, mounter):
     gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric", "rw", allow_exec=True))))
 
@@ -224,9 +251,95 @@ def test_a_source_that_is_a_symlink_out_of_the_claim_is_refused(gateway, shared,
 
 
 def test_a_source_that_does_not_exist_is_refused(gateway):
+    # No kind: nothing is provisioned lazily, so a missing folder is a
+    # mistake rather than a folder nobody has written to yet.
     report = gateway.reconcile(pod(annotation(mount("home/users/01H-nobody", "nobody"))))
 
     assert report.failed == {"nobody": ERROR_INVALID_SOURCE}
+
+
+def test_a_home_folder_nobody_has_written_to_yet_is_created(gateway, shared, mounter, as_root):
+    # A Home Folder exists the first time a sandbox mounts it or something is
+    # uploaded into it, whichever comes first. Mounting used to be an init
+    # container's mkdir; with the gateway it is the agent's. Without this a
+    # brand-new user gets an error for a folder that is simply new.
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-new", "nina"), "kind": "files"}))
+    )
+
+    assert report.state == STATE_READY
+    assert report.mounted == ["nina"]
+    created = shared / "home" / "users" / "01H-new"
+    assert created.is_dir()
+    assert mounter.binds[os.path.join(gateway.pod_tree(POD), "nina")][0] == str(created)
+
+
+def test_a_created_folder_the_sandbox_cannot_write_is_refused(gateway, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "chown", refuse)
+    monkeypatch.setattr("clouder.csi.gateway._writable_by_sandbox_user", lambda path: False)
+
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-new", "nina"), "kind": "files"}))
+    )
+
+    # A folder the sandbox cannot write arrives read-only with no explanation
+    # anywhere. Refusing it says which folder and why.
+    assert report.failed == {"nina": ERROR_INVALID_SOURCE}
+
+
+def test_a_backend_that_sets_its_own_ownership_is_accepted(gateway, shared, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "chown", refuse)
+    monkeypatch.setattr("clouder.csi.gateway._writable_by_sandbox_user", lambda path: True)
+
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-new", "nina"), "kind": "files"}))
+    )
+
+    # An EFS access point or a squashing NFS export decides ownership itself,
+    # and the folder is already right.
+    assert report.state == STATE_READY
+
+
+def test_creating_a_home_folder_cannot_be_talked_out_of_the_claim(gateway, shared, as_root):
+    os.symlink("/tmp", shared / "home" / "elsewhere")
+
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/elsewhere/01H-new", "nina"), "kind": "files"}))
+    )
+
+    # The creation walks component by component with O_NOFOLLOW, so a symlink
+    # in the path is refused rather than followed to somewhere it may write.
+    assert report.failed == {"nina": ERROR_INVALID_SOURCE}
+
+
+def test_only_a_home_folder_is_created(gateway, shared, as_root):
+    for kind in ("volume", "dataset", ""):
+        report = gateway.reconcile(
+            pod(annotation({**mount("volumes/absent", "vol"), "kind": kind}))
+        )
+        # Inventing a directory for a Volume turns a clear failure into an
+        # empty folder somebody debugs later. (A bucket is refused earlier
+        # still, as a kind whose filesystem this agent cannot run.)
+        assert report.failed == {"vol": ERROR_INVALID_SOURCE}, kind
+        assert not (shared / "volumes").exists()
+
+
+def test_a_kind_whose_filesystem_the_agent_cannot_run_is_refused(gateway, shared):
+    report = gateway.reconcile(
+        pod(annotation({**mount("acme-bucket/data", "data"), "kind": "cloud-storage"}))
+    )
+
+    # Not "invalid source": there is nothing wrong with the source. The agent
+    # has no way to run the filesystem a bucket needs, and reporting that is
+    # what tells an operator to configure one.
+    assert report.failed == {"data": ERROR_PROCESS_UNSUPPORTED}
+    assert not (shared / "acme-bucket").exists()
 
 
 def test_one_bad_grant_does_not_cost_the_good_ones(gateway):
@@ -288,20 +401,26 @@ def test_a_pod_whose_volume_kubelet_has_not_made_yet_is_not_ready(tmp_path, shar
 # ---------------------------------------------------------------------------
 
 
-def test_release_takes_the_pods_copy_down_before_the_grants(gateway, mounter):
+def test_release_takes_the_grants_down_before_the_pods_copy(gateway, mounter):
     gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric"))))
     mounter.calls.clear()
 
     gateway.release(POD)
 
-    unmounts = [call[1] for call in mounter.calls if call[0] == "unmount"]
+    unmounts = [call[1] for call in mounter.calls if call[0] in ("unmount", "unmount_once")]
     volume_dir = gateway.pod_volume_dir(POD)
     tree = gateway.pod_tree(POD)
-    # kubelet cannot unmount the gateway tmpfs while the pod's copy stands, so
-    # that one comes down first; the tree itself comes down last.
-    assert unmounts[0] == volume_dir
+    # Forced by the kernel, not by taste: a grant propagates into the pod's
+    # copy as a child of it, so unmounting the copy first fails with EBUSY.
+    # Unmounting the grant inside the tree propagates the unmount outwards,
+    # which is what leaves the copy childless and removable.
+    assert unmounts[0] == os.path.join(tree, "eric")
+    assert unmounts[1] == volume_dir
     assert unmounts[-1] == tree
-    assert os.path.join(tree, "eric") in unmounts
+    # And exactly one mount comes off the pod's volume: the tree is stacked on
+    # kubelet's tmpfs, and unstacking the path would take that with it.
+    assert ("unmount_once", volume_dir) in mounter.calls
+    assert ("unmount", volume_dir) not in mounter.calls
 
 
 def test_release_removes_the_tree_and_forgets_the_pod(gateway):
@@ -472,3 +591,259 @@ def test_the_wire_format_matches_datalayer_common():
 def test_a_grant_dataclass_reports_read_only():
     assert Grant(source="a", target="b", mode="ro").read_only is True
     assert Grant(source="a", target="b", mode="rw").read_only is False
+
+
+# ---------------------------------------------------------------------------
+# The credential a mount may need
+# ---------------------------------------------------------------------------
+
+
+class _Secrets:
+    """A credential source that answers from a dict, and records the asking."""
+
+    def __init__(self, data=None, refuse=None):
+        self.data = data or {}
+        self.refuse = refuse
+        self.asked: list[tuple[str, str, str]] = []
+
+    def read_secret(self, namespace, name, pod_uid):
+        self.asked.append((namespace, name, pod_uid))
+        if self.refuse:
+            raise GatewayError(ERROR_SECRET_REFUSED, self.refuse)
+        return self.data
+
+
+def _with_credentials(tmp_path, shared, kubelet, mounter, credentials):
+    return MountGateway(
+        mounter,
+        shared_root=str(shared),
+        gateway_root=str(tmp_path / "gateway"),
+        kubelet_dir=str(kubelet),
+        credentials=credentials,
+    )
+
+
+def test_a_grant_without_a_secret_asks_for_none(tmp_path, shared, kubelet, mounter):
+    secrets = _Secrets()
+    gateway = _with_credentials(tmp_path, shared, kubelet, mounter, secrets)
+
+    gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric"))))
+
+    # A Home Folder is a sub-path of a claim the agent already holds. Asking
+    # for a credential it does not need would be a Secret read for nothing.
+    assert secrets.asked == []
+
+
+def test_a_grant_naming_a_secret_reads_it_against_the_pod(tmp_path, shared, kubelet, mounter):
+    secrets = _Secrets({"key": b"scoped-session-token"})
+    gateway = _with_credentials(tmp_path, shared, kubelet, mounter, secrets)
+
+    gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-eric", "eric"), "secret": "mount-01h"}))
+    )
+
+    assert secrets.asked == [("datalayer-runtimes", "mount-01h", POD)]
+
+
+def test_a_refused_secret_refuses_the_mount_and_makes_none(tmp_path, shared, kubelet, mounter):
+    secrets = _Secrets(refuse="not owned by the pod")
+    gateway = _with_credentials(tmp_path, shared, kubelet, mounter, secrets)
+
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-eric", "eric"), "secret": "someone-elses"}))
+    )
+
+    # Read before mounting, so a refusal is never a mount that briefly existed.
+    assert report.failed == {"eric": ERROR_SECRET_REFUSED}
+    assert not mounter.is_mount_point(os.path.join(gateway.pod_tree(POD), "eric"))
+
+
+def test_an_agent_without_credentials_cannot_be_talked_into_reading_one(gateway):
+    # The default. A deployment that has not turned credentials on must not
+    # acquire the ability because a grant asked for it.
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-eric", "eric"), "secret": "mount-01h"}))
+    )
+
+    assert report.failed == {"eric": ERROR_SECRET_REFUSED}
+
+
+def test_a_secret_name_that_is_not_a_name_is_dropped():
+    grants = parse_grants(
+        annotation(
+            {**mount("home/users/01H-eric", "eric"), "secret": "../../etc/shadow"},
+            {**mount("home/users/01H-nina", "nina"), "secret": "mount-01h"},
+        )
+    )
+    assert [item.target for item in grants] == ["nina"]
+
+
+def test_the_secret_is_part_of_the_name_of_a_mount_set():
+    one = parse_grants(annotation({**mount("s/x", "a"), "secret": "mount-1"}))
+    two = parse_grants(annotation({**mount("s/x", "a"), "secret": "mount-2"}))
+    # Pointing a mount at a different credential is a different mount, and the
+    # agent must be asked to make it again rather than reporting the previous
+    # one as still applied.
+    assert grants_hash(one) != grants_hash(two)
+
+
+def test_a_credential_never_reaches_the_report_or_the_state(tmp_path, shared, kubelet, mounter):
+    secrets = _Secrets({"key": b"scoped-session-token"})
+    gateway = _with_credentials(tmp_path, shared, kubelet, mounter, secrets)
+
+    report = gateway.reconcile(
+        pod(annotation({**mount("home/users/01H-eric", "eric"), "secret": "mount-01h"}))
+    )
+
+    # The name travels; the value does not. A credential in an annotation is a
+    # credential anyone who can read a pod can read.
+    written = report.encode() + json.dumps(gateway.snapshot())
+    assert "scoped-session-token" not in written
+    assert "mount-01h" in json.dumps(gateway.snapshot())
+
+
+# ---------------------------------------------------------------------------
+# A mount that is a process
+# ---------------------------------------------------------------------------
+
+
+class _Processes:
+    """A filesystem runner that mounts by recording, and can be killed."""
+
+    def __init__(self, mounter, fail=None):
+        self.mounter = mounter
+        self.fail = fail
+        self.started: list[dict] = []
+        self.stopped: list[tuple[int, str]] = []
+        self.dead: set[int] = set()
+        self.mounts_nothing = False
+        self._next_pid = 1000
+
+    def start(self, *, kind, source, target, read_only, credential):
+        if self.fail:
+            raise GatewayError(ERROR_PROCESS_UNSUPPORTED, self.fail)
+        self._next_pid += 1
+        self.started.append(
+            {"kind": kind, "source": source, "target": target, "read_only": read_only,
+             "credential": credential, "pid": self._next_pid}
+        )
+        if not self.mounts_nothing:
+            self.mounter.mounts.add(target)
+        return self._next_pid
+
+    def alive(self, pid):
+        return pid not in self.dead and pid != 0
+
+    def stop(self, pid, target):
+        self.stopped.append((pid, target))
+        self.mounter.mounts.discard(target)
+
+
+def _bucket(target="data", **fields):
+    return {**mount("acme-bucket/prefix", target), "kind": "cloud-storage", **fields}
+
+
+@pytest.fixture
+def running(tmp_path, shared, kubelet, mounter):
+    processes = _Processes(mounter)
+    gateway = MountGateway(
+        mounter,
+        shared_root=str(shared),
+        gateway_root=str(tmp_path / "gateway"),
+        kubelet_dir=str(kubelet),
+        credentials=_Secrets({"key": b"session"}),
+        processes=processes,
+    )
+    return gateway, processes
+
+
+def test_a_process_mount_is_started_rather_than_bound(running, mounter):
+    gateway, processes = running
+
+    report = gateway.reconcile(pod(annotation(_bucket(secret="mount-01h"))))
+
+    assert report.state == STATE_READY
+    started = processes.started[0]
+    assert started["kind"] == "cloud-storage"
+    # The source is passed through, not resolved beneath the shared claim: a
+    # bucket is not a directory the agent reaches.
+    assert started["source"] == "acme-bucket/prefix"
+    assert started["credential"] == {"key": b"session"}
+    # And nothing was bound: a process mounts at the target itself.
+    assert not any(call[0] in ("attach", "bind_dir") and call[2] == started["target"] for call in mounter.calls)
+
+
+def test_a_process_that_mounts_nothing_is_a_failure_not_a_mount(running):
+    gateway, processes = running
+    processes.mounts_nothing = True
+
+    report = gateway.reconcile(pod(annotation(_bucket())))
+
+    # A directory reported as a mount is how somebody reads an empty bucket
+    # and believes it.
+    assert report.failed == {"data": ERROR_MOUNT_FAILED}
+    assert processes.stopped, "the process that mounted nothing should be stopped"
+
+
+def test_a_filesystem_that_died_is_degraded_not_ready(running):
+    gateway, processes = running
+    gateway.reconcile(pod(annotation(_bucket())))
+    processes.dead.add(processes.started[0]["pid"])
+
+    report = gateway.reconcile(pod(annotation(_bucket())))
+
+    # The mount stays and returns errors, which is what the sandbox should
+    # see; saying `ready` is what would make somebody trust the bytes.
+    assert report.state == STATE_FAILED
+    assert report.failed == {"data": ERROR_MOUNT_DEAD}
+
+
+def test_the_pid_is_not_part_of_the_grant(running):
+    gateway, processes = running
+    gateway.reconcile(pod(annotation(_bucket())))
+
+    gateway.reconcile(pod(annotation(_bucket())))
+
+    # A restarted filesystem is the same grant. If the pid were part of the
+    # set's identity, every restart would look like a new mount set.
+    assert len(processes.started) == 1
+
+
+def test_revoking_stops_the_filesystem_before_taking_its_mount_away(running, mounter):
+    gateway, processes = running
+    gateway.reconcile(pod(annotation(_bucket())))
+    pid = processes.started[0]["pid"]
+    mounter.calls.clear()
+
+    gateway.reconcile(pod(""))
+
+    # Stopped first: a process left serving a path nothing can reach is a
+    # process nothing will ever stop.
+    assert processes.stopped[0][0] == pid
+    assert processes.stopped[0][1] == gateway.target_path(POD, "data")
+
+
+def test_releasing_a_pod_stops_its_filesystems(running):
+    gateway, processes = running
+    gateway.reconcile(pod(annotation(_bucket())))
+
+    gateway.release(POD)
+
+    assert [pid for pid, _ in processes.stopped] == [processes.started[0]["pid"]]
+
+
+def test_a_bucket_whose_credential_is_refused_starts_nothing(tmp_path, shared, kubelet, mounter):
+    processes = _Processes(mounter)
+    gateway = MountGateway(
+        mounter,
+        shared_root=str(shared),
+        gateway_root=str(tmp_path / "gateway"),
+        kubelet_dir=str(kubelet),
+        credentials=_Secrets(refuse="not owned by the pod"),
+        processes=processes,
+    )
+
+    report = gateway.reconcile(pod(annotation(_bucket(secret="someone-elses"))))
+
+    assert report.failed == {"data": ERROR_SECRET_REFUSED}
+    assert processes.started == []

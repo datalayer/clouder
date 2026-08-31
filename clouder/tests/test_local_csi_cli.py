@@ -219,3 +219,132 @@ def test_status_reports_the_mount_gateway_when_a_node_runs_one(monkeypatch):
     # A leaked mount is the one failure that must not be a log line nobody
     # reads: it is why a Pod sticks in Terminating.
     assert "could not be unmounted" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# `clouder local-csi verify`
+# ---------------------------------------------------------------------------
+
+
+def _cluster(monkeypatch, answers: dict):
+    """Point the CLI at a fake master that answers kubectl by substring."""
+    def fake_ssh(ip, user, key_path, command, check=True):
+        # Longest needle first: a kubectl line matches several of these, and
+        # the most specific one is the question actually being asked.
+        for needle in sorted(answers, key=len, reverse=True):
+            if needle in command:
+                return _Result(answers[needle])
+        return _Result("")
+
+    monkeypatch.setattr(local_csi_cli, "_infer_cluster_name", lambda cluster: "demo")
+    monkeypatch.setattr(local_csi_cli, "resolve_kubeadm_cloud_context", lambda cloud, cluster_name: ("aws", "acc"))
+    monkeypatch.setattr(
+        local_csi_cli,
+        "_resolve_cluster_vms",
+        lambda name, cloud, context_id: {"master": {"ip": "1.2.3.4"}, "workers": []},
+    )
+    monkeypatch.setattr(local_csi_cli, "_resolve_ssh_key_for_cluster", lambda name: "/k")
+    monkeypatch.setattr(local_csi_cli, "_ssh_cmd", fake_ssh)
+
+
+HEALTHY = {
+    "get daemonset": "3/3",
+    "findmnt": "shared",
+    "/gateway": '{"pods": {}, "counters": {"leaked": 0}}',
+    "DATALAYER_MOUNT_GATEWAY_ENABLED": "true",
+    "persistentVolumeClaim.claimName": "datalayer-shared-fs",
+    "can-i patch pods -n datalayer-runtimes --as=system:serviceaccount:datalayer-runtimes:datalayer-local-csi": "yes",
+    "can-i patch pods -n datalayer-runtimes --as=system:serviceaccount:datalayer-runtimes:datalayer-runtimes-sa": "no",
+    "can-i get secrets": "no",
+    "containers[0].args": "[--endpoint,--mount-gateway]",
+    "uname -r": "6.8.0-138-generic",
+}
+
+
+def _verify(monkeypatch, **overrides):
+    answers = {**HEALTHY, **overrides}
+    _cluster(monkeypatch, answers)
+    result = runner.invoke(local_csi_cli.local_csi_app, ["verify", "--json"])
+    return result, {check["name"]: check for check in json.loads(result.stdout)}
+
+
+def test_a_healthy_gateway_passes(monkeypatch):
+    result, checks = _verify(monkeypatch)
+
+    assert result.exit_code == 0
+    assert all(check["ok"] is not False for check in checks.values())
+
+
+def test_propagation_that_is_not_shared_fails_and_says_what_to_run(monkeypatch):
+    result, checks = _verify(monkeypatch, findmnt="private")
+
+    # On a private node every grant succeeds and is invisible in the sandbox,
+    # which is the worst way for this to fail.
+    assert result.exit_code == 1
+    assert checks["Mount propagation (rshared)"]["ok"] is False
+    assert "make-rshared" in checks["Mount propagation (rshared)"]["fix"]
+
+
+def test_the_operator_granting_with_no_agent_is_a_failure(monkeypatch):
+    result, checks = _verify(monkeypatch, **{"/gateway": ""})
+
+    # Pods would carry the volume and wait for mounts nobody makes. The
+    # deployment order exists to prevent exactly this.
+    assert result.exit_code == 1
+    assert checks["Operator and agent agree"]["ok"] is False
+    assert "FIRST" in checks["Operator and agent agree"]["fix"]
+
+
+def test_a_runtime_that_could_grant_itself_a_mount_is_a_failure(monkeypatch):
+    result, checks = _verify(
+        monkeypatch,
+        **{
+            "can-i patch pods -n datalayer-runtimes --as=system:serviceaccount:datalayer-runtimes:datalayer-runtimes-sa": "yes"
+        },
+    )
+
+    # A sandbox that can patch its own pod can mount any folder on the claim.
+    # This is the exit gate's security claim, as a command rather than an
+    # argument.
+    assert result.exit_code == 1
+    assert checks["A runtime may NOT grant itself a mount"]["ok"] is False
+
+
+def test_secret_access_without_the_switch_is_a_failure(monkeypatch):
+    result, checks = _verify(monkeypatch, **{"can-i get secrets": "yes"})
+
+    # A permission nothing uses is a permission somebody else can.
+    assert result.exit_code == 1
+    assert checks["Agent Secret access matches its configuration"]["ok"] is False
+
+
+def test_a_leaked_mount_is_reported(monkeypatch):
+    result, checks = _verify(
+        monkeypatch, **{"/gateway": '{"pods": {}, "counters": {"leaked": 2}}'}
+    )
+
+    assert result.exit_code == 1
+    assert checks["No leaked mounts"]["ok"] is False
+    assert "Terminating" in checks["No leaked mounts"]["fix"]
+
+
+def test_a_gateway_that_is_simply_off_is_not_a_failure(monkeypatch):
+    result, checks = _verify(
+        monkeypatch,
+        **{"/gateway": "", "DATALAYER_MOUNT_GATEWAY_ENABLED": "false"},
+    )
+
+    # Off is a deployment choice, not a fault. Reporting it as broken would
+    # teach an operator to ignore this command.
+    assert result.exit_code == 0
+    assert checks["Operator and agent agree"]["ok"] is None
+
+
+def test_a_kernel_without_mount_setattr_fails(monkeypatch):
+    result, checks = _verify(monkeypatch, **{"uname -r": "5.4.0-generic"})
+
+    # Without mount_setattr a read-only grant cannot be made read-only in the
+    # sandbox at all, so the agent refuses the mount. Better to know before
+    # a user asks for one.
+    assert result.exit_code == 1
+    assert checks["Kernel supports mount_setattr (5.12+)"]["ok"] is False

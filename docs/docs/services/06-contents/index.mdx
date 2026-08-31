@@ -696,6 +696,52 @@ A failed mount otherwise leaves the path present and empty, and the service
 would write managed bytes into the container's own filesystem until the pod is
 replaced and they vanish.
 
+### The one way a home folder can be deleted by accident
+
+The same claim reaches a running sandbox two ways: as a `subPath` mount
+rendered when the pod was created, and — where the
+[mount gateway](/services/system/local-csi/#the-mount-gateway) is deployed —
+as a bind the node agent makes into a pod that is already running. The second
+carries a hazard the first does not, and it is the reason the gateway volume
+is what it is.
+
+When a Pod goes away, kubelet tears its volumes down. For a **disk-backed**
+`emptyDir` that teardown is a recursive delete of the node directory, and a
+recursive delete removes a directory's children *before* it removes the
+directory. A bind mount of this claim left standing underneath would be walked
+into, and the delete would land on a user's home folder — real bytes, on the
+shared filesystem, from a delete nobody wrote and nothing would report.
+
+A **memory-backed** `emptyDir` is a tmpfs, so kubelet must unmount it first,
+and unmounting a mount that still has children fails with `EBUSY`. The failure
+mode of a leaked mount becomes a Pod stuck in `Terminating` — visible,
+alertable and recoverable by hand — instead of silent data loss. That is why
+the gateway volume is `emptyDir: {medium: Memory}`: not because a tmpfs is
+fast, but because it refuses to disappear while something is mounted inside
+it.
+
+Two consequences follow, and both are visible from this service:
+
+- the gateway holds mount points and nothing else, since a byte written into a
+  tmpfs is a byte of the pod's memory. It carries a 1 MiB size limit;
+- it therefore cannot be `/home/jovyan`, which a sandbox writes to all day.
+  The folders are bound at `/mnt/datalayer/{handle}` and reached at
+  `/home/jovyan/{handle}` through a symlink made inside the sandbox. Both
+  names come from `datalayer_common.home_folders`, so the path this service
+  reports for a file is the path the sandbox reads it at.
+
+`/home/jovyan` is deliberately not a volume either, for a different reason: a
+CRIU checkpoint captures the container's writable layer, so a home directory
+moved onto a volume would not survive a checkpoint and restore. The symlink
+lives in the writable layer, and points at a mount the restored pod is granted
+again.
+
+Never `rm -rf` a pod's gateway directory under `/var/lib/kubelet/pods` while a
+bind is standing in it. Unmount first — the recovery is on the
+[Local CSI driver](/services/system/local-csi/#watching-it) page — and treat
+the `datalayer_mount_gateway_leaked_total` alert as an alert about **this
+service's data**, not about a node.
+
 ## Logs and scaling
 
 ```bash

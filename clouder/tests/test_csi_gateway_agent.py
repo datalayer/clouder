@@ -259,3 +259,196 @@ def test_a_broken_snapshot_does_not_break_the_probe(gateway):
     # report nothing; it may not take the driver down with it.
     text = HealthServer(_Driver(), gateway=gateway).metrics()
     assert r'node="a \"quoted\" node"' in text
+
+
+# ---------------------------------------------------------------------------
+# Reading a Secret from Kubernetes
+# ---------------------------------------------------------------------------
+
+
+class _Meta:
+    def __init__(self, owners):
+        self.owner_references = owners
+
+
+class _Secret:
+    def __init__(self, data, owners):
+        self.data = data
+        self.metadata = _Meta(owners)
+
+
+class _Owner:
+    def __init__(self, uid):
+        self.uid = uid
+
+
+class _Api:
+    def __init__(self, secret=None, error=None):
+        self.secret = secret
+        self.error = error
+        self.asked: list[tuple[str, str]] = []
+
+    def read_namespaced_secret(self, name, namespace):
+        self.asked.append((namespace, name))
+        if self.error:
+            raise self.error
+        return self.secret
+
+
+def _credentials(api, namespace="datalayer-runtimes"):
+    from ..csi.gateway_agent import KubernetesCredentials
+
+    return KubernetesCredentials(api, namespace)
+
+
+def test_a_secret_the_pod_owns_is_read():
+    import base64
+
+    from ..csi.gateway import GatewayError  # noqa: F401 - asserted by absence
+
+    api = _Api(_Secret({"key": base64.b64encode(b"token").decode()}, [_Owner(POD_A)]))
+
+    data = _credentials(api).read_secret("datalayer-runtimes", "mount-1", POD_A)
+
+    assert data == {"key": b"token"}
+    assert api.asked == [("datalayer-runtimes", "mount-1")]
+
+
+def test_a_secret_the_pod_does_not_own_is_refused():
+    from ..csi.gateway import ERROR_SECRET_REFUSED, GatewayError
+
+    api = _Api(_Secret({}, [_Owner("some-other-pod")]))
+
+    with pytest.raises(GatewayError) as raised:
+        _credentials(api).read_secret("datalayer-runtimes", "companion-secret", POD_A)
+
+    # This is what stops a grant from naming the companion's key or another
+    # tenant's bridge token: RBAC cannot narrow to one Secret, so ownership does.
+    assert raised.value.code == ERROR_SECRET_REFUSED
+
+
+def test_a_secret_nothing_owns_is_refused():
+    from ..csi.gateway import GatewayError
+
+    api = _Api(_Secret({}, []))
+
+    with pytest.raises(GatewayError):
+        _credentials(api).read_secret("datalayer-runtimes", "platform-key", POD_A)
+
+
+def test_a_secret_outside_the_watched_namespace_is_refused_without_asking():
+    from ..csi.gateway import GatewayError
+
+    api = _Api(_Secret({}, [_Owner(POD_A)]))
+
+    with pytest.raises(GatewayError):
+        _credentials(api).read_secret("kube-system", "anything", POD_A)
+
+    assert api.asked == []
+
+
+def test_a_forbidden_read_and_a_missing_secret_are_the_same_answer():
+    from ..csi.gateway import ERROR_SECRET_REFUSED, GatewayError
+
+    api = _Api(error=RuntimeError("403 Forbidden"))
+
+    with pytest.raises(GatewayError) as raised:
+        _credentials(api).read_secret("datalayer-runtimes", "mount-1", POD_A)
+
+    # Telling the two apart would say whether a Secret exists to somebody who
+    # may not read it.
+    assert raised.value.code == ERROR_SECRET_REFUSED
+
+
+def test_the_default_agent_reads_nothing():
+    from ..csi.gateway import ERROR_SECRET_REFUSED, GatewayError, NoCredentials
+
+    with pytest.raises(GatewayError) as raised:
+        NoCredentials().read_secret("datalayer-runtimes", "mount-1", POD_A)
+
+    assert raised.value.code == ERROR_SECRET_REFUSED
+
+
+# ---------------------------------------------------------------------------
+# Sending each grant to the runner for its kind
+# ---------------------------------------------------------------------------
+
+
+class _Runner:
+    def __init__(self, name, pid):
+        self.name = name
+        self.pid = pid
+        self.started: list[str] = []
+        self.stopped: list[int] = []
+        self.living: set[int] = set()
+
+    def start(self, *, kind, source, target, read_only, credential):
+        self.started.append(kind)
+        self.living.add(self.pid)
+        return self.pid
+
+    def alive(self, pid):
+        return pid in self.living
+
+    def stop(self, pid, target):
+        self.stopped.append(pid)
+        self.living.discard(pid)
+
+
+def _router():
+    from ..csi.gateway_agent import ProcessRouter
+
+    bridges = _Runner("local-bridge", 101)
+    buckets = _Runner("cloud-storage", 202)
+    return ProcessRouter({"local-bridge": bridges, "cloud-storage": buckets}), bridges, buckets
+
+
+def _start(router, kind):
+    return router.start(kind=kind, source="s", target="/t", read_only=False, credential={})
+
+
+def test_each_kind_goes_to_its_own_runner():
+    router, bridges, buckets = _router()
+
+    _start(router, "local-bridge")
+    _start(router, "cloud-storage")
+
+    # Two kinds with nothing in common beyond being processes: one dials a
+    # relay, the other mounts a bucket. Two runners behind one protocol beats
+    # one runner with a branch in it.
+    assert bridges.started == ["local-bridge"]
+    assert buckets.started == ["cloud-storage"]
+
+
+def test_a_kind_nobody_serves_is_refused_by_name():
+    from ..csi.gateway import ERROR_PROCESS_UNSUPPORTED, GatewayError
+
+    router, _bridges, _buckets = _router()
+
+    with pytest.raises(GatewayError) as raised:
+        _start(router, "dataset")
+
+    # Which tells an operator to turn a switch on, rather than to go looking
+    # for a bug.
+    assert raised.value.code == ERROR_PROCESS_UNSUPPORTED
+    assert "dataset" in str(raised.value)
+
+
+def test_a_pid_is_stopped_by_the_runner_that_started_it():
+    router, bridges, buckets = _router()
+    pid = _start(router, "cloud-storage")
+
+    router.stop(pid, "/t")
+
+    assert buckets.stopped == [pid]
+    assert bridges.stopped == []
+
+
+def test_a_pid_inherited_from_a_gone_agent_is_still_alive():
+    router, _bridges, buckets = _router()
+    buckets.living.add(999)
+
+    # Saying "dead" because the router was replaced would take a working
+    # mount away from a sandbox.
+    assert router.alive(999) is True
+    assert router.alive(12345) is False

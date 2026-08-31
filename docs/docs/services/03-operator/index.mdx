@@ -413,10 +413,51 @@ POST   /api/operator/v1/runtimes/{runtime}/mounts            # mount the caller'
 DELETE /api/operator/v1/runtimes/{runtime}/mounts/{target}   # take one out
 ~~~
 
-`POST` answers `409` when the gateway is off in this deployment or the pod was
+`POST` takes attachment **uids**, never records: Runtimes resolves and
+prepares them through Contents with the caller's credentials, exactly as at
+launch, and drops any `content_attachments` a request carries. A client that
+could hand over an attachment record could hand over a bridge session it does
+not own.
+
+It answers `409` when the gateway is off in this deployment or the pod was
 created without it, `422` for an attachment the gateway cannot serve, and
 `504` when the node agent did not apply the mounts in time — never `200` for a
 mount nobody confirmed.
+
+**What can be attached to a running Runtime:** a Home Folder, a Local Mount,
+and a mounted bucket — the last two only where their path is under
+`/home/jovyan`. A Volume cannot — its PVC is not
+staged on the node — and neither can a Local Mount asking for any other
+absolute path, because the gateway delivers under the home folder. A
+creation-time mount can be anywhere and still can; the refusal names the
+reason (`LOCAL_BRIDGE_PATH_UNSUPPORTED`) rather than mounting somewhere the
+caller did not ask for. A hot-attached Local Mount's token goes into the
+pod-owned `bridge-<uid>` Secret, which the Operator creates **before** it
+writes the grant, so the agent never looks for a Secret that is not there. A
+mounted bucket's STS session goes into `mount-<attachment uid>` the same way.
+
+### Keeping a mounted bucket alive
+
+A bucket's session expires and a runtime does not. `refresh_mount_sessions`
+runs in the Operator every
+`DATALAYER_MOUNT_SESSION_REFRESH_INTERVAL_SECONDS` (60 by default, and off
+entirely when the gateway is off): it finds every session Secret within ten
+minutes of expiry by its
+`contents.datalayer.io/mount-attachment-uid` label, asks Contents for a newer
+one at `POST /attachments/{uid}/mount-session`, and **replaces the Secret in
+place**. The node agent's credential endpoint re-reads it and the filesystem
+never stops running — nothing is unmounted and no open file handle is
+disturbed.
+
+A Secret whose expiry cannot be read is refreshed anyway: a session nobody can
+date is one nobody can trust, and re-minting costs one API call. One that
+cannot be re-minted is logged and skipped; that mount keeps working until its
+session ends and then reports itself through the health path.
+
+~~~bash
+kubectl -n datalayer-runtimes get secret -l contents.datalayer.io/mount-attachment-uid
+kubectl -n datalayer-api logs deploy/datalayer-operator | grep 'mounted bucket session'
+~~~
 
 ## Tear Down Datalayer Operator
 

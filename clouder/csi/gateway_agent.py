@@ -20,9 +20,13 @@ import time
 from typing import Any, Iterable, Iterator, Protocol
 
 from .gateway import (
+    ERROR_PROCESS_UNSUPPORTED,
+    ERROR_SECRET_REFUSED,
     GATEWAY_MOUNTS_ANNOTATION,
     GATEWAY_READY_ANNOTATION,
+    GatewayError,
     MountGateway,
+    NoCredentials,
     PodRef,
     Report,
 )
@@ -223,6 +227,98 @@ class KubernetesPods:
             self.api.patch_namespaced_pod(name=pod.name, namespace=pod.namespace, body=body)
 
 
+class ProcessRouter:
+    """Sends each grant to the runner for its kind, and refuses the rest.
+
+    Two kinds are process-backed and they have nothing in common beyond that
+    — one dials a relay, the other mounts a bucket — so they are two runners
+    behind one protocol rather than one runner with a branch in it. A kind
+    nobody serves is refused by name, which is what tells an operator to turn
+    a switch on rather than to go looking for a bug.
+    """
+
+    def __init__(self, runners: dict[str, Any]) -> None:
+        self._runners = dict(runners)
+        self._by_pid: dict[int, Any] = {}
+
+    def start(self, *, kind, source, target, read_only, credential) -> int:
+        runner = self._runners.get(kind)
+        if runner is None:
+            raise GatewayError(
+                ERROR_PROCESS_UNSUPPORTED,
+                f"this node agent does not serve '{kind}' mounts",
+            )
+        pid = runner.start(
+            kind=kind, source=source, target=target, read_only=read_only, credential=credential
+        )
+        self._by_pid[pid] = runner
+        return pid
+
+    def alive(self, pid: int) -> bool:
+        runner = self._by_pid.get(pid)
+        if runner is not None:
+            return runner.alive(pid)
+        # Inherited from an agent that is gone: any runner can answer whether
+        # a pid is alive, and saying "dead" because the router was replaced
+        # would take a working mount away from a sandbox.
+        return any(runner.alive(pid) for runner in self._runners.values())
+
+    def stop(self, pid: int, target: str) -> None:
+        runner = self._by_pid.pop(pid, None)
+        for candidate in [runner] if runner is not None else list(self._runners.values()):
+            candidate.stop(pid, target)
+
+
+class KubernetesCredentials:
+    """Reads a Secret a grant names, and only one the pod itself owns.
+
+    The RBAC behind this is a **Role**, not a ClusterRole rule: the agent can
+    `get` a Secret in the runtimes namespace and nowhere else. That is still
+    broader than the one Secret a mount needs, because a name cannot be known
+    in advance and `resourceNames` cannot be written for it — so the narrowing
+    is done here, against the pod: a Secret the pod does not own is refused
+    before its value is read into anything.
+
+    Which is what stops a grant from naming the companion's API key, another
+    tenant's bridge token, or a platform Secret that happens to live in the
+    same namespace.
+    """
+
+    def __init__(self, api, namespace: str | None = None) -> None:
+        self.api = api
+        self.namespace = namespace
+
+    def read_secret(self, namespace: str, name: str, pod_uid: str) -> dict[str, bytes]:
+        import base64
+
+        target = namespace or self.namespace or ""
+        if self.namespace and target != self.namespace:
+            raise GatewayError(
+                ERROR_SECRET_REFUSED,
+                f"Secret '{name}' is outside the namespace this agent reads",
+            )
+        try:
+            secret = self.api.read_namespaced_secret(name=name, namespace=target)
+        except Exception as exc:  # noqa: BLE001 - a 403 and a 404 are the same answer here
+            raise GatewayError(
+                ERROR_SECRET_REFUSED, f"Secret '{name}' could not be read: {exc}"
+            ) from exc
+
+        owners = (getattr(secret.metadata, "owner_references", None) or []) if secret.metadata else []
+        if not any(str(getattr(owner, "uid", "")) == pod_uid for owner in owners):
+            # The Operator creates a mount's Secret owned by the pod, so its
+            # lifetime is the pod's and its reader is this pod's agent. A
+            # Secret owned by anything else is not this mount's to read.
+            raise GatewayError(
+                ERROR_SECRET_REFUSED,
+                f"Secret '{name}' is not owned by the pod it was granted to",
+            )
+        return {
+            str(key): base64.b64decode(value)
+            for key, value in (secret.data or {}).items()
+        }
+
+
 def build_agent(
     *,
     mounter,
@@ -234,7 +330,27 @@ def build_agent(
     max_mounts_per_pod: int,
     max_mounts_per_node: int,
     resync_interval: float = DEFAULT_RESYNC_INTERVAL,
+    credentials: bool = False,
+    local_bridges: bool = False,
+    buckets: bool = False,
+    relay_host: str = "",
+    allow_insecure_relay: bool = False,
 ) -> GatewayAgent:
+    pods = KubernetesPods(node_name, namespace)
+    runners = {}
+    if local_bridges:
+        from .bridge_processes import LOCAL_BRIDGE_KIND, BridgeProcesses
+
+        # The CSI driver's filesystem, reached through the gateway instead of
+        # a CSI volume: one implementation of the bridge, two ways in.
+        runners[LOCAL_BRIDGE_KIND] = BridgeProcesses(
+            mounter, relay_host=relay_host, allow_insecure_relay=allow_insecure_relay
+        )
+    if buckets:
+        from .bucket_processes import CLOUD_STORAGE_KIND, BucketProcesses
+
+        runners[CLOUD_STORAGE_KIND] = BucketProcesses(mounter)
+    processes = ProcessRouter(runners) if runners else None
     gateway = MountGateway(
         mounter,
         shared_root=shared_root,
@@ -242,12 +358,13 @@ def build_agent(
         kubelet_dir=kubelet_dir,
         max_mounts_per_pod=max_mounts_per_pod,
         max_mounts_per_node=max_mounts_per_node,
+        # Off unless the deployment says otherwise, and separate from the
+        # gateway's own switch: reading Secrets is the one thing this agent
+        # does that its RBAC would otherwise forbid outright.
+        credentials=KubernetesCredentials(pods.api, namespace) if credentials else NoCredentials(),
+        processes=processes,
     )
-    return GatewayAgent(
-        gateway,
-        KubernetesPods(node_name, namespace),
-        resync_interval=resync_interval,
-    )
+    return GatewayAgent(gateway, pods, resync_interval=resync_interval)
 
 
 def released_summary(released: Iterable[str]) -> str:
