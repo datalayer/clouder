@@ -1118,6 +1118,26 @@ condition with different windows are two different questions, and a count
 taken over all of history only grows — so an alert on it would fire once and
 then every window for ever.
 
+### Being told
+
+A firing is delivered as an **ai-agents notification** and, where the
+organization has set `alert_webhook_url`, POSTed to that endpoint as well.
+
+The notification goes **first and separately**. It is the delivery somebody
+will look for, and it must not be lost because a Slack workspace was down.
+The webhook follows; a failure is logged, counted `undelivered`, and does not
+undo the notification that already arrived.
+
+The webhook is **not retried**, unlike audit forwarding. That is a copy of a
+record and this is a copy of a notice — retrying a notice against somebody
+else's endpoint turns their outage into a loop against them, while the thing
+that matters is already in the app and in the alerts list.
+
+The body leads with `text`, shaped as a sentence, because Slack and most chat
+relays render that field and ignore the rest. The structure is underneath for
+an endpoint that reads it. **No credential is in it**: this goes somewhere
+outside the platform, and nothing here should be usable from there.
+
 **Once per condition per window.** The idempotency key is the rule, the scope
 and which window we are in, so a condition true for an hour is one event and
 one notification, not sixty — and two replicas ticking together write one
@@ -1149,6 +1169,7 @@ curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
 | `destination_kind` | `https` or `s3` |
 | `destination_url` | An `https://` or `s3://` URL. `http` is refused: audit rows carry who did what for which organization, and that does not go on the wire in the clear |
 | `destination_secret_ref` | Names a signing secret in IAM's store. **Refused today** — see below |
+| `alert_webhook_url` | An `https://` endpoint a fired alert is POSTed to, beside the in-app notification. `http` is refused: an alert names the organization and what its agents did |
 
 An organization owner writes them. Reading needs the role that reads the
 audit itself — owner or `organization_security_auditor` — because where an
