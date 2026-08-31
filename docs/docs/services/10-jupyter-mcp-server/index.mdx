@@ -949,12 +949,44 @@ setting that does nothing.
 | `toolAllowlist` | list of tool names | Intersection. An empty list **as written** is not an allowlist; a half-filled setting must not refuse everything |
 | `allowedClients` | list of CIMD URLs or hostnames | Every layer's list must admit the client. An empty list is not an allowlist, same reason |
 | `maxCallsPerMinute` | whole number, **at least 1** | The smallest wins |
+| `maxCreditsPerDay` | a positive number of credits | The smallest wins |
 
 :::caution `maxCallsPerMinute: 0` is refused, and why
 The gateway reads a non-positive cap as *no cap*. A zero written to stop an
 organization's agents would lift its limit instead — the one value whose
 stored meaning is the opposite of its plain reading. To stop an agent, revoke
 its grant or deny the tools.
+:::
+
+### The daily budget
+
+`maxCreditsPerDay` is checked **before a launch** and nowhere else. A call on
+a sandbox that already exists costs nothing new, and refusing every one would
+read as an outage rather than as "your agents are out of budget for today" —
+which is the one somebody can act on. A session that already holds a sandbox
+is answered it without the budget being consulted, since refusing there would
+stop an agent using what it is already paying for.
+
+At the budget, not over it: a budget of 100 that admits the launch taking you
+to 140 is a budget of 140.
+
+The refusal carries its own JSON-RPC code and `retryable: false` — retrying
+tomorrow works, retrying now does not, and a client that cannot tell will
+loop. It names the layer that set the budget, so a team owner who set 20 is
+not sent to the organization's settings page to find out why.
+
+:::caution A ledger that cannot be read does not refuse
+The opposite of what a budget implies, and deliberate. An organization whose
+agents stop working because a billing lookup timed out is a worse failure
+than one that spends a little over on the day IAM was down.
+
+An *incomplete* spend figure is treated the same way and for a sharper
+reason: a sum missing rows always reads as under budget, so enforcing on one
+refuses launches somebody is entitled to or admits ones they are not — and
+which depends on rows nobody saw.
+
+Both are logged. A budget that is not being enforced otherwise looks exactly
+like one nobody set.
 :::
 
 :::info Two allowlists that do not overlap admit nothing
