@@ -1437,6 +1437,25 @@ curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
 | `alert_emails` | Who is emailed when a rule fires, comma-separated, at most 20. An alert list is people who want to know, not a mailing list |
 | `alert_slack_webhook_url` | A Slack incoming webhook. Must be a `hooks.slack.com` or `hooks.slack-gov.com` URL — anything else belongs in `alert_webhook_url`, which sends a generic body. Audited as set/unset, never the URL: an incoming webhook is a credential |
 
+Owners set the three alert destinations under **Where alerts go** on the
+console's Alerts page. The form sends **only the fields it owns and only
+those that changed**: IAM merges this document, and retention and SIEM
+forwarding are set elsewhere by other people, so a form that posted its whole
+shape would clear them.
+
+:::caution A PUT that clears forwarding used to drop the alert destinations
+Fixed in `be55d2b6`. `validate_settings` answered as soon as it saw
+`destination_kind` and `destination_url` both empty, so `alert_webhook_url`,
+`alert_slack_webhook_url` and `alert_emails` in the *same* request were
+discarded without a word — a `200` and "Audit settings updated." over a
+request that was half thrown away.
+
+It bit exactly the common case: an organization that forwards nothing to a
+SIEM and still wants to be told when a rule fires. If you configured alert
+destinations alongside a cleared forwarding destination before that commit,
+**re-apply them** — they were never stored.
+:::
+
 An organization owner writes them. Reading needs the role that reads the
 audit itself — owner or `organization_security_auditor` — because where an
 organization's audit is sent is part of its security posture. The auditor may
