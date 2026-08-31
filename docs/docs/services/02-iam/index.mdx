@@ -116,6 +116,48 @@ to several of these and an operator should know which exist:
   from the token and narrows audit, policy and spend by them; until IAM
   stamps them, every session is personal scope.
 
+## Where IAM's own audit rows go
+
+IAM records its security decisions — a token issued, refused, exchanged or
+revoked; a client document fetched or thrown out of the cache; an MCP policy
+set or removed — in the same `McpAuditEvent` shape the gateway uses, so the
+two halves of the story can be read together.
+
+By default they go to the `datalayer_iam.audit` logger, one JSON line each,
+for a log pipeline to forward. That is the right default: it works with no
+Solr, in a container that only has stdout.
+
+It also means those rows are **not queryable**. "Who changed this policy, and
+when" has nowhere to be asked, and an auditor ends up reading half the story
+from the console and half from a log aggregator — which in practice means
+reading half.
+
+To put them in `mcp-audit` beside the gateway's rows, so
+`GET /api/mcp/v1/audit` answers both:
+
+```yaml
+env:
+  - name: DATALAYER_IAM_AUDIT_SINK_CLASS
+    value: datalayer_iam.services.audit_solr_sink:SolrAuditSink
+```
+
+| | |
+| --- | --- |
+| Written to the log as well | Always — it is what a failed collection write is recovered from |
+| A failed collection write | Logged, **not raised** |
+| A retried write | Answers the first row; the row's uid is its idempotency key |
+| Timestamp | When IAM recorded the decision, not when Solr accepted it |
+
+:::caution The swallow is deliberate
+These rows are written on the path of **every token IAM issues**. Raising on
+a failed audit write would turn a Solr blip into a refused sign-in.
+
+A row missing from the collection is recoverable from the log. A platform
+nobody can sign in to is not. If you alert on anything here, alert on the
+`could not be written to mcp-audit` warning rather than on a gap in the
+collection.
+:::
+
 ## Deploy Datalayer IAM
 
 <Tabs groupId="k8s">
