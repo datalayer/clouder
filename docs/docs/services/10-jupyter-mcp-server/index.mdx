@@ -1265,7 +1265,8 @@ then every window for ever.
 ### Being told
 
 A firing is delivered as an **ai-agents notification**, POSTed to
-`alert_webhook_url` if one is set, and emailed to `alert_emails` if any are.
+`alert_webhook_url` if one is set, emailed to `alert_emails` if any are, and
+posted to `alert_slack_webhook_url` if Slack is configured.
 
 Every copy is attempted independently. An organization that asked for a
 webhook and an email must not lose the email because the webhook was down —
@@ -1276,6 +1277,32 @@ The notification goes **first and separately**. It is the delivery somebody
 will look for, and it must not be lost because a Slack workspace was down.
 The webhook follows; a failure is logged, counted `undelivered`, and does not
 undo the notification that already arrived.
+
+**Slack is its own destination**, not the generic webhook pointed at Slack.
+The transport is the same; the body is not. Slack renders a generic JSON POST
+as one grey line of `text`, with the reading, the threshold and the scope run
+together in a sentence somebody has to parse. Given Block Kit it renders a
+coloured attachment — `good`/`warning`/`danger` by severity, so a workspace's
+own theme applies — with the reading, the severity and the scope as separate
+fields. That is the difference between glancing at a phone and opening a
+laptop.
+
+Two fields rather than one, because an organization that runs a Slack channel
+*and* a PagerDuty endpoint wants each to get what it can render. IAM refuses
+a `alert_slack_webhook_url` that is not a `hooks.slack.com` or
+`hooks.slack-gov.com` URL: anything else sent Block Kit receives an
+`attachments` array it does not read and a `text` it might, so a URL pasted
+into the wrong field would "work", badly, and look configured.
+
+:::caution A `200` from Slack is not always a delivery
+Slack answers `200` with an error body for some failures — a webhook whose
+channel was archived among them. The response body is checked as well as the
+status, and anything but `ok` is counted `undelivered`.
+
+A channel nobody reads answering `200` is exactly the quiet failure alerting
+exists to avoid: the alert would be recorded as delivered, and the first
+anybody knew of the gap would be the incident it was meant to warn about.
+:::
 
 Email is sent **off the event loop**: SMTP is a synchronous conversation with
 somebody else's server, and this runs on the scheduler's tick, so a slow mail
@@ -1329,6 +1356,7 @@ curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
 | `destination_secret_ref` | Names a signing secret in IAM's store. **Refused today** — see below |
 | `alert_webhook_url` | An `https://` endpoint a fired alert is POSTed to, beside the in-app notification. `http` is refused: an alert names the organization and what its agents did |
 | `alert_emails` | Who is emailed when a rule fires, comma-separated, at most 20. An alert list is people who want to know, not a mailing list |
+| `alert_slack_webhook_url` | A Slack incoming webhook. Must be a `hooks.slack.com` or `hooks.slack-gov.com` URL — anything else belongs in `alert_webhook_url`, which sends a generic body. Audited as set/unset, never the URL: an incoming webhook is a credential |
 
 An organization owner writes them. Reading needs the role that reads the
 audit itself — owner or `organization_security_auditor` — because where an
