@@ -1205,6 +1205,23 @@ billing entity with its own delegated wallet, so `agent_credits(team_uid)` is
 a real figure rather than a share of the organization's. Each scope's budget
 is weighed against that scope's own spend, organization first.
 
+:::info The cap is checked at the reservation too
+The gateway checks it before a launch, and that is not the only door: a
+client reserving directly, or another service doing it, would otherwise walk
+past a limit an organization set — while the limit *looked* enforced, because
+it is, on the path most people take.
+
+IAM applies it when the reservation is made. Only to **agent** reservations,
+identified by the `client_id_s`/`agent_uid_s` dimension: the cap is a rule
+about agents, and refusing a person launching their own runtime would refuse
+somebody under a rule that was never about them. Only the **organization's**
+layer, since the count is per billing entity — a team's number against an
+entity-wide count would refuse a team holding nothing, and the gateway is
+where the team cap belongs.
+
+A refusal there is a `409` naming both numbers and who can raise the limit.
+:::
+
 :::note One unreadable count does not disable the other
 Each count that cannot be read is skipped with a line in the log, and the
 other still holds. A team at its cap is still at its cap when the
