@@ -984,6 +984,11 @@ curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
   https://iam.datalayer.run/api/iam/v1/mcp-policies/organization/$ORG_UID
 ```
 
+The **team layer** is written on the console's Teams page — by a team owner
+for their own team, or by an organization owner for any of them, since an
+owner who could not narrow one of their own teams would have to remove the
+team to do it.
+
 The **personal layer** is written by each person at `/settings/policies`,
 over the same form and the same six rules. It only narrows: a personal value
 wider than an organization's changes nothing, and the page says so beside the
