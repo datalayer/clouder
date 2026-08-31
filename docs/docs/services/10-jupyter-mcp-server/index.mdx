@@ -1018,6 +1018,21 @@ pipeline when the engineer leaves**, and its spend shows against somebody who
 was asleep. Naming the agent as itself makes revoking, budgeting and auditing
 it ordinary operations rather than archaeology.
 
+From the CLI, which is where an operator setting up a pipeline already is:
+
+```bash
+datalayer mcp service-agents create $ORG_UID \
+  --name "nightly ingest" --scopes "runtimes:read data:read"
+datalayer mcp service-agents list $ORG_UID
+datalayer mcp service-agents rotate $ORG_UID $AGENT_UID
+datalayer mcp service-agents revoke $ORG_UID $AGENT_UID
+```
+
+`rotate` and `revoke` confirm first (`--yes` to skip), because rotation
+breaks whatever holds the old key with no grace period. `--output json` puts
+the key in a field rather than in a sentence, for a pipeline that captures
+it. Or over HTTP:
+
 ```bash
 # Create one. The key is in this answer and in no other.
 curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
