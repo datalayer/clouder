@@ -288,10 +288,33 @@ kubectl -n datalayer-api exec deploy/datalayer-jupyter-mcp-server -- \
 **An OAuth 2.1 access token** is a user's authority narrowed to what they
 approved for one agent: it carries `scope`, `client_id` and an `aud` naming
 this gateway. **A personal access token** is the user acting as themselves: no
-`aud`, no `scope`, and therefore all four scopes — `notebooks:read`,
-`notebooks:write`, `code:execute`, `data:read`. Both are Datalayer JWTs signed
+`aud`, no `scope`, and therefore every scope the gateway knows —
+`notebooks:read`, `notebooks:write`, `code:execute`, `sandboxes:manage`,
+`data:read`, `data:write`, `tools:use`. Both are Datalayer JWTs signed
 with the shared secret, so verification is local and no round trip to IAM sits
 on the request path.
+
+`code:execute` and `sandboxes:manage` are separate because they are different
+questions. The first is running code on a sandbox; the second is *deciding
+which* sandbox, keeping it, sharing it and ending it — each spending credits
+on a decision the agent made. `launch_sandbox`, `use_sandbox` and
+`terminate_sandbox` require it; `list_sandboxes` does not, since seeing what
+you have is not managing it; and the implicit launch a session does when it
+has none stays under `code:execute`, because an agent granted "run this" and
+given nowhere to run it would otherwise be refused for asking to do exactly
+what it was granted.
+
+:::warning Deploy IAM before the gateway when this scope arrives
+Every agent authorized before `sandboxes:manage` existed loses those three
+tools until it is re-authorized. The refusal says so and names the remedy. An
+agent re-authorizing against an IAM that cannot yet grant the scope gets a
+grant that still does not work, so IAM goes first.
+
+A test holds the two ends together — every scope the gateway's tool table
+requires must be one IAM's catalogue can grant — because a mapping typo
+otherwise fails as a refusal, and a refusal is what a correctly configured
+agent also gets.
+:::
 
 A client's own URL may narrow what it gets: `…/mcp?scopes=notebooks:read,code:execute`.
 The scopes travel on the `resource` of the protected-resource document, and IAM
@@ -1118,6 +1141,7 @@ aggregate is what would hide it.
 | Job | Every | What it does |
 | --- | --- | --- |
 | `audit-retention` | hour | Deletes `mcp-audit` rows past each organization's retention, never one an open export still holds. See [Audit settings](#audit-settings) for which organizations |
+| `task-reconciler` | 10 minutes | Makes `mcp-tasks` agree with the engine. `durable.reconcile` runs at startup too, which catches a gateway killed mid-projection; this catches a projection write that failed while the gateway stayed up, where the task says `working` until something looks |
 | `audit-forwarding` | 5 minutes | Ships each organization's audit to where it asked. The one job here that is **not** idempotent — two replicas forwarding is the customer's SIEM receiving every row twice — so the lease matters most for this one |
 | `alerts` | minute | Reads every enabled `McpAlertRule` from IAM in one call, evaluates each, records a firing and delivers it. See [Alert rules](#alert-rules) |
 
