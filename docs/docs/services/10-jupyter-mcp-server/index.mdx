@@ -1087,6 +1087,17 @@ organization, liftable by anybody who can reach the page. One support
 conversation is the cheaper end of that trade.
 :::
 
+:::caution A team named on a service agent must be this organization's
+IAM checks it, and refuses a team it cannot read rather than admitting it —
+the opposite of the rule elsewhere in this system, where an unreadable
+dependency lets the work through.
+
+The reason for the inversion: nothing is running, nobody is blocked, and what
+is being decided is which organization a long-lived credential belongs to. An
+agent filed under another organization's team would *work*, while spending
+their budget and counting against their sandbox limit.
+:::
+
 **Who may manage them**: organization owners and `platform_admin`, and nobody
 else — not a team owner, unlike an [alert rule](#alert-rules) scoped to their
 own team. A rule watches; a service agent holds a credential that spends the
@@ -1187,6 +1198,12 @@ owner acts on.
 A sandbox with no team belongs to no team, and is counted only for the
 organization. Counting it would make the first team to launch carry the whole
 organization's teamless work against its own cap.
+
+The **daily credit budget works the same way**, and for the same reason: a
+budget is a sum, and a sum belongs to whoever is billed for it. A team is a
+billing entity with its own delegated wallet, so `agent_credits(team_uid)` is
+a real figure rather than a share of the organization's. Each scope's budget
+is weighed against that scope's own spend, organization first.
 
 :::note One unreadable count does not disable the other
 Each count that cannot be read is skipped with a line in the log, and the
