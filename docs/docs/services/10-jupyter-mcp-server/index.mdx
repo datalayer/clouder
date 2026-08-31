@@ -318,6 +318,13 @@ agent also gets.
 :::
 
 A client's own URL may narrow what it gets: `…/mcp?scopes=notebooks:read,code:execute`.
+
+**A service agent key** is the third, and the only one that is not a JWT. It
+authenticates an agent that is a *principal* rather than a person's proxy —
+see [Service agents](#service-agents) below. It looks like `dla_sa_…`, which
+is how the gateway tells it from a token before sending it anywhere: an
+access token forwarded to IAM as a key would be a token in a log line on a
+service that had no business seeing it.
 The scopes travel on the `resource` of the protected-resource document, and IAM
 reads them off it rather than trusting what the client asked for. The OpenID
 Connect scopes (`openid`, `profile`, `email`, `offline_access`) pass through so
@@ -955,6 +962,15 @@ that quietly lost its organization would move an agent from its employer's
 policy to no policy at all, with nobody asked. The token exchange carries it
 for the same reason.
 
+**Where the choice is made**: the approval screen asks, above the scope list,
+whenever the person belongs to at least one organization — a single
+connection acts in one place, so connecting the same client twice is how
+somebody covers two. Personal scope is first and preselected, because acting
+in an organization applies its policy, spends its budget and writes its
+audit, which is a thing to opt into rather than be defaulted into. The list
+is fetched from IAM rather than read from the application's own store: this
+page is a surface for a decision IAM makes and checks.
+
 
 ```bash
 # What is in force for this token, rule by rule, with who decided each
@@ -987,6 +1003,105 @@ The gateway reads a non-positive cap as *no cap*. A zero written to stop an
 organization's agents would lift its limit instead — the one value whose
 stored meaning is the opposite of its plain reading. To stop an agent, revoke
 its grant or deny the tools.
+:::
+
+### Service agents
+
+An agent that belongs to an organization rather than to a person: a nightly
+pipeline, a CI job, a bot. It holds its own key, spends the organization's
+budget under its own name, and appears in the audit as `agent_uid` rather
+than under whoever happened to create it.
+
+The reason to have them rather than telling people to use a personal token:
+an organization whose pipeline runs under an engineer's grant **loses the
+pipeline when the engineer leaves**, and its spend shows against somebody who
+was asleep. Naming the agent as itself makes revoking, budgeting and auditing
+it ordinary operations rather than archaeology.
+
+```bash
+# Create one. The key is in this answer and in no other.
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "nightly ingest", "scopes": "runtimes:read data:read"}' \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents
+
+# What acts in this organization, revoked agents included
+curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents \
+  | jq '.agents[] | {name: .name_t, scopes: .scopes_s, revoked: .revoked_b}'
+
+# Rotate. The previous key stops working with this call.
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents/$AGENT_UID/rotate
+
+# Revoke. The agent stays listed, for its audit.
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents/$AGENT_UID/revoke
+```
+
+:::warning The key is shown once and cannot be recovered
+IAM stores a SHA-256 of it and has no way back. Somebody who loses a key
+**rotates**; there is no read that returns it.
+
+That is deliberate. The alternative is a credential that spends an
+organization's budget sitting readable in a console for the life of the
+organization, liftable by anybody who can reach the page. One support
+conversation is the cheaper end of that trade.
+:::
+
+**Who may manage them**: organization owners and `platform_admin`, and nobody
+else — not a team owner, unlike an [alert rule](#alert-rules) scoped to their
+own team. A rule watches; a service agent holds a credential that spends the
+organization's budget and carries its name, so delegating it is delegating
+the organization's authority rather than administration of a slice.
+
+**Organization members may read the list**, revoked agents included. An agent
+spending their organization's budget is one they will ask about, and a
+revoked agent hidden from the listing is invisible to whoever is deciding
+whether it is still needed while its audit rows still name it.
+
+**What an agent may be granted** is a subset of the OAuth scopes:
+`runtimes:read`, `runtimes:write`, `data:read`, `sandboxes:manage`. The
+scopes about a *person* — reading their profile, acting as them — mean
+nothing for a principal that is not one, and accepting them would grant
+something that silently does nothing. An agent with no scopes is refused
+outright: it is a key that fails at its first call, issued as though it
+worked.
+
+#### How a key is checked, and what that costs
+
+The gateway cannot verify a key by itself the way it verifies a JWT, so every
+call carrying one is a lookup against IAM's
+`POST /api/iam/v1/mcp-service-agents/authenticate`. That endpoint is for the
+gateway alone — it takes a credential and answers who it is, so anything that
+may call it may test keys against it — and the gateway proves itself with
+`DATALAYER_SERVICE_API_KEY` in `X-API-Key` before the key in the body is
+looked at.
+
+| | |
+| --- | --- |
+| Successful lookups are cached | **60 seconds**. An agent in a loop would otherwise put IAM in its inner loop |
+| Refusals are cached | **Never**. A reinstated key, or one whose rotation raced a call, must not keep failing for a minute with nothing to say why — and a cached refusal makes the cache a place to park a negative answer for a real key |
+| IAM unreachable | **Refused.** Not the last good answer |
+
+:::caution A revocation takes effect within a minute, not instantly
+That is the honest cost of the cache, and it is why the window is a minute
+rather than an hour.
+
+Note the difference from the [policy cache](#policy-layers), which *does*
+keep its last answer through an IAM outage: an outage is not a policy change,
+and reading it as "no restrictions" would leave every agent briefly
+unconstrained. Authentication is the other way round. Serving a stale
+principal during an outage makes the revocation window as long as the outage
+— revoke a leaked key, IAM has a bad afternoon, and the key works all
+afternoon. A refusal is the failure somebody can see.
+:::
+
+:::info A principal missing its organization is refused
+An empty `org_uid` is *personal scope*, which is not what a service agent is:
+it would run under no policy, spend against nobody's budget and write its
+audit where nobody looks. The gateway refuses rather than running it that
+way.
 :::
 
 ### The two sandbox quotas
