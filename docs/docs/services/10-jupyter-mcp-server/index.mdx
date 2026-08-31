@@ -1120,13 +1120,27 @@ then every window for ever.
 
 ### Being told
 
-A firing is delivered as an **ai-agents notification** and, where the
-organization has set `alert_webhook_url`, POSTed to that endpoint as well.
+A firing is delivered as an **ai-agents notification**, POSTed to
+`alert_webhook_url` if one is set, and emailed to `alert_emails` if any are.
+
+Every copy is attempted independently. An organization that asked for a
+webhook and an email must not lose the email because the webhook was down —
+they are different people finding out — and the failure names which copy was
+lost.
 
 The notification goes **first and separately**. It is the delivery somebody
 will look for, and it must not be lost because a Slack workspace was down.
 The webhook follows; a failure is logged, counted `undelivered`, and does not
 undo the notification that already arrived.
+
+Email is sent **off the event loop**: SMTP is a synchronous conversation with
+somebody else's server, and this runs on the scheduler's tick, so a slow mail
+host would otherwise hold up every other organization's alert. It opts into
+`raise_on_failure` on the shared sender, which swallows by default — right
+for a signup confirmation, wrong for mail that *is* the delivery, since a
+send that failed and was swallowed is an alert reported as delivered and
+never received. That flag also fires when **no SMTP is configured**, which is
+the commonest failure and the one that looks most like success.
 
 The webhook is **not retried**, unlike audit forwarding. That is a copy of a
 record and this is a copy of a notice — retrying a notice against somebody
@@ -1170,6 +1184,7 @@ curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
 | `destination_url` | An `https://` or `s3://` URL. `http` is refused: audit rows carry who did what for which organization, and that does not go on the wire in the clear |
 | `destination_secret_ref` | Names a signing secret in IAM's store. **Refused today** — see below |
 | `alert_webhook_url` | An `https://` endpoint a fired alert is POSTed to, beside the in-app notification. `http` is refused: an alert names the organization and what its agents did |
+| `alert_emails` | Who is emailed when a rule fires, comma-separated, at most 20. An alert list is people who want to know, not a mailing list |
 
 An organization owner writes them. Reading needs the role that reads the
 audit itself — owner or `organization_security_auditor` — because where an
