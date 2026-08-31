@@ -950,6 +950,7 @@ setting that does nothing.
 | `allowedClients` | list of CIMD URLs or hostnames | Every layer's list must admit the client. An empty list is not an allowlist, same reason |
 | `maxCallsPerMinute` | whole number, **at least 1** | The smallest wins |
 | `maxCreditsPerDay` | a positive number of credits | The smallest wins |
+| `maxConcurrentSandboxes` | whole number, **at least 1** | The smallest wins |
 
 :::caution `maxCallsPerMinute: 0` is refused, and why
 The gateway reads a non-positive cap as *no cap*. A zero written to stop an
@@ -958,9 +959,14 @@ stored meaning is the opposite of its plain reading. To stop an agent, revoke
 its grant or deny the tools.
 :::
 
-### The daily budget
+### The two sandbox quotas
 
-`maxCreditsPerDay` is checked **before a launch** and nowhere else. A call on
+`maxCreditsPerDay` and `maxConcurrentSandboxes` bound different things, and
+an organization usually wants one of them: the first is what may be *spent*
+in a day, the second what may run at *once*. "Ten agents, each on a small
+box" is a sentence about the second.
+
+Both are checked **before a launch** and nowhere else. A call on
 a sandbox that already exists costs nothing new, and refusing every one would
 read as an outage rather than as "your agents are out of budget for today" —
 which is the one somebody can act on. A session that already holds a sandbox
@@ -970,12 +976,18 @@ stop an agent using what it is already paying for.
 At the budget, not over it: a budget of 100 that admits the launch taking you
 to 140 is a budget of 140.
 
+The concurrency count is asked first. It is a Solr read this process already
+makes, where the budget is a round trip to IAM — so an organization at its
+sandbox limit does not pay for a spend lookup to be told what the count
+already knew. It is counted with `rows=0`, so an organization with two
+hundred sandboxes costs what one with two costs.
+
 The refusal carries its own JSON-RPC code and `retryable: false` — retrying
 tomorrow works, retrying now does not, and a client that cannot tell will
 loop. It names the layer that set the budget, so a team owner who set 20 is
 not sent to the organization's settings page to find out why.
 
-:::caution A ledger that cannot be read does not refuse
+:::caution Neither quota refuses on a number it could not read
 The opposite of what a budget implies, and deliberate. An organization whose
 agents stop working because a billing lookup timed out is a worse failure
 than one that spends a little over on the day IAM was down.
@@ -983,7 +995,8 @@ than one that spends a little over on the day IAM was down.
 An *incomplete* spend figure is treated the same way and for a sharper
 reason: a sum missing rows always reads as under budget, so enforcing on one
 refuses launches somebody is entitled to or admits ones they are not — and
-which depends on rows nobody saw.
+which depends on rows nobody saw. A sandbox count that could not be read is
+the same trade.
 
 Both are logged. A budget that is not being enforced otherwise looks exactly
 like one nobody set.
