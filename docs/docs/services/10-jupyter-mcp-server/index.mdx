@@ -996,7 +996,7 @@ setting that does nothing.
 | `allowedClients` | list of CIMD URLs or hostnames | Every layer's list must admit the client. An empty list is not an allowlist, same reason |
 | `maxCallsPerMinute` | whole number, **at least 1** | The smallest wins |
 | `maxCreditsPerDay` | a positive number of credits | The smallest wins |
-| `maxConcurrentSandboxes` | whole number, **at least 1** | The smallest wins |
+| `maxConcurrentSandboxes` | whole number, **at least 1** | The smallest wins *as a reported figure*; enforced per scope — see [A team's concurrency is counted against the team](#a-teams-concurrency-is-counted-against-the-team) |
 
 :::caution `maxCallsPerMinute: 0` is refused, and why
 The gateway reads a non-positive cap as *no cap*. A zero written to stop an
@@ -1135,6 +1135,45 @@ stop an agent using what it is already paying for.
 
 At the budget, not over it: a budget of 100 that admits the launch taking you
 to 140 is a budget of 140.
+
+#### A team's concurrency is counted against the team
+
+The one place a quota does **not** behave like the rest of the policy. Every
+other rule narrows: the effective `maxCallsPerMinute` is the smallest any
+layer set, one number, checked once. A *counted* quota cannot work that way,
+because the count belongs to a scope.
+
+So both are checked, each against its own count:
+
+| Limit set by | Counted over |
+| --- | --- |
+| The organization | Every sandbox in the organization |
+| The team | Only that team's sandboxes |
+
+Taking the team's limit and the organization's count would refuse a team
+running *nothing* because other teams are busy — a refusal its owner can
+neither understand nor act on. Taking the team's count against the
+organization's limit would let ten teams of nine walk past a cap of ten.
+Checking both is what "a team has its own quota within the organization's"
+has to mean to be usable.
+
+The organization's answer comes first when both are full: it is the one that
+holds however the team is configured, and the one an owner rather than a team
+owner acts on.
+
+A sandbox with no team belongs to no team, and is counted only for the
+organization. Counting it would make the first team to launch carry the whole
+organization's teamless work against its own cap.
+
+:::note One unreadable count does not disable the other
+Each count that cannot be read is skipped with a line in the log, and the
+other still holds. A team at its cap is still at its cap when the
+organization's count times out.
+
+The daily **credit** budget is still organization-only: `agent_credits` sums
+a billing entity, and a team's share of a ledger is a different question from
+a team's count of running sandboxes.
+:::
 
 `GET /api/mcp/v1/organizations/{uid}/usage` puts the use beside the limit —
 spend from IAM's ledger, running sandboxes from `mcp-gateway`, the limits
