@@ -982,13 +982,27 @@ evaluator rather than restating its rules. A rule that cannot be evaluated is
 a condition nobody is watching, and that looks exactly like a condition that
 never happens.
 
-:::warning Four of the six conditions have a reader
-`tasks.open`, `tasks.failed` and `audit.write_failures` do. `spend.credits`
-and the two `sli.*` do not — they need IAM's ledger and the OTEL service — so
-a rule naming one of those is counted `unreadable` on every tick and never
-fires. Deliberately: a reader answering zero would turn "nobody is watching
-this" into "this never happens" — but it is not the same as being watched.
-Read the tick's counters, not the empty alerts list.
+:::warning Five of the six conditions have a reader
+`tasks.open`, `tasks.failed`, `audit.write_failures` and `spend.credits` do.
+The two `sli.*` do not — they need the OTEL service — so a rule naming one of
+those is counted `unreadable` on every tick and never fires. Deliberately: a
+reader answering zero would turn "nobody is watching this" into "this never
+happens" — but it is not the same as being watched. Read the tick's counters,
+not the empty alerts list.
+:::
+
+`spend.credits` is asked of **IAM**, not counted here. The credits ledger is
+IAM's and there is exactly one of it; a count kept beside it would be a second
+answer to "what did this cost" that disagrees with the invoice. The query is
+windowed, restricted to the agent dimension — summing the organization's whole
+bill would alert on somebody running a notebook by hand — and bounded.
+
+:::caution A short spend sum is reported unreadable, never as a number
+If IAM summed fewer usage records than it holds, the figure is short, and a
+short spend figure always reads as *under budget*: 90 credits of an unknown
+larger number is under a threshold of 100, and the alert firing nothing is the
+alert working exactly as designed while the budget is blown. The gateway reads
+`complete: false` as "could not tell" and the tick counts it `unreadable`.
 :::
 
 `audit.write_failures` is the one worth understanding, because the gateway's
