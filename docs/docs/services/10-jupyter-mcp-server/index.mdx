@@ -998,6 +998,17 @@ setting that does nothing.
 | `maxCreditsPerDay` | a positive number of credits | The smallest wins |
 | `maxConcurrentSandboxes` | whole number, **at least 1** | The smallest wins *as a reported figure*; enforced per scope — see [A team's concurrency is counted against the team](#a-teams-concurrency-is-counted-against-the-team) |
 
+Owners write these on the **Policy** page of the organization's MCP tab, or
+through the API above. The page's fields are generated from the same rule
+list the gateway enforces, so it cannot offer a rule that would be thrown
+away at the write; a security auditor reads the page but does not get the
+form.
+
+A write carries the version that was read, so two owners editing at once get
+a `409` rather than one silently overwriting the other. The page shows that
+as a banner with a "read it again" button — the losing draft is still on
+screen, and a toast would vanish before it could be acted on.
+
 :::caution `maxCallsPerMinute: 0` is refused, and why
 The gateway reads a non-positive cap as *no cap*. A zero written to stop an
 organization's agents would lift its limit instead — the one value whose
