@@ -1394,6 +1394,44 @@ one to look at. So a row is keyed on `agent_uid` where there is one, and on
 `client_id` — `claude`, `cursor` — for a person's delegated agent.
 :::
 
+### Where the dimension shows up
+
+The same two keys answer three questions in three places, and they are worth
+knowing together because a report that disagrees with a table is usually one
+of them reading the pair in the other order:
+
+| Surface | Reads |
+|---|---|
+| `GET …/organizations/{uid}/usage` | `byAgent`, the day's credits grouped |
+| The console's **Usage** page | The same answer, biggest spender first |
+| The **Reservations** table in the web UI | A *Started by* column per running runtime |
+
+The reservations table gets it for free: IAM already puts the metadata on
+every usage record it serves, so the dimension was arriving in the browser
+long before anything displayed it.
+
+:::warning `agent_uid_s` is read before `client_id_s`, everywhere
+
+A service agent reaching Runtimes **through the gateway** carries the
+gateway's client id. Read the other way round, every one of an
+organization's pipelines is the same agent — one row costing the sum of all
+of them, with nothing to say which to look at.
+
+This holds in IAM's grouping, in the gateway's answer and in the table. If
+you add a fourth reader, read them in that order.
+:::
+
+:::note The runtimes table does not have this column
+
+`RuntimesTables` builds its rows from the runtime record, which the Operator
+assembles from **pod labels and annotations** — the reservation's metadata is
+not among them. A *Started by* column there needs the dimension propagated
+onto the pod at launch, across the gateway, Runtimes and the Operator.
+
+The reservations table has it because that view reads usage records, which is
+where the dimension lives.
+:::
+
 A reservation carrying **no** agent dimension is somebody's own work, not an
 agent's. It is skipped rather than filed under `unknown`, which reads in a
 table like an agent by that name; it stays in the organization's total, which
