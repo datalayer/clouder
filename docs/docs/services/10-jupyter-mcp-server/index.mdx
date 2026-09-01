@@ -838,7 +838,7 @@ naming the setting; a missing one is an error line and a readiness report.
 | `DATALAYER_MCP_DEPENDENCY_TIMEOUT` | How long a call to a platform dependency may take before it is a timeout; default `10` seconds |
 | `DATALAYER_SANDBOX_ENVIRONMENT` | The Datalayer environment a sandbox is launched into; default `ai-agents-env`. Set it where a cluster offers different ones, such as a GPU environment — the environments differ per cluster, and picking one that does not exist fails at the first cell rather than at startup |
 | `JUPYTER_MCP_TOKEN_VERIFIER_CLASS` | How the worker authenticates clients; `datalayer_jupyter_mcp_server.verifier:DatalayerTokenVerifier`, which accepts OAuth access tokens and personal access tokens |
-| `DATALAYER_CORS_ORIGIN` | The browser origin allowed on the REST routes; default `*` |
+| `DATALAYER_CORS_ORIGIN` | The browser origins allowed on the REST routes, **comma-separated**; default `*`. See below — this variable took the console down once |
 | `PORT` | The port uvicorn listens on inside the pod; default `4404`, and what the chart's `jupyterMcpServer.port` must agree with |
 | `LOG_LEVEL` | Accepted in either spelling; an unknown value falls back to `INFO` rather than stopping the service |
 | `DATALAYER_MCP_LOG_COLOR` | Whether the request log is coloured; default `true`, and `NO_COLOR` turns it off |
@@ -853,6 +853,57 @@ a default it does not own.
 
 Do not place the IAM API key, the JWT secret or the Solr password in chart
 values. Use `jupyterMcpServer.envValueFrom` with Kubernetes Secret references.
+
+### `DATALAYER_CORS_ORIGIN`, and how it fails
+
+The console reads this gateway from the browser, so every REST route is
+subject to CORS. When the origin is wrong the failure does not look like a
+CORS failure: the browser refuses the request *before sending it*, the fetch
+rejects with no status, and the page says **"The MCP server did not
+answer"** — while the gateway is up and answering.
+
+Set it to the origins that actually load the console, comma-separated:
+
+```yaml
+env:
+  - name: DATALAYER_CORS_ORIGIN
+    value: "https://datalayer.ai,https://prod1.datalayer.run"
+```
+
+:::caution An empty value is not an unset one
+`DATALAYER_CORS_ORIGIN: ""` is **not** the same as leaving it out. The
+default applies to a variable that is absent; a variable set to the empty
+string is a value, and it used to become an allow-list of one entry that
+matches no origin — refusing every browser there is.
+
+That is exactly what happened: `/api/mcp/healthz` answered `200`,
+`/api/mcp/v1/activity` answered a correct `401`, and every preflight answered
+`400 Disallowed CORS origin`. A blank value now falls back to the default
+instead, but a Helm value that renders empty is still worth spotting.
+:::
+
+:::note `*` turns credentials off, necessarily
+The CORS specification forbids a wildcard origin on a credentialed request,
+and Starlette honours it by answering the wildcard *without* the credential
+header — which the browser then drops. So a wildcard cannot be combined with
+`allow_credentials`, and the gateway turns credentials off when the wildcard
+is in force rather than sending a pair no browser accepts.
+
+For anything that has to carry credentials, name the origins.
+:::
+
+**To check a deployment from a terminal**, ask for the preflight the browser
+would:
+
+```bash
+curl -si -X OPTIONS https://mcp.datalayer.run/api/mcp/v1/activity \
+  -H 'Origin: https://datalayer.ai' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization' | head -3
+```
+
+`200` with an `access-control-allow-origin` naming your origin is right.
+`400 Disallowed CORS origin` is this variable.
 
 ## Logs
 
