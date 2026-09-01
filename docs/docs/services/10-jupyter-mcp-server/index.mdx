@@ -870,6 +870,23 @@ env:
     value: "https://datalayer.ai,https://prod1.datalayer.run"
 ```
 
+Include every origin that loads the console, **the development server among
+them**. Working against a deployed plane from `http://localhost:3063` is the
+normal way to develop here, and that origin is as much a browser origin as
+the production one:
+
+```yaml
+DATALAYER_CORS_ORIGIN: "https://datalayer.ai,https://prod1.datalayer.run,http://localhost:3063"
+```
+
+:::warning A localhost origin on a production gateway
+It is a real widening: with `allow_credentials`, any page served from that
+port on any developer's machine may call this gateway with the caller's
+token. That is the trade for developing against a deployed plane, and it is
+worth making deliberately — on a plane with real customer data, prefer a
+separate development deployment to adding `localhost` to this list.
+:::
+
 :::caution An empty value is not an unset one
 `DATALAYER_CORS_ORIGIN: ""` is **not** the same as leaving it out. The
 default applies to a variable that is absent; a variable set to the empty
