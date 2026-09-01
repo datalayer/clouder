@@ -236,6 +236,24 @@ service refuses a token naming anything else.
 | Policy | `GET /api/mcp/v1/policy` | The caller's own effective policy, rule by rule, with the layer that decided each — platform, organization, team or personal. `?org=` widens it by the same rule as the audit |
 | Alerts | `GET /api/mcp/v1/alerts`, `POST …/{uid}/acknowledge` | An organization's owners and security auditors, the same rule as the audit. Acknowledging is idempotent; somebody else's organization's alert is `404`, because the uid of an alert is enough to know one fired |
 | Audit forwarding | `GET /api/mcp/v1/audit/forwarding` | The same rule again. Says whether the audit is reaching the organization's own system of record — never the destination or the secret |
+
+Forwarding **never fails the call it describes** — holding up a tool call
+because a customer's SIEM is down would be the worse trade — so a failure is
+invisible unless something reports it, and a silently dropped audit record
+looks exactly like nothing having happened.
+
+That route is what reports it, and the console's Audit page now renders it: a
+line when it is working, and the destination's own words when it is not. If
+you alert on one thing here, alert on `healthy` going false — the counters
+alone cannot tell a failing destination from a quiet week.
+
+:::note `configured` is not `healthy`
+An organization that has set a destination and had nothing shipped to it yet
+reports `configured: false` with counters at zero and no error. That reads
+exactly like a working destination on a quiet week, which is why the two are
+separate fields rather than one — and for an organization that *did* set a
+destination, "never attempted" is the worse of the two states.
+:::
 | Organization usage | `GET /api/mcp/v1/organizations/{uid}/usage` | The same roles as the overview. Spend, running sandboxes and the per-minute cap, each beside the limit in force — see [The two sandbox quotas](#the-two-sandbox-quotas) |
 | Organization overview | `GET /api/mcp/v1/organizations/{uid}/overview` | An organization owner or security auditor, `?team=` to narrow. The enterprise console's first page: agents, spend, tasks and alerts for one organization |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
