@@ -254,7 +254,7 @@ exactly like a working destination on a quiet week, which is why the two are
 separate fields rather than one — and for an organization that *did* set a
 destination, "never attempted" is the worse of the two states.
 :::
-| Organization usage | `GET /api/mcp/v1/organizations/{uid}/usage` | The same roles as the overview. Spend, running sandboxes and the per-minute cap, each beside the limit in force — see [The two sandbox quotas](#the-two-sandbox-quotas) |
+| Organization usage | `GET /api/mcp/v1/organizations/{uid}/usage` | The same roles as the overview. Spend, running sandboxes and the per-minute cap, each beside the limit in force, plus the day's credits by agent — see [The two sandbox quotas](#the-two-sandbox-quotas) and [Which agent spent it](#which-agent-spent-it) |
 | Organization overview | `GET /api/mcp/v1/organizations/{uid}/overview` | An organization owner or security auditor, `?team=` to narrow. The enterprise console's first page: agents, spend, tasks and alerts for one organization |
 | Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
 | Sandbox ended | `POST /api/mcp/v1/operations/runtime-ended` | Runtimes' own key. How an **external** sandbox's loss reaches the gateway — see below |
@@ -1350,6 +1350,39 @@ page: it is opened when something is already wrong.
 **No route on this gateway writes a quota.** Limits are policy rules and IAM
 owns that document; a second way to write it would be a second answer to what
 an organization is allowed. The usage page names where they are set.
+
+### Which agent spent it
+
+The same answer carries `byAgent`: the day's credits grouped by the principal
+that spent them, biggest spender first. A budget says *whether* to act. It
+does not say *what to turn off*, and that is the question an administrator at
+ninety percent of a limit is actually asking.
+
+It costs no extra query. IAM was already reading the per-agent usage records
+in order to sum them, and discarding the dimension that says who — so "what
+did this organization spend" had an answer and "which agent spent it" did
+not. The grouping happens over the rows the total is summed from, in the same
+read, so the two cannot disagree across the seconds between two queries.
+
+:::warning The key is `agent_uid`, then `client_id`
+Service agents reach Runtimes **through the gateway** and carry the gateway's
+client id. Grouped on that, every one of an organization's pipelines collapses
+into a single row costing the sum of all of them, with nothing to say which
+one to look at. So a row is keyed on `agent_uid` where there is one, and on
+`client_id` — `claude`, `cursor` — for a person's delegated agent.
+:::
+
+A reservation carrying **no** agent dimension is somebody's own work, not an
+agent's. It is skipped rather than filed under `unknown`, which reads in a
+table like an agent by that name; it stays in the organization's total, which
+is the bill.
+
+:::info An unreadable total carries no breakdown
+Where IAM summed fewer records than it holds, the total is `unknown` and
+`byAgent` is **empty** — not partial. The parts under an unreadable whole make
+every agent look cheap and the reader concludes the budget is fine, which is
+the one direction a short sum always errs in and the one nobody checks.
+:::
 
 The concurrency count is asked first. It is a Solr read this process already
 makes, where the budget is a round trip to IAM — so an organization at its
