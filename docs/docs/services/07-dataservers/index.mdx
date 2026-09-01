@@ -112,6 +112,7 @@ away would turn a redeploy into a re-bootstrap.
 | `DATALAYER_DATASERVERS_NAMESPACE` | `datalayer-dataservers` | Where it runs |
 | `DATALAYER_DATASERVER_API_KEY_SECRET` | `datalayer-dataservers-api-key` | The Secret holding the `dataserver` service key |
 | `DATALAYER_DATASERVER_IDENTITY_SECRET` | `datalayer-dataservers-identity` | The Secret holding the mTLS identity |
+| `DATALAYER_DATASERVER_SELF_BOOTSTRAP` | `false` | Obtain the certificate at start instead of mounting one. Needs `DATALAYER_DATASERVER_REGISTRATION_UID`, and Contents issues only for a registration marked `managed` — the switch grants nothing by itself |
 
 `contentsUrl` comes from `DATALAYER_CONTENTS_URL` (or `DATALAYER_RUNTIMES_URL`).
 
@@ -143,7 +144,11 @@ stops it — the connector is told, so DuckDB is interrupted, an Athena
 execution stopped, a BigQuery job cancelled.
 
 A result is spooled to disk, shaped by the policy **as it is written**,
-hashed, and uploaded with `Content-SHA256` and `X-Rows`. A job that cannot run
+hashed, and uploaded with `Content-SHA256`, `X-Rows`, and `X-Truncated` when a
+cap cut it short. Contents checks the row count against the stream and records
+the truncation on the query, so a partial answer is never stored as a whole
+one — a number that is the first ten thousand rows of more has to say so, or
+somebody quotes it as the total. A job that cannot run
 posts to `.../failed` with a code rather than a message: `OPERATION_DENIED`,
 `OBJECT_DENIED`, `POLICY_VERSION_MISMATCH`, `CONNECTOR_MISSING`,
 `QUERY_FAILED`, `LIMIT_SECONDS`, `CANCELLED`, `BUSY`, `INTERNAL`.
@@ -334,6 +339,15 @@ Two properties define it:
   is a column gone from the next answer. Nothing prevents that, because
   preventing it would mean holding a copy — the thing this is not.
 
+One table, **two answerers of different connector types**: a `table`
+connector on the managed Dataserver reading the snapshot, and a `live`
+connector in the sandbox reading the object. They share one **name** —
+`<owner uid>.<relation>` — and a job names it, because the job's
+`connector_type` is the Datasource's, which is the snapshot's. A Dataserver
+therefore matches a named connector **before** it matches a type: insisting on
+the type would send a query to the live answerer and have it find nothing on a
+Dataserver holding exactly the table it asked for.
+
 Contents chooses the answerer per query: **live when the sandbox is `ready`,
 the snapshot otherwise**, and the answer says which. `degraded` falls back
 deliberately — it means a lease was missed, so the sandbox may answer and may
@@ -429,12 +443,30 @@ A runner that raises does not take the kernel with it. The kernel is the
 user's, and a Dataserver thread raising into it would look like their own code
 failing; the registration lapses on its own and queries fall back.
 
-### What is not
+### Who may obtain an identity
 
-- **The authorization self-registration assumes.** There is no owner token in
-  a pod, so the service key stands in for it, and Contents must issue only for
-  a registration marked managed — otherwise a service key is a way to obtain
-  an identity for any registration. That change is not written.
+The **owner**, always: they created the registration and they run it.
+
+And the **platform**, but only for a registration marked `managed` — a
+Dataserver Datalayer deploys, or one a sandbox runs for its own live tables.
+There is no person at the keyboard in either case, and a pod that cannot start
+until somebody runs `bootstrap` by hand does not scale to a user publishing a
+table.
+
+`managed` is a field on the registration, **false by default**, and only its
+owner can set it — marking a registration managed is opting out of the
+property below, so it is theirs to opt out of.
+
+**`managed` is the whole boundary.** Without it the `dataserver` service
+credential would be a skeleton key: it would obtain an identity for *any*
+registration, including one somebody deployed on their own hardware — whose
+entire security argument is that its key was made there and never travelled.
+So the flag is checked before the credential is, and a service key presented
+against an unmanaged registration is refused exactly as a stranger's request
+is.
+
+The credential is compared the way every service credential is: constant time,
+never a match when unset, and another service's key does not open this door.
 
 The plan is Milestone 10 in `CONTENTS.md`.
 

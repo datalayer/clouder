@@ -6,7 +6,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# ☰ 🔀 🛢️ Datalayer Node Mount Gateway
+# ☰ 🔀 Datalayer Node Mount Gateway
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
@@ -214,6 +214,24 @@ the other's payload, so nothing breaks; but a sentence saying "materialized"
 without saying whose is a sentence two readers will understand differently.
 
 :::
+
+### The annotation is a seam, and it is tolerant on purpose
+
+The Operator writes the grant; the agent — a different repository, a different
+image — reads it. The **format** is shared code
+(`datalayer_core.contents_node_mount_gateway`); the **parsing** is not. The
+agent has its own reader, and it deliberately *drops* an entry it cannot
+understand rather than failing the whole set: one malformed grant must not
+cost somebody the folders written correctly beside it.
+
+That tolerance is right and it is also the hazard. A field the Operator starts
+writing and the agent does not understand raises nowhere — the mount simply
+never appears, and the only symptom is a folder missing from a sandbox.
+
+So it is tested as a seam: real Operator output fed to the real agent parser,
+asserting nothing is lost. What has to survive is every kind, and the fields a
+mount cannot be made without — the revision, the Secret's name, the prefix
+joined onto the bucket, `noexec` on data, and the mode.
 
 ### The logic, in the order it runs
 

@@ -421,6 +421,23 @@ that decides whether it is `ready`, the CA that signs its certificate, and the
 metrics and alert on it. Those are [settings](#configuration) of *this*
 service, and they are listed with the rest of them.
 
+## Before a deploy: the generated artifacts
+
+Three things are generated from the contract models and checked in: the
+OpenAPI document, the JSON schemas, and `datalayer-core`'s TypeScript types.
+Each has a `--check` mode, and a stale one is a field the UI cannot read or an
+endpoint the SDK does not know exists.
+
+~~~bash
+cd services/contents && make openapi-check schemas-check
+cd tech/datalayer/core && npm run check:contents-generated
+~~~
+
+Regenerate with `make openapi schemas` and
+`python scripts/generate-contents-types.py`. Worth running before a deploy
+rather than after: drift here is silent, and it is detectable at the moment it
+is introduced by anyone who looks.
+
 ## Test after a deploy
 
 What to run, in the order the plan's milestones stack, from a machine with
