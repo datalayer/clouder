@@ -1,0 +1,646 @@
+---
+title: Node Mount Gateway
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🔀 Datalayer Node Mount Gateway
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="green">Node service shipped</Label>
+  <Label color="yellow">Off by default</Label>
+</Stack>
+
+A Pod's `volumes` and its containers' `volumeMounts` are fixed when the Pod is
+created, and Kubernetes has no in-place update for either. So a Datalayer
+Runtime that mounts content used to cost a **cold Pod** — scheduling, an image
+pull, the init containers and a Jupyter startup probe — where a Runtime that
+mounted nothing was handed a prewarmed one.
+
+The Node Mount Gateway lifts that without mutating anything. Every pooled Pod
+carries one empty directory its runtime container mounts `HostToContainer`,
+and this — a service of the privileged node DaemonSet, **outside the tenant
+Pod** — binds real filesystems into it once the Pod is running.
+
+## Node, not Pod
+
+The name says where it lives, because the distinction is the whole security
+argument. **One agent per node** serves every runtime on it; what is per Pod is
+only the surface it delivers through.
+
+| Per Pod | Per node |
+| --- | --- |
+| The `node-mount-gateway` volume, at `/mnt/datalayer` in the runtime container | One privileged DaemonSet process, and the one mount table it owns |
+| The agent's tree, `/var/lib/datalayer/node-mount-gateway/pods/<pod uid>` | The credential endpoint, shared across mounts and token-scoped per mount |
+| The `node-mount-gateway-mounts` grant annotation, and `nodeMountGateway.maxMountsPerPod` | `nodeMountGateway.maxMountsPerNode`, the counters, the metrics and the RBAC |
+
+Nothing privileged runs inside a tenant Pod, and nothing inside one can reach
+the agent: it has no listener, and its only input is the Kubernetes API. A
+sandbox that could reach it would be a sandbox that could mount any folder on
+the shared claim.
+
+## Where it runs
+
+In the **[`datalayer-node-mounts`](/services/system/node-mounts/)
+DaemonSet**, beside the
+[Local CSI driver](/services/system/local-csi/) — same image, same chart, same
+upgrade. One node component rather than two, because a node has one mount
+table and two things pretending to own it is how a leaked mount goes
+unnoticed. They are independent otherwise — but only the gateway has a
+switch. Turning `nodeMountGateway.enabled` off leaves the DaemonSet and the
+driver exactly where they were.
+
+A Pod's `volumes` and its containers' `volumeMounts` are fixed when the Pod is
+created, and Kubernetes has no in-place update for either. A launch that
+mounted the Home Folder therefore cost a **cold Pod** — scheduling, an image
+pull, the init containers and a Jupyter startup probe — where a launch that
+mounted nothing cost one `PATCH` against a prewarmed Pod.
+
+The gateway lifts that without mutating anything. Every pooled Pod carries an
+empty directory its runtime container mounts `HostToContainer`; the agent, in
+this DaemonSet and outside the tenant Pod, binds real filesystems into it once
+the Pod is running.
+
+~~~mermaid
+flowchart TB
+  claim["Shared filesystem claim<br/>home/users · home/organizations · home/teams"]
+  agent["Node Mount Gateway<br/>DaemonSet, privileged"]
+  tree["/var/lib/datalayer/node-mount-gateway/POD_UID<br/>the agent's own tree, rshared"]
+  vol["kubelet emptyDir of the pod<br/>one mount, ever: that tree"]
+  pod["Runtime container<br/>/mnt/datalayer/HANDLE<br/>HostToContainer"]
+  home["/home/jovyan/HANDLE<br/>symlink, made inside the sandbox"]
+  claim --> agent --> tree --> vol --> pod --> home
+~~~
+
+## Why the volume is memory-backed
+
+Not for speed. When a Pod goes away, kubelet tears its volumes down; for a
+disk-backed `emptyDir` that teardown is a recursive delete of the node
+directory, and a recursive delete removes a directory's children **before** it
+tries to remove the directory. A bind mount left standing underneath would be
+walked into, and the delete would land on a user's home folder on the shared
+claim.
+
+A memory-backed `emptyDir` is a tmpfs, so kubelet must unmount it first, and
+unmounting a mount that still has children fails with `EBUSY`. A leaked mount
+therefore leaves the Pod stuck in `Terminating` — visible, alertable and
+recoverable — instead of causing silent data loss. It follows that the gateway
+volume holds mount points and nothing else: it carries a 1 MiB size limit, and
+it is not the home directory the sandbox writes to.
+
+## Why `/home/jovyan` is not a volume either
+
+The folders are bound at `/mnt/datalayer/{handle}` and reached at
+`/home/jovyan/{handle}` through a **symlink made inside the sandbox**, by the
+same kernel the companion already runs start hooks in.
+
+The first design put `/home/jovyan` on a volume shared with the companion, so
+the companion could write the symlinks directly. That was wrong, and CRIU is
+why. A checkpoint captures `rootfs-diff.tar` — the container's writable layer
+— and [the restore](/services/operator/) replays it onto the base image. A
+home directory moved onto a volume is not in that tar, so a checkpointed
+sandbox would have come back with an empty home and no error anywhere. A
+symlink in the writable layer *is* in the checkpoint, and it points at a mount
+the restored Pod's agent makes again from the Pod's annotation.
+
+So the gateway adds exactly one volume to a runtime Pod, and mounts over
+nothing.
+
+## The node requirement
+
+Mount propagation only reaches a Pod if the kubelet directory is in a
+**shared** peer group. On a node whose mounts are `private`, every grant
+succeeds on the node and is invisible in the sandbox — the worst way for this
+to fail. `clouder kubeadm setup --node-mounts --node-mounts-gateway` checks it
+during the install; check it by hand with:
+
+~~~bash
+findmnt -no PROPAGATION --target /var/lib/kubelet   # must contain "shared"
+mount --make-rshared /                              # if it does not
+~~~
+
+## The grant is an annotation
+
+The agent takes no requests over the network. Its only input is the Kubernetes
+API:
+
+| Annotation on the runtime Pod | Written by | Meaning |
+| --- | --- | --- |
+| `runtime-pools.datalayer.io/node-mount-gateway-mounts` | Operator | The mount set: `{"hash": …, "mounts": [{"source": "home/users/UID", "target": "HANDLE", "mode": "rw", "allow_exec": true}]}`. `source` is relative to the claim; `target` is one path segment. |
+| `runtime-pools.datalayer.io/node-mount-gateway-ready` | Gateway agent | What it applied: `{"hash": …, "state": "ready\|degraded\|failed", "mounted": [...], "failed": {...}}`. The Operator waits for the **hash it asked for** — an answer for the previous set is not an answer for this one. |
+| `runtime-pools.datalayer.io/node-mount-gateway` (label) | Operator | Whether the Pod carries the gateway volume. A pool built before the gateway still holds Pods without it, and one of those must never be handed to a hot attach. |
+
+There is no gateway port to authenticate, no key to rotate, and nothing inside
+the tenant Pod that can reach it: **authorization is RBAC on patching a runtime
+Pod**, which only the Operator's ServiceAccount has. It is also reconcilable by
+construction — an agent that restarts, or a node that reboots, converges by
+reading the API.
+
+## What it can mount
+
+A grant names a **kind**. The kind says what the mount is; it decides the
+**delivery**, which is what the node agent actually has to do to produce it.
+Several kinds share a delivery, and the agent dispatches on the delivery — so
+a new kind that mounts like an existing one is a table entry, not a new code
+path.
+
+| Kind | What it is | Delivery | What the agent does |
+| --- | --- | --- | --- |
+| `files` | A person's, team's or organization's Home Folder | bind | Binds a sub-path of the shared claim. Creates the folder if this is its first mount |
+| `shared-folder` | A dataset an administrator put on the shared claim | bind | Binds a sub-path. Never creates one: an absent dataset is a mistake, not a folder to invent |
+| `nfs` | An export this cluster can reach that is **not** the shared claim | filesystem | `mount -t nfs`, with `nosuid` and `nodev`. Nothing runs afterwards; the kernel holds it |
+| `git` | A repository at a pinned revision | materialize | Checks the commit out on the node, then binds the checkout read-only |
+| `cloud-storage` | An object-store bucket and prefix | process | Runs Mountpoint for S3, fed a session credential on loopback |
+| `local-bridge` | A folder on the person's own machine | process | Runs the CSI driver's bridge filesystem against the relay |
+
+The four deliveries are the whole vocabulary:
+
+- **bind** — the content is already on a filesystem this node has. The mount is
+  a bind of a path beneath it, attached with its flags already set.
+- **filesystem** — the kernel knows how to mount it. Nothing is watched,
+  because there is no process; it ends when it is unmounted.
+- **process** — a userspace filesystem has to be running for the mount to
+  answer at all. It is started, watched, and its death is a mount that returns
+  errors rather than one that disappears, so the agent reports it rather than
+  leaving a sandbox reading an empty directory.
+- **materialize** — there is nothing to mount yet. A URL is not a filesystem,
+  so the content is produced on the node first and then bound.
+
+### The logic, in the order it runs
+
+Every grant in the annotation goes through the same sequence, and the order is
+the point: nothing is left behind by a grant that turns out to be refusable.
+
+1. **Read the kind.** It is read *before* the source, because the kind decides
+   how the source is read. A repository URL run through the relative-path rule
+   comes out mangled rather than refused, and a mangled source is how a broken
+   mount reaches a node.
+2. **Validate the source for that delivery.** A bind names a path beneath the
+   shared claim; a bucket names a bucket and prefix; an NFS grant names
+   `host:/export`; a Git grant names an `https` or `ssh` URL and a revision.
+   A grant that fails here never reaches the node's mount table.
+3. **Refuse a kind nobody serves**, before a Secret is read or a directory is
+   made — so a grant that cannot be applied leaves nothing behind suggesting
+   it nearly was.
+4. **Read the credential, if the grant names a Secret.** Before anything is
+   mounted: a mount made and then abandoned because its Secret was refused is
+   a mount that briefly existed.
+5. **Produce the content, for a `materialize` grant.** The slow part — a clone
+   over the network — happens before the target directory is made, so a
+   checkout that fails leaves no empty folder at a path a sandbox would mount.
+6. **Make the mount, by delivery.** Bind, kernel mount, or start a process.
+7. **Prove it.** A `process` grant that started but mounted nothing is stopped
+   and reported failed, because a directory reported as a mount is what lets
+   somebody read an empty bucket and believe it.
+
+Every refusal has a code, and every code reaches the user through the Pod's
+ready annotation rather than only a node log:
+
+| Code | What went wrong |
+| --- | --- |
+| `NODE_MOUNT_GATEWAY_UNSUPPORTED_KIND` | A kind this deployment does not serve — or one nothing serves anywhere |
+| `NODE_MOUNT_GATEWAY_INVALID_SOURCE` | A source that is not the shape its kind requires, or a path that walks outside the shared claim |
+| `NODE_MOUNT_GATEWAY_INVALID_TARGET` | A target that is not one path segment |
+| `NODE_MOUNT_GATEWAY_SECRET_REFUSED` | A Secret the Pod does not own, or one the agent may not read |
+| `NODE_MOUNT_GATEWAY_MOUNT_FAILED` | The mount was attempted and did not happen — including a checkout that failed or timed out |
+| `NODE_MOUNT_GATEWAY_MOUNT_DEAD` | A `process` mount whose filesystem died; the Pod is `degraded` |
+| `NODE_MOUNT_GATEWAY_PROCESS_UNSUPPORTED` | A `process` grant on an agent with that kind switched off |
+| `NODE_MOUNT_GATEWAY_TOO_MANY_MOUNTS` | Past `maxMountsPerPod` or `maxMountsPerNode` |
+
+A grant naming a kind this deployment does not serve is **refused with a
+reason** rather than dropped. A dropped grant is a missing folder the user is
+given no explanation for, and "we do not mount that" is something they can act
+on.
+
+### Adding a kind
+
+The table above is the extension point. A kind that mounts like one already
+there is an entry in `KIND_DELIVERIES` and nothing else — `datalayer-core`
+holds it, so the Operator that writes grants and the agent that applies them
+cannot disagree about what a kind means. A kind that needs a *new* delivery is
+the larger change: it needs a branch in the agent's grant path, a way to undo
+it on revoke, and an answer to what happens when the agent restarts while the
+mount is still there.
+
+### Why a checkout, and not an init container
+
+`git` is the one kind whose content does not exist anywhere before the grant
+is made, and the creation-time path solves that with an init container that
+clones into an `emptyDir`. That is exactly the shape a pooled Pod cannot have:
+the init container has already run, and it ran before anyone knew which
+Environment the Pod would serve.
+
+Doing it on the node instead buys two things beyond working at all. The
+checkout happens while the Pod is already running, which is the point of the
+gateway. And it is made **once per node** rather than once per Pod, so the
+tenth sandbox to ask for the same tutorial repository binds the checkout the
+first one paid for.
+
+Three rules make that sharing safe:
+
+- **The revision is a full commit sha.** The `RuntimeContent` CRD requires one
+  (`^[0-9a-f]{40}$`), so every node serving a content checks out the same
+  commit, and re-pinning is a different directory rather than a checkout
+  mutated under a Pod that is reading it.
+- **The bind is read-only, whatever the grant says.** The checkout is shared;
+  one sandbox writing into it is every other sandbox's files changing.
+- **The token never reaches a command line.** A private repository's
+  credential is passed through `GIT_ASKPASS`, so it is not in `ps`, not in the
+  reflog, and not in the errors Git prints about the remote — and the askpass
+  helper is deleted before the checkout is bound, so it is not handed to the
+  sandboxes either.
+
+A checkout speaks `https` and `ssh` and nothing else. Not `file`, not `ext`:
+the node has a filesystem worth reading, and this is one of the few things on
+it that fetches a URL a tenant chose.
+
+## How a grant is mounted, and why in that order
+
+Three things about the mount itself are not obvious, and each was measured
+rather than assumed (`clouder/tests/test_csi_kernel.py` makes real mounts in a
+throwaway namespace):
+
+- **The agent's tree is stacked *on* kubelet's tmpfs, not instead of it.**
+  kubelet's `emptyDir` is a mount point too, so "something is mounted here"
+  is not "my tree is published" — the agent compares the mount's device and
+  subtree root against its own tree. Reading the tmpfs as an already-published
+  tree gives a gateway that binds nothing and reports `ready` to a sandbox
+  with an empty directory.
+- **Attributes are set before the mount is attached.** Mount attributes do not
+  propagate to peers: a mount is copied to every peer at the instant it is
+  attached, with the flags it has then. A bind followed by
+  `mount -o remount,bind,ro` leaves the sandbox's copy **writable**, so a
+  read-only grant would not be read-only where it matters. The agent uses
+  `open_tree(OPEN_TREE_CLONE)` → `mount_setattr` → `move_mount`, so the copy
+  the sandbox gets is created already `ro`, `nosuid` and `nodev`. This needs
+  **Linux 5.12 or newer**; on an older kernel the agent refuses the mount
+  rather than delivering a writable one, and `clouder node-mounts verify` checks
+  it.
+- **Release takes the grants down before the Pod's copy.** Each grant
+  propagates into that copy as a *child* of it, so unmounting the copy first
+  fails with `EBUSY`; unmounting the grant inside the tree propagates the
+  unmount outwards and leaves the copy removable. Exactly one mount is then
+  taken off the Pod's volume, never "unmount until the path is clear", which
+  would take kubelet's own tmpfs with it.
+
+Before it mounts anything the agent checks that the Pod is on this node and is
+not terminating, resolves each `source` beneath the claim with `openat2` and
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` (no traversal, no symlink race), and
+holds the set to the per-Pod and per-node caps.
+
+A Home Folder (`kind: files`) that does not exist yet is **created** — one
+component at a time, each reopened with `O_NOFOLLOW`, then given to `1000:100`
+with mode `0775`. A home folder exists the first time a sandbox mounts it or
+something is uploaded into it, whichever comes first; mounting used to be an
+init container's `mkdir` and with the gateway it is this, so a brand-new user
+does not get an error for a folder that is simply new. Where the backend sets
+ownership itself — an EFS access point, an NFS export that squashes root — the
+`chown` failing is accepted only if the folder is writable by the sandbox user
+anyway; otherwise the grant is refused, because a folder that arrives
+read-only explains itself nowhere. **No other kind is created:** inventing a
+directory for a bucket or a Volume turns a clear failure into an empty folder
+somebody debugs later. Every mount is made with
+`mount_setattr` — `nosuid` and `nodev` always, `AT_RECURSIVE` always, and
+read-only recursively when the grant says `ro`, because a remount is not
+recursive and a nested mount under a "read-only" bind is not read-only.
+
+## A mount that is a process
+
+A Home Folder is a **bind** of a directory the agent already reaches. A bucket
+and a person's own folder are not: each is a userspace filesystem that has to
+be running for the mount to answer at all. The agent treats those kinds
+(`cloud-storage`, `local-bridge`) differently in four ways:
+
+- the process mounts **at the target itself**, so the mount it makes is the
+  one that propagates into the sandbox — nothing is bound over it;
+- a process that starts and mounts nothing is a **failure**, not a mount. A
+  directory reported as a mount is how somebody reads an empty bucket and
+  believes it;
+- the pid is recorded beside the grant and is deliberately **not part of the
+  grant's identity**: a restarted filesystem is the same grant, and a mount
+  set whose hash changed on every restart would be re-applied for nothing;
+- a filesystem that has died leaves its mount **standing and answering with
+  errors**, and the Pod is reported `degraded` with `NODE_MOUNT_GATEWAY_MOUNT_DEAD`. The
+  mount is not removed, because a sandbox reading `EIO` knows something is
+  wrong and one reading stale bytes does not.
+
+Revoking stops the process **before** taking its mount point away, or the
+process is left serving a path nothing can reach. Releasing a Pod stops every
+filesystem it was granted.
+
+An agent with no way to run one refuses such a grant with
+`NODE_MOUNT_GATEWAY_PROCESS_UNSUPPORTED` rather than reporting a mount it never made.
+
+### Local bridges through the gateway
+
+`nodeMountGateway.localBridges` (off, and needing `nodeMountGateway.credentials`) serves
+`local-bridge` grants: a person's own folder mounted into a sandbox that is
+**already running**. The filesystem is the CSI driver's, unchanged — the same
+`clouder.csi.bridge_mount` process over the same relay — so this is one
+implementation of the bridge reached two ways, not a second one. The mount
+token and the relay URL both come from the Pod-owned Secret, so a deployment
+detail is never right in two places, and the relay URL is held to the same
+rules the CSI driver applies: `wss://`, the configured host, no credentials in
+the URL, and a path that names the bridge it is for. A URL naming another
+bridge is refused, or a grant could point a sandbox's mount at somebody
+else's session.
+
+The part worth knowing about is **restart**. A CSI volume is published once
+and kubelet remembers it; a gateway mount outlives the agent that made it. An
+agent that comes back has no handle for the bridge processes it inherits, so
+it asks the kernel whether the pid is alive instead of reporting them dead —
+reporting them dead would take a working folder away from a sandbox because
+the agent was replaced. Stopping an inherited one signals it by pid and clears
+its mount point either way, because a bridge left mounted is a sandbox reading
+a folder nobody granted any more.
+
+The inline CSI volume stays the creation-time path. Retiring it belongs with
+proving this one, not with shipping it.
+
+### Buckets through the gateway
+
+`nodeMountGateway.buckets` (off, and needing `nodeMountGateway.credentials`) serves
+`cloud-storage` grants with **Mountpoint for Amazon S3**, which is also why
+this image is Debian-based rather than Alpine.
+
+The reason is credential refresh, and it is worth stating because it decided
+the image. An STS session lasts an hour; a runtime lives for days. `s3fs-fuse`
+reads its credentials once at start and cannot refresh a session — its
+refreshing modes are the node's IMDS role, which is the node's identity rather
+than the user's, and the ECS provider, which reads a fixed link-local address
+nobody can serve. A bucket mounted by s3fs therefore starts returning 403 an
+hour in, with nothing to be done from the node.
+
+Mountpoint uses the AWS SDK, whose container-credentials provider re-fetches
+from `AWS_CONTAINER_CREDENTIALS_FULL_URI` as a session nears expiry. So the
+agent serves that URI itself, on loopback in its own network namespace, from
+the Secret the grant names. **Refreshing a mount becomes refreshing a
+Secret** — no unmount, no remount, no open file handle broken mid-read. Each
+mount's request must carry the token it was started with, so one mount cannot
+read another's session, and the credential never appears on a command line
+where `ps` would show it.
+
+The Secret carries `access-key-id`, `secret-access-key`, `session-token`,
+`expiration` and optionally `region` and `endpoint-url`. The expiry matters:
+without it the SDK has no reason to come back, and the mount keeps a session
+it cannot know has expired.
+
+**Not yet verified against a real bucket.** The runner, the endpoint and the
+refresh path are tested; that `mount-s3` accepts this credential URI on a real
+S3 bucket is part of the cluster run, and a mount that starts without mounting
+anything is reported as a failure rather than as a mount.
+
+## When a mount needs a credential
+
+A Home Folder needs none: it is a sub-path of a claim the agent mounts once
+per node. A bucket needs a scoped session credential, and a local bridge needs
+a mount token, so a grant may name a **Secret** — the name, never the value,
+because a credential in an annotation is a credential anyone who can read a
+Pod can read.
+
+`nodeMountGateway.credentials` (off, and inside `nodeMountGateway.enabled`) adds a **Role** in
+the runtimes namespace with `secrets: get`, bound to the driver's service
+account. Not a rule on the ClusterRole: the agent must not be able to read a
+Secret anywhere else in the cluster. Since a Secret's name cannot be known
+when the chart is written, `resourceNames` cannot narrow it further, so the
+agent does: it refuses any Secret whose `ownerReferences` do not name the Pod
+it is mounting for. That is what stops a grant from pointing at the
+companion's API key, another tenant's bridge token, or a platform Secret in
+the same namespace. The Operator creates a mount's Secret owned by the Pod, so
+its lifetime is the Pod's.
+
+An agent deployed without `nodeMountGateway.credentials` refuses a grant that names a
+Secret (`NODE_MOUNT_GATEWAY_SECRET_REFUSED`) rather than acquiring the ability because it
+was asked.
+
+## Chart values
+
+The chart is shared with the Local CSI driver and described whole under
+[Node Mounts](/services/system/node-mounts/#the-chart). These are the gateway's
+own values, plus the one shared value it cannot work without:
+
+| Value | Default | What it is |
+| --- | --- | --- |
+| `nodeMountGateway.enabled` | `false` | Run the gateway beside the [Local CSI driver](/services/system/local-csi/). Off does not undeploy the DaemonSet — the driver is still in it. |
+| `nodeMountGateway.sharedFilesystemClaim` | *(required when enabled)* | The RWX claim holding every home folder. Installing without it fails rather than deploying an agent with nothing to bind. |
+| `nodeMountGateway.sharedFilesystemMountPath` | `/mnt/shared-fs` | Where the DaemonSet mounts that claim. |
+| `nodeMountGateway.root` | `/var/lib/datalayer/node-mount-gateway` | The agent's own per-Pod trees; a host path, propagated `Bidirectional`. |
+| `nodeMountGateway.namespace` | `datalayer-runtimes` | Watch one namespace rather than the whole node. |
+| `nodeMountGateway.maxMountsPerPod` | `32` | A user in many organizations is real; a thousand mounts on one Pod is not. |
+| `nodeMountGateway.maxMountsPerNode` | `512` | |
+| `nodeMountGateway.credentials` | `false` | Let the agent read a Secret a grant names. Adds a namespaced `Role` with `secrets: get`; the agent still refuses a Secret the Pod does not own. Needed only for mount kinds a Home Folder is not. |
+| `nodeMountGateway.localBridges` | `false` | Serve `local-bridge` grants: a person's own folder, into a running sandbox. Needs `credentials`. |
+| `nodeMountGateway.buckets` | `false` | Serve `cloud-storage` grants with Mountpoint for S3. Needs `credentials`. |
+| `nodeMountGateway.repositories` | `false` | Serve `git` grants: check a pinned commit out on the node and bind it read-only, once per node. A public repository needs nothing else; a private one needs `credentials`. |
+| `nodeMountGateway.cloneTimeoutSeconds` | `300` | How long a checkout may take before the grant fails. The sandbox is already running and waiting on the mount. |
+| `apiServer.port` / `apiServer.cidr` | `443` / *(any)* | The egress the NetworkPolicy opens for the Pod watch. Without it the agent mounts nothing. |
+
+With the gateway on, the `ClusterRole` gains `pods: get, list, watch, patch`
+and nothing else — no create, no delete, no eviction, and no Secrets. Reading
+a Secret is a separate switch and a separate, namespaced object; the
+`ClusterRole` never carries it.
+
+## Deploying it
+
+~~~bash
+export DATALAYER_NODE_MOUNTS_ENABLED=true
+export DATALAYER_NODE_MOUNT_GATEWAY_ENABLED=true
+export DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME=datalayer-shared-fs
+plane up datalayer-node-mounts
+
+# or, on kubeadm:
+clouder kubeadm setup my-cluster --node-mounts --node-mounts-gateway \
+  --node-mounts-shared-claim datalayer-shared-fs
+~~~
+
+The Operator must have `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED=true` as well, or it
+never writes a grant and every mounting launch keeps spawning its own Pod.
+Turning it on in the Operator without the agent is the worse order: Pods would
+carry the volume and wait for mounts nobody makes.
+
+## Turning it on, and proving it works
+
+The gateway fails quietly: a grant is written, nothing happens on the node,
+and a runtime starts without the folders it asked for. So turn it on in this
+order, and check between the two halves.
+
+~~~bash
+# 1. The node agent first. With the Operator's half on and no agent, pods
+#    carry the gateway volume and wait for mounts nobody makes.
+export DATALAYER_NODE_MOUNTS_ENABLED=true
+export DATALAYER_NODE_MOUNT_GATEWAY_ENABLED=true
+export DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME=datalayer-shared-fs
+plane up datalayer-node-mounts
+
+# 2. The preflight. Propagation, both halves, the claim, RBAC in both
+#    directions, and anything left behind. Exits non-zero on a real fault.
+clouder node-mounts verify
+clouder node-mounts verify --json     # for CI
+
+# 3. Only then the Operator.
+plane up datalayer-operator
+clouder node-mounts verify            # now expects both halves on
+~~~
+
+`verify` answers the questions that are otherwise an argument rather than a
+measurement:
+
+| Check | What a failure means |
+| --- | --- |
+| Mount propagation (`rshared`) | Every grant will succeed on the node and be invisible in the sandbox. Run `mount --make-rshared /` and make it persistent. |
+| Kernel supports `mount_setattr` (5.12+) | A read-only grant cannot be made read-only in the sandbox, so the agent refuses it rather than delivering a writable one. |
+| Operator and agent agree | One half is on without the other. Nothing mounts, and nothing says so. |
+| A runtime may **not** grant itself a mount | The runtime service account can patch its own Pod, so a sandbox could mount any folder on the claim. This is the security property the whole design rests on. |
+| Agent Secret access matches its configuration | Either a mount that needs a credential cannot read one, or the agent holds a permission nothing uses. |
+| No leaked mounts | Each one is a Pod that will stick in `Terminating`. |
+
+**Then prove it end to end**, which needs a runtime and a person:
+
+~~~bash
+# A launch that mounts the home folders should now come from the pool.
+time datalayer runtime create --given-name gw-test --home-folder
+# Compare with one that mounts nothing: the difference used to be a cold pod.
+time datalayer runtime create --given-name pool-test
+
+# In the sandbox: the folders are at the documented path, through the gateway.
+ls -la /home/jovyan/            # <handle> -> /mnt/datalayer/<handle>
+mount | grep /mnt/datalayer     # nosuid, nodev; ro where the grant says ro
+echo hello > /home/jovyan/$USER_HANDLE/gw-test.txt
+
+# And Contents sees the same bytes, from the same claim.
+datalayer contents home-folder list /
+~~~
+
+The destructive half — leaving a mount behind on purpose to confirm the Pod
+sticks in `Terminating` rather than letting kubelet delete through it — is
+worth doing **once**, on a cluster nobody depends on, because it is the only
+way to see the safety mechanism work. Take the Pod's tree down by hand
+afterwards; the recovery is below.
+
+## Datashim, and what replaces it
+
+Both end with a bucket readable as a filesystem inside a Pod, and that is the
+whole of the resemblance. The mechanisms are opposites, and the difference is
+the reason this exists.
+
+[Datashim](/services/system/datashim/) is declarative and **creation-time**: you
+create a `Dataset`, its operator provisions a PVC, and a Pod mounts that PVC
+when it is created. The Node Mount Gateway binds a filesystem into a Pod that
+is **already running**. A PVC cannot do that — a Pod's `volumes` are fixed when
+it is created — which is why the gateway is not built on one.
+
+| | Datashim | Node Mount Gateway |
+| --- | --- | --- |
+| What you declare | A `Dataset` custom resource | A grant on the Pod's annotation |
+| What it produces | A PVC, bound before the Pod is scheduled | A mount, made after the Pod is running |
+| When it can act | Pod creation only | Any point in the Pod's life, and revocable |
+| How it reaches the Pod | An admission webhook mutating the Pod | Nothing mutates the Pod; mount propagation carries it |
+| The credential | The operator writes the S3 key **into the `Dataset` spec**, where anyone who can read a `Dataset` can read it | An STS session scoped to one bucket and prefix, in a Secret the Pod owns, read by the node agent only if the Pod owns it |
+| When the credential ends | It does not — it is a long-lived key | It expires, and is refreshed in place without disturbing the mount |
+| Who maintains it | Upstream, quietly | Us |
+
+### What it is used for today
+
+Datashim upstream mounts several things — S3, NFS, H3. Here it mounts one:
+`content_operator.py` creates a `Dataset` for a `RuntimeContent` of `type: s3`
+and skips every other type, so no user Cloud Storage attachment goes through
+it either.
+
+That makes Datashim four of the eight `RuntimeContent` specs under
+`plane/etc/specs/runtime-contents`. The other four are not Datashim's, and
+saying "replace Datashim" undersells the job — what the gateway replaces is
+the whole **creation-time content path**, which serves three types three
+unrelated ways:
+
+| `RuntimeContent` | Rendered at Pod creation as | Through the gateway |
+| --- | --- | --- |
+| `type: s3` (4 specs) | A Datashim `Dataset`, its PVC, and a `persistentVolumeClaim` volume | a `cloud-storage` grant |
+| `type: nfs` (2 specs) | A `subPath` volume mount on the shared claim | a `shared-folder` grant (or `nfs`, when the spec names its own export) |
+| `type: git` (2 specs) | An `emptyDir` and an init container that clones into it | a `git` grant |
+
+All three fix something in the Pod's spec, which is precisely what a pooled Pod
+cannot have. A gateway that only did buckets would replace one of the three and
+leave the pool unusable for any Environment carrying the other two — so all
+three are grants, and the `Dataset` is the only one of the three that also
+takes a dependency with it when it goes.
+
+### Yes, it is meant to replace it
+
+That is the plan, and it is **not done**: the gateway's bucket path has never
+met a real bucket. Until it has, Datashim stays exactly as it is and nothing
+here touches it.
+
+When it does, retiring Datashim removes three things at once:
+
+- **an unmaintained dependency** with no community behind it;
+- **a CRD-upgrade workaround.** Helm only creates a chart's CRDs on first
+  install and never on upgrade, so `up.sh` re-applies the Datashim CRDs
+  explicitly on every reup — because a deleted `datasetsinternal` CRD means no
+  PVCs are provisioned and Runtime Pods fail to schedule, with nothing saying
+  why;
+- **an S3 key at rest in an API object.** This is the one worth caring about.
+  A `Dataset` spec carries `accessKeyID` and `secretAccessKey` in plain text;
+  anyone with `get datasets` in the namespace can read them, and the key does
+  not expire. The gateway's rule is the opposite by construction: the grant
+  carries a Secret *name*, the value is read only by the node agent and only
+  when the Pod owns the Secret, and the session expires whether or not anybody
+  remembers to rotate it.
+
+### Why not fork Datashim instead
+
+It was considered, and the answer is no. The part that looks reusable —
+`csi-s3`, the node plugin that runs the S3 filesystem — is a Go CSI driver
+whose value to us is knowledge rather than code: which mounter, which flags,
+which failure modes. The part that comes with it is the CRD, the operator, the
+webhook and the provisioning path, which is the creation-time architecture the
+gateway exists to replace. Forking it would mean owning all of that in order
+to use none of it.
+
+## Watching it
+
+~~~bash
+clouder node-mounts status        # adds a "Node Mount Gateway" table: per pod, what is bound
+kubectl -n datalayer-runtimes exec ds/datalayer-node-mounts -c driver -- \
+  wget -qO- http://127.0.0.1:9808/gateway
+kubectl get pod -n datalayer-runtimes POD \
+  -o jsonpath='{.metadata.annotations.runtime-pools\.datalayer\.io/gateway-mounts-ready}'
+~~~
+
+The driver serves Prometheus metrics at `/metrics` on the same port, and the
+DaemonSet Pods carry `prometheus.io/scrape` annotations
+(`monitoring.annotations`, on by default):
+
+| Metric | Meaning |
+| --- | --- |
+| `datalayer_mount_gateway_leaked_total` | Mounts that would not unmount. **Each one is a Pod that will stick in `Terminating`.** |
+| `datalayer_mount_gateway_failed_total` | Grants that could not be applied — a runtime started without folders it asked for. |
+| `datalayer_mount_gateway_mounts` / `_pods` | Folders currently bound, and the Pods holding a tree. |
+| `datalayer_mount_gateway_granted_total` / `_revoked_total` / `_released_total` | What the agent has done since it started. |
+| `datalayer_local_csi_bridges` / `_disconnected` | The CSI driver's bridge filesystems. |
+
+`monitoring.prometheusRule=true` installs the rules — a critical alert on any
+increase of `leaked`, a warning on repeated grant failures, and one on a
+bridge disconnected for ten minutes. It needs the Prometheus operator's CRD,
+so it is off where there is none: an unappliable manifest fails the whole
+release.
+
+The `leaked` counter is the one that must never be only a log line. It is
+incremented when a mount would not come down, which is exactly what makes a
+Pod stick in `Terminating` — kubelet is about to attempt the same unmount and
+fail the same way.
+
+**Recovering a stuck Pod.** Find the mount and take it down on the node, then
+let kubelet finish:
+
+~~~bash
+# On the node holding the pod:
+findmnt -R /var/lib/datalayer/node-mount-gateway/POD_UID
+umount -R /var/lib/kubelet/pods/POD_UID/volumes/kubernetes.io~empty-dir/mount-gateway
+umount -R /var/lib/datalayer/node-mount-gateway/POD_UID
+~~~
+
+Never `rm -rf` the Pod's `emptyDir` directory while a bind is standing under
+it: that is the delete the memory-backed volume exists to prevent.

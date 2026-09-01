@@ -194,23 +194,23 @@ The attachments a runtime was launched with travel on its record, so a
 runtime's description lists what it actually mounts, and an external
 session's manifest can be put back in the form Contents takes.
 
-### Which launches wait for a pod
+### Which launches wait for a Pod
 
 A Pod's volumes are fixed when it is created, so a launch that mounted
-anything used to be given a pod of its own — scheduling, an image pull and a
+anything used to be given a Pod of its own — scheduling, an image pull and a
 Jupyter startup probe — while a launch that mounted nothing was handed a
 prewarmed one. With the
-[mount gateway](/services/system/local-csi/#the-mount-gateway) deployed and
-`DATALAYER_MOUNT_GATEWAY_ENABLED` set on the Operator, a Home Folder launch
+[Node Mount Gateway](/services/system/node-mount-gateway/) deployed and
+`DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` set on the Operator, a Home Folder launch
 is served from the pool as well: the Operator writes the mount set on the
-pooled pod and the node agent binds the folders in while it runs.
+pooled Pod and the node agent binds the folders in while it runs.
 
 Nothing in step 2 changes. The memberships are still resolved in Runtimes,
 from IAM, with the caller's own credentials, and still replace whatever the
 client sent — the gateway changes *when* a folder is mounted, never *who*
-decides which. A Volume or a Local Mount still gets a pod of its own, and so
+decides which. A Volume or a Local Mount still gets a Pod of its own, and so
 does everything when the gateway is off. The Operator's page has the full
-table: [Pool or its own pod](/services/operator/#pool-or-its-own-pod-which-launches-pay-for-a-cold-start).
+table: [Pool or its own Pod](/services/operator/#pool-or-its-own-pod-which-launches-pay-for-a-cold-start).
 
 A runtime's record carries `mount_gateway`, so a client can tell before it
 asks whether this sandbox takes a mount while it runs.

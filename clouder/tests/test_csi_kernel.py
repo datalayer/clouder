@@ -1,4 +1,4 @@
-"""The mount gateway against a real kernel, in a throwaway mount namespace.
+"""The Node Mount Gateway against a real kernel, in a throwaway mount namespace.
 
 Everything else about the gateway is tested with a `FakeMounter`, which is
 right for the logic and blind to the thing the design actually rests on: what
@@ -9,7 +9,7 @@ mistook kubelet's own `emptyDir` tmpfs for its published tree, bound nothing,
 and reported `ready` to a sandbox with an empty directory.
 
 They skip where unprivileged user namespaces are unavailable. The pieces they
-cannot reach are kubelet and RBAC, which is what `clouder local-csi verify`
+cannot reach are kubelet and RBAC, which is what `clouder node-mounts verify`
 and the cluster run are for.
 """
 
@@ -36,14 +36,14 @@ pytestmark = pytest.mark.skipif(
 PREAMBLE = """
 import json, os, subprocess, sys
 sys.path.insert(0, {repo!r})
-from clouder.csi.gateway import GATEWAY_VOLUME_NAME, MountGateway, PodRef
+from clouder.csi.node_mount_gateway import NODE_MOUNT_GATEWAY_VOLUME_NAME, NodeMountGateway, PodRef
 from clouder.csi.mounter import ProcessMounter
 
 S = {root!r}
 POD = "aaaa1111-2222-3333-4444-555566667777"
 SHARED = S + "/shared-fs"
 KUBELET = S + "/kubelet"
-POD_DIR = KUBELET + "/pods/" + POD + "/volumes/kubernetes.io~empty-dir/" + GATEWAY_VOLUME_NAME
+POD_DIR = KUBELET + "/pods/" + POD + "/volumes/kubernetes.io~empty-dir/" + NODE_MOUNT_GATEWAY_VOLUME_NAME
 os.makedirs(SHARED + "/home/users/01H-eric", exist_ok=True)
 open(SHARED + "/home/users/01H-eric/notes.txt", "w").write("the user's file")
 os.makedirs(POD_DIR, exist_ok=True)
@@ -53,7 +53,7 @@ def kubelet_makes_the_volume():
     subprocess.run(["mount", "-t", "tmpfs", "-o", "size=1M", "tmpfs", POD_DIR], check=True)
 
 def gateway():
-    return MountGateway(
+    return NodeMountGateway(
         ProcessMounter(), shared_root=SHARED, gateway_root=S + "/gateway", kubelet_dir=KUBELET
     )
 
@@ -380,7 +380,7 @@ def test_a_process_mount_propagates_and_stops_like_any_other(tmp_path):
 
         kubelet_makes_the_volume()
         runner = Runner()
-        gw = MountGateway(
+        gw = NodeMountGateway(
             ProcessMounter(), shared_root=SHARED, gateway_root=S + "/gateway",
             kubelet_dir=KUBELET, processes=runner,
         )
@@ -411,6 +411,6 @@ def test_a_process_mount_propagates_and_stops_like_any_other(tmp_path):
     # A dead filesystem leaves a mount that answers with errors. Reporting it
     # ready is what would make somebody trust what they read through it.
     assert out["state_after_death"] == "failed"
-    assert out["failed_after_death"] == {"data": "GATEWAY_MOUNT_DEAD"}
+    assert out["failed_after_death"] == {"data": "NODE_MOUNT_GATEWAY_MOUNT_DEAD"}
     assert out["gone"] is True
     assert out["volume_unmounts"] == 0

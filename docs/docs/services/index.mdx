@@ -24,7 +24,9 @@ Services are grouped in three layers:
 	- [Solr](/services/system/solr/)
 	- [OTEL](/services/system/otel/)
 	- [Durable](/services/system/durable/) — workflows that outlive the process that started them; deploy it after the PostgreSQL operator and before the gateway, on the runtimes plane
-	- [Local CSI Driver](/services/system/local-csi/) — needed only for Local Mounts; off by default
+	- [Node Mounts](/services/system/node-mounts/) — the privileged node DaemonSet holding the two below; off by default
+		- [Node Mount Gateway](/services/system/node-mount-gateway/) — home folders, datasets, NFS, Git and buckets into Pods that are already running
+		- [Local CSI driver](/services/system/local-csi/) — `local.csi.datalayer.io`, a folder of a user's own computer inside a sandbox
 2. Core Platform Layer:
 	- [Datalayer IAM](/services/iam/)
 	- [Datalayer Operator](/services/operator/)

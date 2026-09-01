@@ -26,7 +26,7 @@ from ..csi.bucket_processes import (
     BucketProcesses,
     CredentialEndpoint,
 )
-from ..csi.gateway import ERROR_PROCESS_UNSUPPORTED, GatewayError
+from ..csi.node_mount_gateway import ERROR_PROCESS_UNSUPPORTED, NodeMountGatewayError
 from ..csi.mounter import FakeMounter
 
 SESSION = {
@@ -233,7 +233,7 @@ def test_the_region_and_endpoint_travel_with_the_session(runner, target):
 def test_a_secret_without_a_key_starts_nothing(runner, target):
     processes, recorder, _mounter = runner
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         start(processes, target, credential={SECRET_REGION: b"eu-west-1"})
 
     assert raised.value.code == ERROR_PROCESS_UNSUPPORTED
@@ -243,7 +243,7 @@ def test_a_secret_without_a_key_starts_nothing(runner, target):
 def test_a_source_naming_no_bucket_starts_nothing(runner, target):
     processes, recorder, _mounter = runner
 
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         start(processes, target, source="/")
 
     assert recorder.calls == []
@@ -252,7 +252,7 @@ def test_a_source_naming_no_bucket_starts_nothing(runner, target):
 def test_a_kind_this_runner_does_not_serve_is_refused(runner, target):
     processes, _recorder, _mounter = runner
 
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         start(processes, target, kind="local-bridge")
 
 

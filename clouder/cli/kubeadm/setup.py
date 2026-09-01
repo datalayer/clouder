@@ -167,9 +167,9 @@ def register(kubeadm_app: typer.Typer):
                 "Repeatable or comma-separated. Defaults to runtime labels."
             ),
         ),
-        local_csi: bool = typer.Option(
+        node_mounts: bool = typer.Option(
             False,
-            "--local-csi/--no-local-csi",
+            "--node-mounts/--no-node-mounts",
             help="Install the Local CSI driver (local.csi.datalayer.io) after the storage provider. Off by default.",
         ),
         local_csi_relay_host: str = typer.Option(
@@ -183,15 +183,24 @@ def register(kubeadm_app: typer.Typer):
             "--local-csi-relay-cidr",
             help="CIDR of the relay for the driver's egress NetworkPolicy. Empty allows the port to any destination.",
         ),
-        local_csi_image: str = typer.Option(
-            "datalayer/local-csi:0.1.0",
-            "--local-csi-image",
+        node_mounts_image: str = typer.Option(
+            "datalayer/node-mounts:0.1.0",
+            "--node-mounts-image",
             help="Local CSI driver image.",
         ),
-        local_csi_chart: str | None = typer.Option(
+        node_mounts_gateway: bool = typer.Option(
+            False,
+            "--node-mounts-gateway/--no-node-mounts-gateway",
+            help=(
+                "Also install the Node Mount Gateway agent and check mount "
+                "propagation on the node. The DaemonSet carries both services; "
+                "this decides whether the gateway half is switched on."
+            ),
+        ),
+        node_mounts_chart: str | None = typer.Option(
             None,
-            "--local-csi-chart",
-            help="Path to the datalayer-local-csi chart (default: PLANE_HOME, DATALAYER_HOME or the source tree).",
+            "--node-mounts-chart",
+            help="Path to the datalayer-node-mounts chart (default: PLANE_HOME, DATALAYER_HOME or the source tree).",
         ),
     ):
         """Set up a kubeadm cluster on previously created VMs.
@@ -395,24 +404,25 @@ def register(kubeadm_app: typer.Typer):
                 key_path=key_path,
             )
 
-        # ----- Step 7b: Local CSI driver, after the cloud storage provider -----
-        local_csi_ok = False
-        if local_csi:
-            from .local_csi import install_local_csi
+        # ----- Step 7b: the node mounts DaemonSet, after the cloud storage provider -----
+        node_mounts_ok = False
+        if node_mounts:
+            from .node_mounts import install_node_mounts
 
-            print("  [bold cyan]Local CSI driver (local.csi.datalayer.io)[/bold cyan]")
-            local_csi_ok = install_local_csi(
+            print("  [bold cyan]Datalayer node mounts (local.csi.datalayer.io, Node Mount Gateway)[/bold cyan]")
+            node_mounts_ok = install_node_mounts(
                 master=master,
                 resolved_user=resolved_user,
                 key_path=key_path,
-                image=local_csi_image,
+                image=node_mounts_image,
                 relay_host=local_csi_relay_host,
                 relay_port=local_csi_relay_port,
                 relay_cidr=local_csi_relay_cidr,
-                chart_path=local_csi_chart,
+                chart_path=node_mounts_chart,
+                gateway=node_mounts_gateway,
             )
         else:
-            print("  [dim]Local CSI driver not requested (--local-csi to install it).[/dim]")
+            print("  [dim]Node mounts not requested (--node-mounts to install them).[/dim]")
 
         # ----- Step 8: Install cloud-specific load balancer provider -----
         _print_step_header(8, total_steps, "Installing cloud load balancer provider")
@@ -453,6 +463,6 @@ def register(kubeadm_app: typer.Typer):
             "admin_username": resolved_user,
             "node_labels": resolved_node_labels,
             "storage_ready": storage_ok,
-            "local_csi_ready": local_csi_ok,
+            "node_mounts_ready": node_mounts_ok,
             "loadbalancer_ready": loadbalancer_ok,
         })

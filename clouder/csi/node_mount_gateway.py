@@ -1,4 +1,4 @@
-"""The mount gateway: binding folders into a pod that is already running.
+"""The Node Mount Gateway: binding folders into a pod that is already running.
 
 A Pod's volumes are fixed when it is created, so a Datalayer Runtime that
 mounts content cannot be served from the prewarmed pool by adding a volume to
@@ -23,9 +23,12 @@ The shape, and why it is this shape:
   reading the API rather than by anyone replaying a call, and there is no
   gateway API to authenticate and nothing inside the tenant pod can reach.
 
-`clouder` cannot import `datalayer_common`, so the wire format is mirrored
-here from :mod:`datalayer_common.mount_gateway`. ``test_csi_gateway.py`` holds
-the mirror to the original.
+The wire format is **imported**, from
+:mod:`datalayer_core.contents_node_mount_gateway`, which both this and
+`datalayer_common` depend on. It used to be copied here and held to the
+original by a test; that worked and was the wrong shape. A format the Operator
+writes and this reads, byte for byte, should be one implementation — a test
+that two copies agree can only fail after somebody has already changed one.
 """
 
 from __future__ import annotations
@@ -41,34 +44,50 @@ import stat
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Protocol
 
+from .git_materializer import NoMaterialize
 from .linux import make_beneath, resolve_beneath
 from .mounter import MountError, Mounter
 
-log = logging.getLogger("clouder.csi.gateway")
+log = logging.getLogger("clouder.csi.node_mount_gateway")
 
-#: Mirrored from `datalayer_common.mount_gateway`.
-GATEWAY_MOUNTS_ANNOTATION = "runtime-pools.datalayer.io/gateway-mounts"
-GATEWAY_READY_ANNOTATION = "runtime-pools.datalayer.io/gateway-mounts-ready"
-GATEWAY_VOLUME_NAME = "mount-gateway"
-
-STATE_READY = "ready"
-STATE_DEGRADED = "degraded"
-STATE_FAILED = "failed"
-
-ERROR_INVALID_TARGET = "GATEWAY_INVALID_TARGET"
-ERROR_INVALID_SOURCE = "GATEWAY_INVALID_SOURCE"
-ERROR_TOO_MANY_MOUNTS = "GATEWAY_TOO_MANY_MOUNTS"
-ERROR_MOUNT_FAILED = "GATEWAY_MOUNT_FAILED"
-ERROR_NOT_READY = "GATEWAY_NOT_READY"
-ERROR_SECRET_REFUSED = "GATEWAY_SECRET_REFUSED"
+from datalayer_core.contents_node_mount_gateway import (  # noqa: F401
+    CLOUD_STORAGE_KIND,
+    DELIVERY_BIND,
+    DELIVERY_FILESYSTEM,
+    DELIVERY_MATERIALIZE,
+    DELIVERY_PROCESS,
+    ERROR_INVALID_SOURCE,
+    ERROR_INVALID_TARGET,
+    ERROR_MOUNT_FAILED,
+    ERROR_NOT_READY,
+    ERROR_SECRET_REFUSED,
+    ERROR_TOO_MANY_MOUNTS,
+    ERROR_UNSUPPORTED_KIND,
+    GIT_KIND,
+    NFS_KIND,
+    NodeMountGatewayError,
+    NODE_MOUNT_GATEWAY_MOUNTS_ANNOTATION,
+    NODE_MOUNT_GATEWAY_READY_ANNOTATION,
+    NODE_MOUNT_GATEWAY_VOLUME_NAME,
+    STATE_DEGRADED,
+    STATE_FAILED,
+    STATE_READY,
+    clean_revision,
+    clean_secret,
+    clean_source,
+    clean_target,
+    delivery_known,
+    delivery_of,
+    grants_hash as _canonical_hash,
+)
 #: The filesystem behind a mount stopped. The mount stays and returns errors:
 #: a sandbox reading `EIO` knows something is wrong, and one reading stale
 #: bytes does not.
-ERROR_MOUNT_DEAD = "GATEWAY_MOUNT_DEAD"
+ERROR_MOUNT_DEAD = "NODE_MOUNT_GATEWAY_MOUNT_DEAD"
 #: A grant whose kind needs a process this agent has no way to start.
-ERROR_PROCESS_UNSUPPORTED = "GATEWAY_PROCESS_UNSUPPORTED"
+ERROR_PROCESS_UNSUPPORTED = "NODE_MOUNT_GATEWAY_PROCESS_UNSUPPORTED"
 
-DEFAULT_GATEWAY_ROOT = "/var/lib/datalayer/mount-gateway"
+DEFAULT_NODE_MOUNT_GATEWAY_ROOT = "/var/lib/datalayer/node-mount-gateway"
 DEFAULT_SHARED_ROOT = "/mnt/shared-fs"
 DEFAULT_KUBELET_DIR = "/var/lib/kubelet"
 DEFAULT_MAX_MOUNTS_PER_POD = 32
@@ -79,6 +98,11 @@ DEFAULT_MAX_MOUNTS_PER_NODE = 512
 #: comes first. Mounting is one of the two, so the agent is one of the two
 #: that create it. Nothing else has a folder invented for it.
 HOME_FOLDER_KIND = "files"
+
+#: Mount options every kernel mount the gateway makes carries. A tenant's
+#: mount is data, and data does not need to carry setuid bits or device nodes
+#: into a sandbox for the sandbox to read it.
+KERNEL_MOUNT_OPTIONS = ("nosuid", "nodev")
 
 #: Kinds whose mount is a **process** — a userspace filesystem — rather than a
 #: bind of a directory the agent already reaches. A bucket and a person's own
@@ -94,17 +118,7 @@ HOME_FOLDER_OWNER_UID = 1000
 HOME_FOLDER_OWNER_GID = 100
 HOME_FOLDER_DIRECTORY_MODE = 0o775
 
-_TARGET_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,126}$")
-_SECRET_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 _POD_UID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-
-
-class GatewayError(RuntimeError):
-    """A grant that must not be applied, with the code to report."""
-
-    def __init__(self, code: str, message: str) -> None:
-        self.code = code
-        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -120,14 +134,28 @@ class Grant:
     #: The NAME of a Secret holding the credential this mount needs — never
     #: the value. A Home Folder needs none.
     secret: str = ""
+    #: The revision a materialized mount is pinned to. Empty for every kind
+    #: that has nothing to pin.
+    revision: str = ""
 
     @property
     def read_only(self) -> bool:
         return self.mode == "ro"
 
     @property
+    def delivery(self) -> str:
+        """What the agent has to do to produce this mount."""
+        return delivery_of(self.kind)
+
+    @property
     def is_process(self) -> bool:
-        """Whether this mount is a filesystem to run, not a directory to bind."""
+        """Whether this mount is a filesystem to run, not a directory to bind.
+
+        Deliberately not `self.delivery == DELIVERY_PROCESS`: this is read on
+        the liveness path, for every mount, every pass, and a kind nobody
+        serves must answer "no" there rather than raise. The refusal belongs
+        where the mount is made, once, with a code to report.
+        """
         return self.kind in PROCESS_KINDS
 
     def key(self) -> dict[str, Any]:
@@ -137,6 +165,7 @@ class Grant:
             "mode": self.mode,
             "allow_exec": self.allow_exec,
             "secret": self.secret,
+            "revision": self.revision,
         }
 
 
@@ -179,22 +208,17 @@ class Report:
 # ---------------------------------------------------------------------------
 
 
-def _clean_source(value: Any) -> str:
-    raw = str(value or "").strip().strip("/")
-    if not raw or "\\" in raw or "\x00" in raw:
-        raise GatewayError(ERROR_INVALID_SOURCE, f"source '{value}' is not a relative path")
-    parts = [part for part in raw.split("/") if part]
-    for part in parts:
-        if part in (".", ".."):
-            raise GatewayError(ERROR_INVALID_SOURCE, f"source '{raw}' walks outside the shared filesystem")
-    return "/".join(parts)
+#: Which kernel filesystem each `DELIVERY_FILESYSTEM` kind mounts as.
+_FILESYSTEM_TYPES = {NFS_KIND: "nfs"}
 
 
-def _clean_target(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not _TARGET_RE.match(raw):
-        raise GatewayError(ERROR_INVALID_TARGET, f"target '{raw}' is not one path segment")
-    return raw
+def _filesystem_type(kind: str) -> str:
+    try:
+        return _FILESYSTEM_TYPES[kind]
+    except KeyError:  # pragma: no cover - delivery_of refuses this first
+        raise NodeMountGatewayError(
+            ERROR_UNSUPPORTED_KIND, f"no filesystem is known for kind '{kind}'"
+        ) from None
 
 
 def parse_grants(annotation: Any) -> list[Grant]:
@@ -226,18 +250,37 @@ def parse_grants(annotation: Any) -> list[Grant]:
         if not isinstance(item, dict):
             continue
         try:
-            target = _clean_target(item.get("target"))
-            source = _clean_source(item.get("source"))
-        except GatewayError as exc:
+            target = clean_target(item.get("target"))
+            kind = str(item.get("kind") or "")
+            # The kind decides how the source is read, so it is read first. An
+            # unknown kind is *not* dropped here: a grant nobody serves is a
+            # thing the user should be told about, and a dropped grant is a
+            # missing folder with no reason attached. It is parsed under the
+            # default rule and refused, with its code, when it is applied.
+            try:
+                delivery = delivery_of(kind)
+            except NodeMountGatewayError:
+                delivery = DELIVERY_BIND
+                kind = kind or ""
+            source = clean_source(item.get("source"), kind if delivery_known(kind) else "")
+            revision = (
+                clean_revision(item.get("revision"))
+                if delivery == DELIVERY_MATERIALIZE
+                else ""
+            )
+        except NodeMountGatewayError as exc:
             log.warning("dropping a grant: %s", exc)
             continue
         if target in seen:
             continue
         seen.add(target)
         secret = str(item.get("secret") or "").strip()
-        if secret and not _SECRET_RE.match(secret):
-            log.warning("dropping a grant: '%s' is not a Secret name", secret)
-            continue
+        if secret:
+            try:
+                secret = clean_secret(secret)
+            except NodeMountGatewayError as exc:
+                log.warning("dropping a grant: %s", exc)
+                continue
         mode = str(item.get("mode") or "rw").strip().lower()
         grants.append(
             Grant(
@@ -246,17 +289,23 @@ def parse_grants(annotation: Any) -> list[Grant]:
                 mode=mode if mode in ("ro", "rw") else "rw",
                 allow_exec=bool(item.get("allow_exec", True)),
                 uid=str(item.get("uid") or ""),
-                kind=str(item.get("kind") or ""),
+                kind=kind,
                 secret=secret,
+                revision=revision,
             )
         )
     return sorted(grants, key=lambda grant: grant.target)
 
 
 def grants_hash(grants: Iterable[Grant]) -> str:
-    """A stable name for one mount set: what tells applied from asked for."""
-    canonical = json.dumps([grant.key() for grant in grants], sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    """A stable name for one mount set: what tells applied from asked for.
+
+    Delegated to the shared implementation rather than repeated here. The
+    Operator asks for a set by its hash and this answers about the set it
+    applied by the same hash; two implementations of that would be two
+    processes agreeing on nothing while appearing to agree on everything.
+    """
+    return _canonical_hash([grant.key() for grant in grants])
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +337,7 @@ class NoProcessMounts:
     """
 
     def start(self, *, kind, source, target, read_only, credential) -> int:
-        raise GatewayError(
+        raise NodeMountGatewayError(
             ERROR_PROCESS_UNSUPPORTED,
             f"this node agent cannot run the filesystem a '{kind}' mount needs",
         )
@@ -316,13 +365,13 @@ class NoCredentials:
     """
 
     def read_secret(self, namespace: str, name: str, pod_uid: str) -> dict[str, bytes]:
-        raise GatewayError(
+        raise NodeMountGatewayError(
             ERROR_SECRET_REFUSED,
             "this node agent reads no Secrets; the mount needs a credential it cannot have",
         )
 
 
-class MountGateway:
+class NodeMountGateway:
     """Reconciles one node's pods to the mount sets their annotations ask for.
 
     Everything here is idempotent, because a watch redelivers and a resync
@@ -336,16 +385,18 @@ class MountGateway:
         mounter: Mounter,
         *,
         shared_root: str = DEFAULT_SHARED_ROOT,
-        gateway_root: str = DEFAULT_GATEWAY_ROOT,
+        gateway_root: str = DEFAULT_NODE_MOUNT_GATEWAY_ROOT,
         kubelet_dir: str = DEFAULT_KUBELET_DIR,
         max_mounts_per_pod: int = DEFAULT_MAX_MOUNTS_PER_POD,
         max_mounts_per_node: int = DEFAULT_MAX_MOUNTS_PER_NODE,
         credentials: Credentials | None = None,
         processes: MountProcesses | None = None,
+        materializer: Any | None = None,
     ) -> None:
         self.mounter = mounter
         self.credentials = credentials or NoCredentials()
         self.processes = processes or NoProcessMounts()
+        self.materializer = materializer or NoMaterialize()
         self.shared_root = os.path.normpath(shared_root)
         self.gateway_root = os.path.normpath(gateway_root)
         self.kubelet_dir = os.path.normpath(kubelet_dir)
@@ -372,7 +423,7 @@ class MountGateway:
         return os.path.join(self.pods_dir(), _pod_uid(pod_uid))
 
     def target_path(self, pod_uid: str, target: str) -> str:
-        return os.path.join(self.pod_tree(pod_uid), _clean_target(target))
+        return os.path.join(self.pod_tree(pod_uid), clean_target(target))
 
     def pod_volume_dir(self, pod_uid: str) -> str:
         """The node directory kubelet made for the pod's gateway ``emptyDir``."""
@@ -382,7 +433,7 @@ class MountGateway:
             _pod_uid(pod_uid),
             "volumes",
             "kubernetes.io~empty-dir",
-            GATEWAY_VOLUME_NAME,
+            NODE_MOUNT_GATEWAY_VOLUME_NAME,
         )
 
     # -- reconciliation ----------------------------------------------------
@@ -417,7 +468,7 @@ class MountGateway:
 
         volume_dir = self.pod_volume_dir(pod.uid)
         if not os.path.isdir(volume_dir):
-            # kubelet has not made the pod's volume yet, or this pod has no
+            # kubelet has not made the Pod's volume yet, or this Pod has no
             # gateway at all. Either way there is nowhere to propagate to, and
             # a resync will come back to it.
             return Report(
@@ -464,7 +515,7 @@ class MountGateway:
                 applied.pop(target, None)
             try:
                 pid = self._grant(pod, grant)
-            except GatewayError as exc:
+            except NodeMountGatewayError as exc:
                 log.warning("pod %s: refusing grant '%s': %s", pod.uid, target, exc)
                 failed[target] = exc.code
                 self.counters["failed"] += 1
@@ -579,7 +630,7 @@ class MountGateway:
         if not self.mounter.is_mount_point(tree):
             # A directory cannot be a peer group on its own: bind it to itself
             # first, then share it, so what is mounted inside it afterwards
-            # propagates to the pod's copy.
+            # propagates to the Pod's copy.
             self.mounter.bind_dir(tree, tree)
             self.mounter.make_shared(tree)
         if not self._is_published(pod_uid):
@@ -595,7 +646,7 @@ class MountGateway:
         is uploaded into it, whichever comes first — mounting used to be an
         init container's `mkdir`, and with the gateway it is this. A brand-new
         user, or an organization nobody has written to yet, would otherwise
-        get `GATEWAY_INVALID_SOURCE` for a folder that is simply new.
+        get `NODE_MOUNT_GATEWAY_INVALID_SOURCE` for a folder that is simply new.
 
         Only a home folder is created. A cloud bucket or a Volume that is not
         there is a mistake, and inventing a directory for it would turn a
@@ -618,7 +669,7 @@ class MountGateway:
                 # the sandbox cannot write arrives read-only with no
                 # explanation anywhere.
                 if not _writable_by_sandbox_user(created):
-                    raise GatewayError(
+                    raise NodeMountGatewayError(
                         ERROR_INVALID_SOURCE,
                         f"home folder '{grant.source}' was created but the sandbox "
                         f"user cannot write it: {exc}",
@@ -646,37 +697,79 @@ class MountGateway:
         return self.credentials.read_secret(pod.namespace, grant.secret, pod.uid)
 
     def _grant(self, pod: PodRef, grant: Grant) -> int | None:
+        # Raises for a kind nobody here serves. First thing, before a Secret is
+        # read or a directory is made: a grant that cannot be applied should
+        # leave nothing behind that says it nearly was.
+        delivery = grant.delivery
         # Read and check the credential before anything is mounted: a mount
         # made and then abandoned because its Secret was refused is a mount
         # that briefly existed. A bind of a directory needs none; a process
         # mount is handed it.
         credential = self._credential_for(pod, grant)
         pod_uid = pod.uid
-        if grant.is_process:
+        if delivery == DELIVERY_PROCESS:
             # A bucket or a bridge names something the agent does not reach
             # through the shared claim — a bucket and prefix, a bridge uid —
             # so there is no path here to resolve beneath anything.
             source = grant.source
+        elif delivery == DELIVERY_FILESYSTEM:
+            # An export the node mounts itself. The host is not this agent's
+            # to resolve either.
+            source = grant.source
+        elif delivery == DELIVERY_MATERIALIZE:
+            # The content does not exist yet. Producing it is the slow part —
+            # a clone over the network — and it happens before the target
+            # directory is made, so a checkout that fails leaves no empty
+            # folder at a path a sandbox would then mount.
+            source = self.materializer.materialize(
+                kind=grant.kind,
+                source=grant.source,
+                revision=grant.revision,
+                credential=credential,
+            )
+            if not os.path.isdir(source):
+                raise NodeMountGatewayError(
+                    ERROR_MOUNT_FAILED,
+                    f"the content for '{grant.target}' was produced at no directory",
+                )
         else:
             try:
                 source = self._source_of(grant)
-            except GatewayError:
+            except NodeMountGatewayError:
                 raise
             except OSError as exc:
                 # A source that will not resolve beneath the claim — missing,
                 # a symlink, an escape — is a bad grant, not a failed mount.
                 # The difference is what the Operator reports to the user.
-                raise GatewayError(
+                raise NodeMountGatewayError(
                     ERROR_INVALID_SOURCE,
                     f"source '{grant.source}' is not reachable beneath the shared filesystem: {exc}",
                 ) from exc
             if not os.path.isdir(source):
-                raise GatewayError(
+                raise NodeMountGatewayError(
                     ERROR_INVALID_SOURCE, f"source '{grant.source}' is not a directory"
                 )
         path = self.target_path(pod_uid, grant.target)
         os.makedirs(path, mode=0o755, exist_ok=True)
-        if grant.is_process:
+        if delivery == DELIVERY_FILESYSTEM:
+            # The kernel holds this one: nothing runs, nothing is watched, and
+            # it ends when it is unmounted. The flags go on at mount time
+            # because attributes do not propagate to the sandbox's copy —
+            # the same reason a bind is attached rather than bound and fixed.
+            options = list(KERNEL_MOUNT_OPTIONS)
+            options.append("ro" if grant.read_only else "rw")
+            if not grant.allow_exec:
+                options.append("noexec")
+            self.mounter.mount_filesystem(
+                _filesystem_type(grant.kind), source, path, options=options
+            )
+            if not self.mounter.is_mount_point(path):
+                raise NodeMountGatewayError(
+                    ERROR_MOUNT_FAILED,
+                    f"the filesystem for '{grant.target}' mounted nothing",
+                )
+            return None
+        if delivery == DELIVERY_PROCESS:
             # A bucket or a person's own folder: something has to be running
             # for the mount to answer at all. The process mounts at the target
             # itself, so the mount it makes is the one that propagates.
@@ -692,7 +785,7 @@ class MountGateway:
                 # is the failure that lets somebody read an empty bucket and
                 # believe it.
                 self.processes.stop(pid, path)
-                raise GatewayError(
+                raise NodeMountGatewayError(
                     ERROR_MOUNT_FAILED,
                     f"the filesystem for '{grant.target}' started but mounted nothing",
                 )
@@ -704,7 +797,14 @@ class MountGateway:
         # leaves the sandbox's copy with the flags it had at attach time,
         # which for a `ro` grant means no read-only mount at all.
         self.mounter.attach(
-            source, path, read_only=grant.read_only, noexec=not grant.allow_exec
+            source,
+            path,
+            # A materialized checkout is shared between every Pod on this node
+            # that asked for the same revision, so it is read-only whatever
+            # the grant says: one sandbox writing into it is every other
+            # sandbox's files changing under them.
+            read_only=grant.read_only or delivery == DELIVERY_MATERIALIZE,
+            noexec=not grant.allow_exec,
         )
         return None
 
@@ -828,7 +928,7 @@ def _writable_by_sandbox_user(path: str) -> bool:
 def _pod_uid(value: str) -> str:
     raw = str(value or "").strip()
     if not _POD_UID_RE.match(raw):
-        raise GatewayError(ERROR_INVALID_TARGET, f"'{value}' is not a pod uid")
+        raise NodeMountGatewayError(ERROR_INVALID_TARGET, f"'{value}' is not a pod uid")
     return raw
 
 

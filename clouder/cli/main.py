@@ -20,7 +20,7 @@ from .aws import aws_app
 from .ovh import ovh_app
 from .cost import cost_app
 from .criu import criu_app
-from .local_csi import local_csi_app
+from .node_mounts import node_mounts_app
 from .completion import completion_app
 from ..util.utils import run_sbin
 
@@ -46,7 +46,7 @@ app.add_typer(azure_app, name="azure", help="Azure cloud operations.")
 app.add_typer(aws_app, name="aws", help="AWS cloud operations.")
 app.add_typer(ovh_app, name="ovh", help="OVHcloud operations.")
 app.add_typer(criu_app, name="criu", help="CRIU checkpoint visibility and configuration.")
-app.add_typer(local_csi_app, name="local-csi", help="Local CSI driver (local.csi.datalayer.io) checks.")
+app.add_typer(node_mounts_app, name="node-mounts", help="Local CSI driver (local.csi.datalayer.io) checks.")
 app.add_typer(cost_app, name="cost", help="Pricing and cost helpers.")
 app.add_typer(completion_app, name="completion", help="Manage shell autocompletion setup.")
 

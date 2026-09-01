@@ -17,7 +17,7 @@ from ..csi.bridge_processes import (
     SECRET_TOKEN_KEY,
     BridgeProcesses,
 )
-from ..csi.gateway import ERROR_PROCESS_UNSUPPORTED, GatewayError
+from ..csi.node_mount_gateway import ERROR_PROCESS_UNSUPPORTED, NodeMountGatewayError
 from ..csi.mounter import FakeMounter
 
 BRIDGE = "brd-0123456789abcdef"
@@ -67,7 +67,7 @@ def test_a_read_only_grant_starts_a_read_only_bridge(runner):
 def test_a_secret_without_the_token_starts_nothing(runner):
     processes, mounter = runner
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         start(processes, credential={SECRET_RELAY_KEY: RELAY.encode()})
 
     assert raised.value.code == ERROR_PROCESS_UNSUPPORTED
@@ -77,7 +77,7 @@ def test_a_secret_without_the_token_starts_nothing(runner):
 def test_a_relay_that_is_not_the_configured_one_is_refused(runner):
     processes, mounter = runner
 
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         start(processes, credential={
             SECRET_TOKEN_KEY: b"t",
             SECRET_RELAY_KEY: f"wss://elsewhere.example/api/contents/v1/bridges/{BRIDGE}".encode(),
@@ -91,7 +91,7 @@ def test_a_relay_url_that_names_another_bridge_is_refused(runner):
 
     # Otherwise a grant could point a sandbox's mount at somebody else's
     # session by naming their bridge in the URL.
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         start(processes, credential={
             SECRET_TOKEN_KEY: b"t",
             SECRET_RELAY_KEY: b"wss://r1.datalayer.run/api/contents/v1/bridges/brd-somebody-else",
@@ -104,7 +104,7 @@ def test_a_plaintext_relay_is_refused_unless_it_was_allowed(runner):
     processes, mounter = runner
     insecure = f"ws://r1.datalayer.run/api/contents/v1/bridges/{BRIDGE}".encode()
 
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         start(processes, credential={SECRET_TOKEN_KEY: b"t", SECRET_RELAY_KEY: insecure})
 
     permissive = BridgeProcesses(mounter, relay_host="r1.datalayer.run", allow_insecure_relay=True)
@@ -114,7 +114,7 @@ def test_a_plaintext_relay_is_refused_unless_it_was_allowed(runner):
 def test_a_kind_this_runner_does_not_serve_is_refused(runner):
     processes, _mounter = runner
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         start(processes, kind="cloud-storage")
 
     assert raised.value.code == ERROR_PROCESS_UNSUPPORTED

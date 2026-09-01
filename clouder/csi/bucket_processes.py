@@ -19,7 +19,7 @@ which the Operator can do without touching the mount at all. No unmount, no
 remount, no open file handle broken mid-read.
 
 The endpoint is bound to `127.0.0.1` in the DaemonSet's own network namespace,
-which the tenant pod does not share, and every request must carry the token
+which the tenant Pod does not share, and every request must carry the token
 the mount was started with.
 """
 
@@ -34,10 +34,10 @@ import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .gateway import ERROR_PROCESS_UNSUPPORTED, GatewayError
+from .node_mount_gateway import ERROR_PROCESS_UNSUPPORTED, NodeMountGatewayError
 from .mounter import MountError, Mounter
 
-log = logging.getLogger("clouder.csi.gateway.bucket")
+log = logging.getLogger("clouder.csi.node_mount_gateway.bucket")
 
 #: The grant kind this runs.
 CLOUD_STORAGE_KIND = "cloud-storage"
@@ -181,18 +181,18 @@ class BucketProcesses:
         credential: dict[str, bytes],
     ) -> int:
         if kind != CLOUD_STORAGE_KIND:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED,
                 f"this runner serves '{CLOUD_STORAGE_KIND}' grants, not '{kind}'",
             )
         if not _text(credential.get(SECRET_ACCESS_KEY_ID)):
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED,
                 f"the Secret for '{source}' carries no {SECRET_ACCESS_KEY_ID}",
             )
         bucket, _, prefix = str(source).strip("/").partition("/")
         if not bucket:
-            raise GatewayError(ERROR_PROCESS_UNSUPPORTED, f"'{source}' names no bucket")
+            raise NodeMountGatewayError(ERROR_PROCESS_UNSUPPORTED, f"'{source}' names no bucket")
 
         self._endpoint.start()
         token = self._endpoint.issue(credential)

@@ -9,10 +9,10 @@ pod's target path, read-only when the bridge is.
 Layout:
 
 - :mod:`clouder.csi.driver`  — the CSI Node semantics, independent of gRPC;
-- :mod:`clouder.csi.gateway` — the mount gateway: binding folders of the
+- :mod:`clouder.csi.node_mount_gateway` — the Node Mount Gateway: binding folders of the
   shared filesystem into a pod that is already running, so a launch that
   mounts content can be served from the prewarmed pool;
-- :mod:`clouder.csi.gateway_agent` — its pod watch and reconcile loop;
+- :mod:`clouder.csi.node_mount_gateway_agent` — its pod watch and reconcile loop;
 - :mod:`clouder.csi.linux`   — ``mount_setattr`` and ``openat2``, which the
   gateway needs and Python does not expose;
 - :mod:`clouder.csi.mounter` — how mounts are made (``ProcessMounter`` on a
@@ -30,32 +30,32 @@ from .driver import (  # noqa: F401
     PublishRequest,
     VolumeStats,
 )
-from .gateway import (  # noqa: F401
-    GATEWAY_MOUNTS_ANNOTATION,
-    GATEWAY_READY_ANNOTATION,
-    GATEWAY_VOLUME_NAME,
+from .node_mount_gateway import (  # noqa: F401
+    NODE_MOUNT_GATEWAY_MOUNTS_ANNOTATION,
+    NODE_MOUNT_GATEWAY_READY_ANNOTATION,
+    NODE_MOUNT_GATEWAY_VOLUME_NAME,
     Grant,
-    GatewayError,
-    MountGateway,
+    NodeMountGatewayError,
+    NodeMountGateway,
     PodRef,
     Report,
 )
-from .gateway_agent import GatewayAgent, KubernetesPods  # noqa: F401
+from .node_mount_gateway_agent import NodeMountGatewayAgent, KubernetesPods  # noqa: F401
 from .mounter import FakeMounter, MountError, Mounter, MountHandle, ProcessMounter  # noqa: F401
 
 __all__ = [
     "DRIVER_NAME",
-    "GATEWAY_MOUNTS_ANNOTATION",
-    "GATEWAY_READY_ANNOTATION",
-    "GATEWAY_VOLUME_NAME",
+    "NODE_MOUNT_GATEWAY_MOUNTS_ANNOTATION",
+    "NODE_MOUNT_GATEWAY_READY_ANNOTATION",
+    "NODE_MOUNT_GATEWAY_VOLUME_NAME",
     "Code",
     "CsiError",
     "FakeMounter",
-    "GatewayAgent",
-    "GatewayError",
+    "NodeMountGatewayAgent",
+    "NodeMountGatewayError",
     "Grant",
     "KubernetesPods",
-    "MountGateway",
+    "NodeMountGateway",
     "PodRef",
     "Report",
     "LocalCsiDriver",

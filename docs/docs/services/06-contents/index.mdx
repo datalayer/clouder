@@ -110,7 +110,7 @@ Service and a Traefik `IngressRouteTCP` with TLS passthrough on `flightHost`
 API's TLS); the relay is reached at `DATALAYER_CONTENTS_BRIDGE_URL`. Two
 things deploy beside Contents when their workflows are wanted: the Local CSI
 node driver for local mounts on Datalayer runtimes
-([Local CSI](../01-system/12-local-csi/index.mdx), off by default), and the
+([Local CSI](/services/system/local-csi/), off by default), and the
 Dataserver for Datasources in a customer network
 (`plane/etc/helm/charts/datalayer-data-server`, outbound only, its README
 covers the identity bootstrap).
@@ -287,7 +287,7 @@ manager need no rebuild for this. On the runtimes plane (`datalayerrc-r1`):
 | `datalayer-contents` | the relay process, the bridge sessions and tokens, the `local-mount` capability | `make build-dev push && plane reup datalayer-contents` after publishing `datalayer-core` (the pin) |
 | `datalayer-operator` | renders a `local-bridge` attachment as the inline `csi:` volume and its token Secret | `make build-dev push && plane reup datalayer-operator`, then re-apply the Runtime Contents and Environments — see [After the upgrade](/services/operator/#after-the-upgrade-re-apply-the-runtime-contents-and-the-environments): an Environment left in the by-name shape spawns no pool pod |
 | `datalayer-runtimes` | refuses a local mount before launch on an environment that cannot carry it; hands the manifest to external sandboxes | `make build-dev push && plane reup datalayer-runtimes` |
-| `datalayer-local-csi` (new) | the node driver on the runtime nodes | `make build-dev push`, then step 5 |
+| `datalayer-node-mounts` (new) | the node driver on the runtime nodes | `make build-dev push`, then step 5 |
 | `agent-runtimes` (runtime image) and the environment images of external sandboxes | the sandbox side: `code-sandboxes` with `fusepy` runs the FUSE mount where there is no CSI — an external sandbox's environment must install them, have `/dev/fuse`, and list the `fuse` feature | rebuild the runtime image (`plane/etc/dockerfiles/agent-runtimes`) and any Daytona/E2B/Modal environment that should mount |
 
 And two things that are not images: the landing application (the Mounts
@@ -309,20 +309,20 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    same thing in words. Until this is true, `datalayer contents mount`
    refuses with the reason.
 4. **Build the driver image** (once per version), from the Services
-   repository: `cd plane/etc/dockerfiles/datalayer-local-csi && make build-dev push`.
+   repository: `cd plane/etc/dockerfiles/datalayer-node-mounts && make build-dev push`.
    The image installs Clouder's `csi` extra, `code-sandboxes` (the FUSE
    filesystem) and `fuse3`.
 5. **Install the driver on the runtime nodes.** Either with Plane —
    ```bash
-   DATALAYER_LOCAL_CSI_ENABLED=true \
+   DATALAYER_NODE_MOUNTS_ENABLED=true \
    DATALAYER_LOCAL_CSI_RELAY_CIDR=<ingress address>/32 \
-   plane up datalayer-local-csi
+   plane up datalayer-node-mounts
    ```
-   — which installs the `datalayer-local-csi` chart in `datalayer-runtimes`
+   — which installs the `datalayer-node-mounts` chart in `datalayer-runtimes`
    with `relay.host` taken from `DATALAYER_CONTENTS_URL` (the driver refuses
    a relay on any other host) and, with the CIDR, a NetworkPolicy that lets
    the driver reach nothing but the relay; or during cluster setup with
-   `clouder kubeadm setup --local-csi --local-csi-relay-host <runHost>`
+   `clouder kubeadm setup --node-mounts --local-csi-relay-host <runHost>`
    (step 7b, after the storage provider). Nothing is run on the nodes by
    hand: the chart is a DaemonSet with the upstream node-driver-registrar,
    the kubelet finds the driver through the registrar's socket, and the
@@ -332,8 +332,8 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
 6. **Check the driver is registered.**
    ```bash
    kubectl get csidriver local.csi.datalayer.io
-   kubectl get daemonset -n datalayer-runtimes datalayer-local-csi
-   clouder local-csi status
+   kubectl get daemonset -n datalayer-runtimes datalayer-node-mounts
+   clouder node-mounts status
    ```
 7. **Mount something.** From a computer with the `datalayer` CLI:
    `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/jovyan/local`,
@@ -699,9 +699,9 @@ replaced and they vanish.
 ### The one way a home folder can be deleted by accident
 
 The same claim reaches a running sandbox two ways: as a `subPath` mount
-rendered when the pod was created, and — where the
-[mount gateway](/services/system/local-csi/#the-mount-gateway) is deployed —
-as a bind the node agent makes into a pod that is already running. The second
+rendered when the Pod was created, and — where the
+[Node Mount Gateway](/services/system/node-mount-gateway/) is deployed —
+as a bind the node agent makes into a Pod that is already running. The second
 carries a hazard the first does not, and it is the reason the gateway volume
 is what it is.
 
@@ -723,7 +723,7 @@ it.
 Two consequences follow, and both are visible from this service:
 
 - the gateway holds mount points and nothing else, since a byte written into a
-  tmpfs is a byte of the pod's memory. It carries a 1 MiB size limit;
+  tmpfs is a byte of the Pod's memory. It carries a 1 MiB size limit;
 - it therefore cannot be `/home/jovyan`, which a sandbox writes to all day.
   The folders are bound at `/mnt/datalayer/{handle}` and reached at
   `/home/jovyan/{handle}` through a symlink made inside the sandbox. Both
@@ -733,12 +733,12 @@ Two consequences follow, and both are visible from this service:
 `/home/jovyan` is deliberately not a volume either, for a different reason: a
 CRIU checkpoint captures the container's writable layer, so a home directory
 moved onto a volume would not survive a checkpoint and restore. The symlink
-lives in the writable layer, and points at a mount the restored pod is granted
+lives in the writable layer, and points at a mount the restored Pod is granted
 again.
 
-Never `rm -rf` a pod's gateway directory under `/var/lib/kubelet/pods` while a
+Never `rm -rf` a Pod's gateway directory under `/var/lib/kubelet/pods` while a
 bind is standing in it. Unmount first — the recovery is on the
-[Local CSI driver](/services/system/local-csi/#watching-it) page — and treat
+[Local CSI driver](/services/system/node-mount-gateway/#watching-it) page — and treat
 the `datalayer_mount_gateway_leaked_total` alert as an alert about **this
 service's data**, not about a node.
 

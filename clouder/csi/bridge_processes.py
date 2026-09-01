@@ -19,10 +19,10 @@ import os
 import signal
 from urllib.parse import urlsplit
 
-from .gateway import ERROR_PROCESS_UNSUPPORTED, GatewayError
+from .node_mount_gateway import ERROR_PROCESS_UNSUPPORTED, NodeMountGatewayError
 from .mounter import MountError, MountHandle, Mounter
 
-log = logging.getLogger("clouder.csi.gateway.bridge")
+log = logging.getLogger("clouder.csi.node_mount_gateway.bridge")
 
 #: The grant kind this runs. Anything else is somebody else's to serve.
 LOCAL_BRIDGE_KIND = "local-bridge"
@@ -61,14 +61,14 @@ class BridgeProcesses:
         credential: dict[str, bytes],
     ) -> int:
         if kind != LOCAL_BRIDGE_KIND:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED,
                 f"this runner serves '{LOCAL_BRIDGE_KIND}' grants, not '{kind}'",
             )
         token = _text(credential.get(SECRET_TOKEN_KEY))
         relay_url = _text(credential.get(SECRET_RELAY_KEY))
         if not token or not relay_url:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED,
                 f"the Secret for bridge '{source}' carries no "
                 f"{SECRET_TOKEN_KEY} and {SECRET_RELAY_KEY}",
@@ -126,22 +126,22 @@ class BridgeProcesses:
         parts = urlsplit(relay_url)
         allowed = ("wss", "ws") if self._allow_insecure_relay else ("wss",)
         if parts.scheme not in allowed:
-            raise GatewayError(ERROR_PROCESS_UNSUPPORTED, "the relay URL must be wss://")
+            raise NodeMountGatewayError(ERROR_PROCESS_UNSUPPORTED, "the relay URL must be wss://")
         if not parts.hostname:
-            raise GatewayError(ERROR_PROCESS_UNSUPPORTED, "the relay URL has no host")
+            raise NodeMountGatewayError(ERROR_PROCESS_UNSUPPORTED, "the relay URL has no host")
         if parts.username or parts.password:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED, "the relay URL must not carry credentials"
             )
         if self._relay_host and parts.hostname.lower() != self._relay_host:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED,
                 f"relay host '{parts.hostname}' is not the configured relay host",
             )
         if not parts.path.rstrip("/").endswith(f"/bridges/{bridge_uid}"):
             # The URL must name the bridge it is for, or a grant could point a
             # sandbox's mount at somebody else's session.
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED, f"the relay URL does not name bridge '{bridge_uid}'"
             )
 

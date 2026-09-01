@@ -10,7 +10,7 @@ table goes through a :class:`Mounter`:
   when the bridge is — and unmounts with ``umount``.
 - :class:`FakeMounter` records the same calls in memory for the tests.
 
-The mount gateway uses the same mounter for a different job: ``bind_dir``,
+The Node Mount Gateway uses the same mounter for a different job: ``bind_dir``,
 ``make_shared`` and ``set_attrs`` bind a directory of the shared filesystem
 into a running pod. One mounter, because there is one mount table on a node
 and two things pretending to own it is how a leak goes unnoticed.
@@ -93,7 +93,7 @@ class Mounter(abc.ABC):
     def is_mount_point(self, path: str) -> bool:
         """Whether ``path`` is a mount point, including a dead FUSE one."""
 
-    # -- what the mount gateway needs on top of a bridge bind ---------------
+    # -- what the Node Mount Gateway needs on top of a bridge bind ---------------
 
     @abc.abstractmethod
     def bind_dir(self, source: str, target: str, *, recursive: bool = False) -> None:
@@ -115,6 +115,18 @@ class Mounter(abc.ABC):
         changing one copy afterwards leaves the others as they were. A `ro`
         grant made read-only a moment after the bind reaches the sandbox
         writable.
+        """
+
+    @abc.abstractmethod
+    def mount_filesystem(
+        self, fs_type: str, source: str, target: str, *, options: list[str]
+    ) -> None:
+        """Mount a filesystem the kernel knows how to mount, at ``target``.
+
+        NFS is the one that matters: a share the node can reach directly, with
+        no process to keep running and nothing to watch. It is neither a bind
+        of something already mounted nor a userspace filesystem, which is why
+        it is its own call rather than a special case of either.
         """
 
     @abc.abstractmethod
@@ -336,8 +348,16 @@ class ProcessMounter(Mounter):
             # one that was refused, so refuse it.
             raise MountError(
                 f"this kernel cannot attach a mount with its attributes set ({exc}); "
-                "the mount gateway needs Linux 5.12 or newer"
+                "the Node Mount Gateway needs Linux 5.12 or newer"
             ) from exc
+
+    def mount_filesystem(
+        self, fs_type: str, source: str, target: str, *, options: list[str]
+    ) -> None:
+        command = ["mount", "-t", fs_type]
+        if options:
+            command += ["-o", ",".join(options)]
+        self._run(command + [source, target])
 
     def make_shared(self, path: str) -> None:
         self._run(["mount", "--make-rshared", path])
@@ -505,6 +525,15 @@ class FakeMounter(Mounter):
         self.binds[target] = (source, read_only)
         self.mounts.add(target)
         self.attrs[target] = {"read_only": read_only, "noexec": noexec, "recursive": True}
+
+    def mount_filesystem(
+        self, fs_type: str, source: str, target: str, *, options: list[str]
+    ) -> None:
+        self.calls.append(("mount_filesystem", fs_type, source, target, tuple(options)))
+        if self.fail_bind_dir:
+            raise MountError(self.fail_bind_dir)
+        self.binds[target] = (f"{fs_type}:{source}", "ro" in options)
+        self.mounts.add(target)
 
     def make_shared(self, path: str) -> None:
         self.calls.append(("make_shared", path))

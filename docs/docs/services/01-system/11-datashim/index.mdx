@@ -1,0 +1,185 @@
+---
+title: Datashim
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🛢️ Datalayer Datashim
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="green">In use</Label>
+  <Label color="yellow">To be replaced</Label>
+</Stack>
+
+:::info On its way out
+
+Datashim serves exactly one thing here: the `RuntimeContent` specs of
+`type: s3`, which become a `Dataset`, then a PVC, then a mount on a Runtime
+Pod created with it. It is slated for replacement by the
+[Node Mount Gateway](/services/system/node-mount-gateway/), which binds a
+bucket into a Pod that is already running and hands the node an STS session
+that expires instead of writing a long-lived S3 key into a `Dataset` spec.
+
+Nothing has moved yet, and nothing will until the gateway's bucket path has
+been proven against a real bucket. Until then this page is current and
+Datashim stays exactly as it is. The comparison, and what retiring it buys, is
+on the [gateway's page](/services/system/node-mount-gateway/#datashim-and-what-replaces-it).
+
+:::
+
+[Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Runtime Content` features.
+
+```bash
+helm repo add datashim https://datashim-io.github.io/datashim
+helm repo update
+```
+
+Install Datashim.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-datashim
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-datashim.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the Datashim Pods.
+
+```bash
+kubectl get pods -n datalayer-runtimes | grep -E 'dataset-operator|csi-s3|csi-nfs|datashim'
+# csi-s3-xxxxx                        2/2     Running   0          30s
+# csi-s3-yyyyy                        2/2     Running   0          30s
+# dataset-operator-zzzzz              1/1     Running   0          20s
+
+# release information
+helm list -A | grep datalayer-datashim
+# datalayer-datashim   datalayer-runtimes   ...   deployed
+
+# webhook resources
+kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations | grep -i datashim
+```
+
+:::note
+`plane up datalayer-datashim` deploys the release in the `datalayer-runtimes` namespace.
+
+If you run `kubectl get pods -n datalayer-datashim`, you may see no resources and incorrectly conclude Datashim is down.
+:::
+
+## S3 Secret
+
+Create the secret for S3 access so it can be reused in [Runtime Environments](/management/runtime-environments/).
+
+```bash
+kubectl create secret generic \
+  s3-secret \
+  --from-literal=access_key_id=$AWS_ACCESS_KEY_ID \
+  --from-literal=secret_access_key=$AWS_SECRET_ACCESS_KEY \
+  --from-literal=region=$AWS_DEFAULT_REGION \
+  -n datalayer-runtimes
+kubectl describe secret s3-secret -n datalayer-runtimes
+```
+
+## Namespace Label
+
+Datashim uses a mutating webhook with a `namespaceSelector` that requires the label `monitor-pods-datasets=enabled` on any namespace where pods should receive automatic dataset volume mounts.
+
+The `plane up datalayer-datashim` command automatically labels the `datalayer-runtimes` namespace. For other namespaces (e.g. `default` for testing), add the label manually:
+
+```bash
+kubectl label namespace default monitor-pods-datasets=enabled
+```
+
+:::caution
+Without this label, the datashim webhook will **not** inject volume mounts into pods, even if the pods have the correct `dataset.0.id` labels and the Dataset/PVC exist.
+:::
+
+## Validation
+
+Validate the configuration with the creation of an example Dataset.
+
+### Step 1: Create a Dataset
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datashim.io/v1alpha1
+kind: Dataset
+metadata:
+  name: example-dataset
+spec:
+  local:
+    type: COS
+    accessKeyID: $AWS_ACCESS_KEY_ID
+    secretAccessKey: $AWS_SECRET_ACCESS_KEY
+    endpoint: https://s3.$AWS_DEFAULT_REGION.amazonaws.com
+    bucket: datalayer-dev
+    region: $AWS_DEFAULT_REGION
+EOF
+```
+
+Verify the Dataset and PVC are created:
+
+```bash
+kubectl describe dataset example-dataset
+kubectl get pvc example-dataset
+# NAME              STATUS   VOLUME                                     CAPACITY        ACCESS MODES   STORAGECLASS
+# example-dataset   Bound    pvc-c26adf05-...                           9765625000Ki    RWX            csi-s3
+```
+
+### Step 2: Label the namespace
+
+```bash
+kubectl label namespace default monitor-pods-datasets=enabled
+```
+
+### Step 3: Mount the Dataset in a Pod
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+  labels:
+    dataset.0.id: example-dataset
+    dataset.0.useas: mount
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+EOF
+```
+
+Verify the mount is injected and accessible:
+
+```bash
+kubectl get pod nginx
+kubectl exec nginx -it -- ls /mnt/datasets/example-dataset
+```
+
+### Step 4: Clean up
+
+```bash
+kubectl delete pod nginx
+kubectl delete dataset example-dataset
+```
+
+## Tear Down
+
+If needed, tear down.
+
+```bash
+plane down datalayer-datashim
+```

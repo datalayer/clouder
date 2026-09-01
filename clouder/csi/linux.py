@@ -1,4 +1,4 @@
-"""The two kernel calls the mount gateway needs and Python does not expose.
+"""The two kernel calls the Node Mount Gateway needs and Python does not expose.
 
 ``mount_setattr(2)`` is how a bind mount is made read-only *recursively*.
 ``mount -o remount,bind,ro`` sets the flag on one mount and says nothing about
@@ -103,7 +103,7 @@ class _OpenHow(ctypes.Structure):
 def _libc():
     if platform.system() != "Linux" or platform.machine() not in _UNIFIED_ARCHES:
         raise UnsupportedKernel(
-            f"mount gateway syscalls are Linux-only ({platform.system()} {platform.machine()})"
+            f"Node Mount Gateway syscalls are Linux-only ({platform.system()} {platform.machine()})"
         )
     name = ctypes.util.find_library("c") or "libc.so.6"
     return ctypes.CDLL(name, use_errno=True)

@@ -15,8 +15,9 @@ import sys
 
 from .._version import __version__
 from .driver import DRIVER_NAME, LocalCsiDriver
-from .gateway import (
-    DEFAULT_GATEWAY_ROOT,
+from .git_materializer import DEFAULT_CLONE_TIMEOUT_SECONDS
+from .node_mount_gateway import (
+    DEFAULT_NODE_MOUNT_GATEWAY_ROOT,
     DEFAULT_KUBELET_DIR,
     DEFAULT_MAX_MOUNTS_PER_NODE,
     DEFAULT_MAX_MOUNTS_PER_POD,
@@ -64,13 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Accept ws:// relay URLs (development only).",
     )
     parser.add_argument(
-        "--mount-gateway",
+        "--node-mount-gateway",
         action="store_true",
-        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_ENABLED", "").lower() in ("1", "true", "yes"),
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_ENABLED", "").lower() in ("1", "true", "yes"),
         help=(
-            "Run the mount gateway beside the CSI driver: bind folders of the shared "
+            "Run the Node Mount Gateway beside the CSI driver: bind folders of the shared "
             "filesystem into running pods from their gateway-mounts annotation. "
-            "Env: DATALAYER_MOUNT_GATEWAY_ENABLED."
+            "Env: DATALAYER_NODE_MOUNT_GATEWAY_ENABLED."
         ),
     )
     parser.add_argument(
@@ -79,8 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where this DaemonSet mounts the shared filesystem claim.",
     )
     parser.add_argument(
-        "--gateway-root",
-        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_ROOT", DEFAULT_GATEWAY_ROOT),
+        "--node-mount-gateway-root",
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_ROOT", DEFAULT_NODE_MOUNT_GATEWAY_ROOT),
         help="The agent's own per-pod trees. Must propagate to the host.",
     )
     parser.add_argument(
@@ -89,51 +90,73 @@ def build_parser() -> argparse.ArgumentParser:
         help="The kubelet directory holding pod volume directories.",
     )
     parser.add_argument(
-        "--gateway-namespace",
+        "--node-mount-gateway-namespace",
         default=os.environ.get("DATALAYER_RUNTIMES_NAMESPACE", ""),
         help="Limit the pod watch to one namespace; empty watches the node.",
     )
     parser.add_argument(
-        "--gateway-credentials",
+        "--node-mount-gateway-credentials",
         action="store_true",
-        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_CREDENTIALS", "").lower() in ("1", "true", "yes"),
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS", "").lower() in ("1", "true", "yes"),
         help=(
             "Let the gateway read a Secret a grant names, to make a mount that needs a "
             "credential. Off by default: reading Secrets is the one thing the agent does "
-            "that its RBAC otherwise forbids. Env: DATALAYER_MOUNT_GATEWAY_CREDENTIALS."
+            "that its RBAC otherwise forbids. Env: DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS."
         ),
     )
     parser.add_argument(
-        "--gateway-local-bridges",
+        "--node-mount-gateway-local-bridges",
         action="store_true",
-        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_LOCAL_BRIDGES", "").lower() in ("1", "true", "yes"),
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_LOCAL_BRIDGES", "").lower() in ("1", "true", "yes"),
         help=(
             "Serve `local-bridge` grants through the gateway, mounting a person's own "
-            "folder into a sandbox that is already running. Needs --gateway-credentials: "
+            "folder into a sandbox that is already running. Needs --node-mount-gateway-credentials: "
             "the mount token is in the pod's Secret. "
-            "Env: DATALAYER_MOUNT_GATEWAY_LOCAL_BRIDGES."
+            "Env: DATALAYER_NODE_MOUNT_GATEWAY_LOCAL_BRIDGES."
         ),
     )
     parser.add_argument(
-        "--gateway-buckets",
+        "--node-mount-gateway-buckets",
         action="store_true",
-        default=os.environ.get("DATALAYER_MOUNT_GATEWAY_BUCKETS", "").lower() in ("1", "true", "yes"),
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_BUCKETS", "").lower() in ("1", "true", "yes"),
         help=(
             "Serve `cloud-storage` grants through the gateway with Mountpoint for S3. "
-            "Needs --gateway-credentials: the session is in the pod's Secret, and the "
+            "Needs --node-mount-gateway-credentials: the session is in the pod's Secret, and the "
             "agent serves it to the mount so it can be refreshed without remounting. "
-            "Env: DATALAYER_MOUNT_GATEWAY_BUCKETS."
+            "Env: DATALAYER_NODE_MOUNT_GATEWAY_BUCKETS."
+        ),
+    )
+    parser.add_argument(
+        "--node-mount-gateway-repositories",
+        action="store_true",
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_REPOSITORIES", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Serve `git` grants through the gateway, checking the pinned revision out on "
+            "the node and binding it read-only. The checkout is made once per node and "
+            "shared by every sandbox pinned to the same revision. A private repository "
+            "needs --node-mount-gateway-credentials: the token is in the pod's Secret. "
+            "Env: DATALAYER_NODE_MOUNT_GATEWAY_REPOSITORIES."
+        ),
+    )
+    parser.add_argument(
+        "--node-mount-gateway-clone-timeout",
+        type=int,
+        default=int(os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_CLONE_TIMEOUT") or DEFAULT_CLONE_TIMEOUT_SECONDS),
+        help=(
+            "How long a checkout may take before the grant fails, in seconds. The sandbox "
+            "is already running and waiting on the mount, so a clone that hangs is better "
+            "failed with a reason. Env: DATALAYER_NODE_MOUNT_GATEWAY_CLONE_TIMEOUT."
         ),
     )
     parser.add_argument(
         "--max-mounts-per-pod",
         type=int,
-        default=int(os.environ.get("DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD", DEFAULT_MAX_MOUNTS_PER_POD)),
+        default=int(os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD", DEFAULT_MAX_MOUNTS_PER_POD)),
     )
     parser.add_argument(
         "--max-mounts-per-node",
         type=int,
-        default=int(os.environ.get("DATALAYER_MOUNT_GATEWAY_MAX_MOUNTS_PER_NODE", DEFAULT_MAX_MOUNTS_PER_NODE)),
+        default=int(os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_MAX_MOUNTS_PER_NODE", DEFAULT_MAX_MOUNTS_PER_NODE)),
     )
     parser.add_argument("--watch-interval", type=float, default=2.0, help="Seconds between bridge process checks.")
     parser.add_argument("--mount-timeout", type=float, default=30.0, help="Seconds to wait for a bridge to mount.")
@@ -164,21 +187,23 @@ def main(argv: list[str] | None = None) -> int:
         watch_interval=args.watch_interval,
     )
     gateway_agent = None
-    if args.mount_gateway:
-        from .gateway_agent import build_agent
+    if args.node_mount_gateway:
+        from .node_mount_gateway_agent import build_agent
 
         gateway_agent = build_agent(
             mounter=mounter,
             node_name=args.node_id,
-            namespace=args.gateway_namespace or None,
+            namespace=args.node_mount_gateway_namespace or None,
             shared_root=args.shared_root,
-            gateway_root=args.gateway_root,
+            gateway_root=args.node_mount_gateway_root,
             kubelet_dir=args.kubelet_dir,
             max_mounts_per_pod=args.max_mounts_per_pod,
             max_mounts_per_node=args.max_mounts_per_node,
-            credentials=args.gateway_credentials,
-            local_bridges=args.gateway_local_bridges,
-            buckets=args.gateway_buckets,
+            credentials=args.node_mount_gateway_credentials,
+            local_bridges=args.node_mount_gateway_local_bridges,
+            buckets=args.node_mount_gateway_buckets,
+            repositories=args.node_mount_gateway_repositories,
+            clone_timeout=args.node_mount_gateway_clone_timeout,
             relay_host=args.relay_host,
             allow_insecure_relay=args.allow_insecure_relay,
         )

@@ -3,7 +3,7 @@
 - ``GET /healthz`` and ``GET /readyz``: 200 once the gRPC server is serving;
 - ``GET /mounts``: the driver's bridges and volumes as JSON, what
   ``clouder local-csi status`` reads;
-- ``GET /gateway``: the mount gateway's per-pod trees and counters, when the
+- ``GET /gateway``: the Node Mount Gateway's per-pod trees and counters, when the
   gateway runs in this process;
 - ``GET /metrics``: the same counters in Prometheus text format. A leaked
   mount is what makes a Pod stick in ``Terminating``, and an operator should
@@ -116,7 +116,7 @@ class HealthServer:
                     self._json(200, health.driver.snapshot())
                 elif self.path == "/gateway":
                     if health.gateway is None:
-                        self._json(404, {"error": "the mount gateway is not enabled on this node"})
+                        self._json(404, {"error": "the Node Mount Gateway is not enabled on this node"})
                     else:
                         self._json(200, health.gateway.snapshot())
                 elif self.path == "/metrics":

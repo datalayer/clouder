@@ -1,4 +1,4 @@
-"""The node agent: the Kubernetes half of the mount gateway.
+"""The node agent: the Kubernetes half of the Node Mount Gateway.
 
 It watches the pods scheduled to its own node, reconciles each one's tree to
 the mount set its ``gateway-mounts`` annotation asks for, and answers on
@@ -15,23 +15,25 @@ loop can be tested without a cluster — the same reason the CSI driver takes a
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Iterable, Iterator, Protocol
 
-from .gateway import (
+from .git_materializer import DEFAULT_CLONE_TIMEOUT_SECONDS
+from .node_mount_gateway import (
     ERROR_PROCESS_UNSUPPORTED,
     ERROR_SECRET_REFUSED,
-    GATEWAY_MOUNTS_ANNOTATION,
-    GATEWAY_READY_ANNOTATION,
-    GatewayError,
-    MountGateway,
+    NODE_MOUNT_GATEWAY_MOUNTS_ANNOTATION,
+    NODE_MOUNT_GATEWAY_READY_ANNOTATION,
+    NodeMountGatewayError,
+    NodeMountGateway,
     NoCredentials,
     PodRef,
     Report,
 )
 
-log = logging.getLogger("clouder.csi.gateway.agent")
+log = logging.getLogger("clouder.csi.node_mount_gateway.agent")
 
 #: How often the agent reconciles everything it can see, whatever the watch
 #: did or did not deliver. A watch that silently stopped is the failure this
@@ -55,12 +57,12 @@ class PodSource(Protocol):
         """Write the agent's answer to the pod's ready annotation."""
 
 
-class GatewayAgent:
+class NodeMountGatewayAgent:
     """Reconciles this node's pods, on a watch and on a timer."""
 
     def __init__(
         self,
-        gateway: MountGateway,
+        gateway: NodeMountGateway,
         pods: PodSource,
         *,
         resync_interval: float = DEFAULT_RESYNC_INTERVAL,
@@ -74,12 +76,12 @@ class GatewayAgent:
         self._thread: threading.Thread | None = None
         self._last_resync = 0.0
 
-    # -- one pod -----------------------------------------------------------
+    # -- one Pod -----------------------------------------------------------
 
     def reconcile_pod(self, pod: PodRef) -> Report | None:
         """Apply one pod's annotation and write the answer back.
 
-        The answer is only written when it changed. A pod whose mounts are
+        The answer is only written when it changed. A Pod whose mounts are
         already what they should be must not produce an API write on every
         resync: a runtime lives for hours, and a write per pod per minute is
         how a controller becomes the thing that overloads the API server.
@@ -94,7 +96,7 @@ class GatewayAgent:
             log.warning("pod %s: could not write the gateway answer: %s", pod.name or pod.uid, exc)
         return report
 
-    # -- every pod ---------------------------------------------------------
+    # -- every Pod ---------------------------------------------------------
 
     def resync(self) -> list[Report]:
         """Reconcile every pod on the node, then release the trees of pods that are gone."""
@@ -113,10 +115,22 @@ class GatewayAgent:
         return reports
 
     def run_once(self) -> None:
-        """One pass: resync, then follow the watch until it times out."""
+        """One pass: resync, then follow the watch until it times out.
+
+        The watch is closed on the way out, whichever way that is. Walking
+        away from a generator leaves the HTTP stream behind it open until the
+        interpreter collects it — prompt under refcounting, and not something
+        a process that does this every few minutes for months should be
+        relying on.
+        """
         self.resync()
+        watch = None
         try:
-            for pod in self.pods.watch_pods(self.watch_timeout):
+            # Inside the try: a watch that cannot even be opened — the API
+            # server refusing, a resource version the server has forgotten —
+            # is a thing to log and come back from, not to end the agent on.
+            watch = self.pods.watch_pods(self.watch_timeout)
+            for pod in watch:
                 if self._stop.is_set():
                     return
                 self.reconcile_pod(pod)
@@ -124,6 +138,13 @@ class GatewayAgent:
                     self.resync()
         except Exception as exc:  # noqa: BLE001 - a watch is allowed to break
             log.warning("pod watch ended: %s", exc)
+        finally:
+            close = getattr(watch, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001 - closing must not raise
+                    log.debug("pod watch would not close: %s", exc)
 
     def run(self) -> None:
         while not self._stop.is_set():
@@ -135,7 +156,7 @@ class GatewayAgent:
             return
         self._thread = threading.Thread(target=self.run, name="mount-gateway", daemon=True)
         self._thread.start()
-        log.info("mount gateway agent started (root %s)", self.gateway.gateway_root)
+        log.info("Node Mount Gateway agent started (root %s)", self.gateway.gateway_root)
 
     def close(self) -> None:
         self._stop.set()
@@ -190,8 +211,8 @@ class KubernetesPods:
             name=str(metadata.name or ""),
             namespace=str(metadata.namespace or ""),
             terminating=metadata.deletion_timestamp is not None,
-            annotation=annotations.get(GATEWAY_MOUNTS_ANNOTATION, "") or "",
-            ready_annotation=annotations.get(GATEWAY_READY_ANNOTATION, "") or "",
+            annotation=annotations.get(NODE_MOUNT_GATEWAY_MOUNTS_ANNOTATION, "") or "",
+            ready_annotation=annotations.get(NODE_MOUNT_GATEWAY_READY_ANNOTATION, "") or "",
         )
 
     def list_pods(self) -> list[PodRef]:
@@ -222,7 +243,7 @@ class KubernetesPods:
             yield ref
 
     def set_ready(self, pod: PodRef, value: str) -> None:
-        body = {"metadata": {"annotations": {GATEWAY_READY_ANNOTATION: value}}}
+        body = {"metadata": {"annotations": {NODE_MOUNT_GATEWAY_READY_ANNOTATION: value}}}
         if pod.namespace:
             self.api.patch_namespaced_pod(name=pod.name, namespace=pod.namespace, body=body)
 
@@ -244,7 +265,7 @@ class ProcessRouter:
     def start(self, *, kind, source, target, read_only, credential) -> int:
         runner = self._runners.get(kind)
         if runner is None:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_PROCESS_UNSUPPORTED,
                 f"this node agent does not serve '{kind}' mounts",
             )
@@ -276,7 +297,7 @@ class KubernetesCredentials:
     `get` a Secret in the runtimes namespace and nowhere else. That is still
     broader than the one Secret a mount needs, because a name cannot be known
     in advance and `resourceNames` cannot be written for it — so the narrowing
-    is done here, against the pod: a Secret the pod does not own is refused
+    is done here, against the Pod: a Secret the Pod does not own is refused
     before its value is read into anything.
 
     Which is what stops a grant from naming the companion's API key, another
@@ -293,23 +314,23 @@ class KubernetesCredentials:
 
         target = namespace or self.namespace or ""
         if self.namespace and target != self.namespace:
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_SECRET_REFUSED,
                 f"Secret '{name}' is outside the namespace this agent reads",
             )
         try:
             secret = self.api.read_namespaced_secret(name=name, namespace=target)
         except Exception as exc:  # noqa: BLE001 - a 403 and a 404 are the same answer here
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_SECRET_REFUSED, f"Secret '{name}' could not be read: {exc}"
             ) from exc
 
         owners = (getattr(secret.metadata, "owner_references", None) or []) if secret.metadata else []
         if not any(str(getattr(owner, "uid", "")) == pod_uid for owner in owners):
-            # The Operator creates a mount's Secret owned by the pod, so its
-            # lifetime is the pod's and its reader is this pod's agent. A
+            # The Operator creates a mount's Secret owned by the Pod, so its
+            # lifetime is the Pod's and its reader is this Pod's agent. A
             # Secret owned by anything else is not this mount's to read.
-            raise GatewayError(
+            raise NodeMountGatewayError(
                 ERROR_SECRET_REFUSED,
                 f"Secret '{name}' is not owned by the pod it was granted to",
             )
@@ -333,9 +354,11 @@ def build_agent(
     credentials: bool = False,
     local_bridges: bool = False,
     buckets: bool = False,
+    repositories: bool = False,
+    clone_timeout: int = DEFAULT_CLONE_TIMEOUT_SECONDS,
     relay_host: str = "",
     allow_insecure_relay: bool = False,
-) -> GatewayAgent:
+) -> NodeMountGatewayAgent:
     pods = KubernetesPods(node_name, namespace)
     runners = {}
     if local_bridges:
@@ -351,7 +374,17 @@ def build_agent(
 
         runners[CLOUD_STORAGE_KIND] = BucketProcesses(mounter)
     processes = ProcessRouter(runners) if runners else None
-    gateway = MountGateway(
+    materializer = None
+    if repositories:
+        from .git_materializer import GitMaterializer
+
+        # Checkouts live beside the mounts rather than under them: they are
+        # shared between Pods, and one Pod's directory being released must not
+        # take away the repository another is reading.
+        materializer = GitMaterializer(
+            os.path.join(gateway_root, "content"), timeout=clone_timeout
+        )
+    gateway = NodeMountGateway(
         mounter,
         shared_root=shared_root,
         gateway_root=gateway_root,
@@ -363,8 +396,9 @@ def build_agent(
         # does that its RBAC would otherwise forbid outright.
         credentials=KubernetesCredentials(pods.api, namespace) if credentials else NoCredentials(),
         processes=processes,
+        materializer=materializer,
     )
-    return GatewayAgent(gateway, pods, resync_interval=resync_interval)
+    return NodeMountGatewayAgent(gateway, pods, resync_interval=resync_interval)
 
 
 def released_summary(released: Iterable[str]) -> str:

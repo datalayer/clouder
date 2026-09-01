@@ -159,7 +159,7 @@ def serve(
 ) -> None:
     """Run the plugin until SIGTERM/SIGINT.
 
-    ``gateway_agent``, when given, is the mount gateway: the same node, the
+    ``gateway_agent``, when given, is the Node Mount Gateway: the same node, the
     same privilege and the same process, because a node has one mount table
     and two components pretending to own it is how a leak goes unnoticed.
     """

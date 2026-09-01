@@ -7,8 +7,8 @@ import os
 
 import pytest
 
-from ..csi.gateway import GATEWAY_VOLUME_NAME, STATE_READY, MountGateway, PodRef
-from ..csi.gateway_agent import GatewayAgent
+from ..csi.node_mount_gateway import NODE_MOUNT_GATEWAY_VOLUME_NAME, STATE_READY, NodeMountGateway, PodRef
+from ..csi.node_mount_gateway_agent import NodeMountGatewayAgent
 from ..csi.mounter import FakeMounter
 
 POD_A = "aaaa1111-1111-1111-1111-111111111111"
@@ -57,13 +57,13 @@ def shared(tmp_path):
 def kubelet(tmp_path):
     root = tmp_path / "kubelet"
     for uid in (POD_A, POD_B):
-        (root / "pods" / uid / "volumes" / "kubernetes.io~empty-dir" / GATEWAY_VOLUME_NAME).mkdir(parents=True)
+        (root / "pods" / uid / "volumes" / "kubernetes.io~empty-dir" / NODE_MOUNT_GATEWAY_VOLUME_NAME).mkdir(parents=True)
     return root
 
 
 @pytest.fixture
-def gateway(tmp_path, shared, kubelet) -> MountGateway:
-    return MountGateway(
+def gateway(tmp_path, shared, kubelet) -> NodeMountGateway:
+    return NodeMountGateway(
         FakeMounter(),
         shared_root=str(shared),
         gateway_root=str(tmp_path / "gateway"),
@@ -84,7 +84,7 @@ def pod(uid: str, mounts: str = "", *, terminating: bool = False, ready: str = "
 
 def test_the_agent_answers_with_the_hash_of_what_it_mounted(gateway):
     pods = FakePods([pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
 
     agent.resync()
 
@@ -99,7 +99,7 @@ def test_the_agent_answers_with_the_hash_of_what_it_mounted(gateway):
 
 def test_an_unchanged_pod_is_not_written_again(gateway):
     pods = FakePods([pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
 
     agent.resync()
     agent.resync()
@@ -114,7 +114,7 @@ def test_an_unchanged_pod_is_not_written_again(gateway):
 def test_a_changed_annotation_is_answered_again(gateway):
     subject = pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))
     pods = FakePods([subject])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
     agent.resync()
 
     subject.annotation = annotation(
@@ -129,7 +129,7 @@ def test_a_changed_annotation_is_answered_again(gateway):
 def test_a_pod_that_is_gone_has_its_tree_released(gateway):
     subject = pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))
     pods = FakePods([subject])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
     agent.resync()
     assert os.path.isdir(gateway.pod_tree(POD_A))
 
@@ -142,7 +142,7 @@ def test_a_pod_that_is_gone_has_its_tree_released(gateway):
 def test_a_terminating_pod_is_released_and_not_counted_as_live(gateway):
     subject = pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))
     pods = FakePods([subject])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
     agent.resync()
 
     subject.terminating = True
@@ -154,7 +154,7 @@ def test_a_terminating_pod_is_released_and_not_counted_as_live(gateway):
 def test_the_watch_reconciles_what_it_delivers(gateway):
     quiet = pod(POD_A)
     pods = FakePods([quiet], events=[pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
 
     agent.run_once()
 
@@ -168,7 +168,7 @@ def test_a_watch_that_breaks_does_not_stop_the_agent(gateway):
             raise RuntimeError("connection reset")
 
     pods = Broken([pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
 
     agent.run_once()  # must not raise: a watch is allowed to break
 
@@ -181,7 +181,7 @@ def test_an_api_that_refuses_the_answer_does_not_lose_the_mount(gateway):
             raise RuntimeError("403")
 
     pods = Refusing([pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))])
-    agent = GatewayAgent(gateway, pods)
+    agent = NodeMountGatewayAgent(gateway, pods)
 
     reports = agent.resync()
 
@@ -199,7 +199,7 @@ def test_two_pods_do_not_share_a_tree(gateway):
             pod(POD_B, annotation(mount("home/users/01H-nina", "nina"))),
         ]
     )
-    GatewayAgent(gateway, pods).resync()
+    NodeMountGatewayAgent(gateway, pods).resync()
 
     snapshot = gateway.snapshot()["pods"]
     assert set(snapshot) == {POD_A, POD_B}
@@ -212,7 +212,7 @@ def test_a_pod_the_agent_cannot_list_is_not_a_crash(gateway):
         def list_pods(self):
             raise RuntimeError("the API server is not answering")
 
-    agent = GatewayAgent(gateway, Blind([]))
+    agent = NodeMountGatewayAgent(gateway, Blind([]))
 
     assert agent.resync() == []
 
@@ -232,7 +232,7 @@ def test_the_metrics_name_the_leak(gateway):
             return {"driver": "local.csi.datalayer.io", "bridges": {"b1": {"connected": False}}}
 
     pods = FakePods([pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))])
-    GatewayAgent(gateway, pods).resync()
+    NodeMountGatewayAgent(gateway, pods).resync()
     gateway.counters["leaked"] = 2
 
     text = HealthServer(_Driver(), gateway=gateway).metrics()
@@ -296,7 +296,7 @@ class _Api:
 
 
 def _credentials(api, namespace="datalayer-runtimes"):
-    from ..csi.gateway_agent import KubernetesCredentials
+    from ..csi.node_mount_gateway_agent import KubernetesCredentials
 
     return KubernetesCredentials(api, namespace)
 
@@ -304,7 +304,7 @@ def _credentials(api, namespace="datalayer-runtimes"):
 def test_a_secret_the_pod_owns_is_read():
     import base64
 
-    from ..csi.gateway import GatewayError  # noqa: F401 - asserted by absence
+    from ..csi.node_mount_gateway import NodeMountGatewayError  # noqa: F401 - asserted by absence
 
     api = _Api(_Secret({"key": base64.b64encode(b"token").decode()}, [_Owner(POD_A)]))
 
@@ -315,11 +315,11 @@ def test_a_secret_the_pod_owns_is_read():
 
 
 def test_a_secret_the_pod_does_not_own_is_refused():
-    from ..csi.gateway import ERROR_SECRET_REFUSED, GatewayError
+    from ..csi.node_mount_gateway import ERROR_SECRET_REFUSED, NodeMountGatewayError
 
     api = _Api(_Secret({}, [_Owner("some-other-pod")]))
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         _credentials(api).read_secret("datalayer-runtimes", "companion-secret", POD_A)
 
     # This is what stops a grant from naming the companion's key or another
@@ -328,31 +328,31 @@ def test_a_secret_the_pod_does_not_own_is_refused():
 
 
 def test_a_secret_nothing_owns_is_refused():
-    from ..csi.gateway import GatewayError
+    from ..csi.node_mount_gateway import NodeMountGatewayError
 
     api = _Api(_Secret({}, []))
 
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         _credentials(api).read_secret("datalayer-runtimes", "platform-key", POD_A)
 
 
 def test_a_secret_outside_the_watched_namespace_is_refused_without_asking():
-    from ..csi.gateway import GatewayError
+    from ..csi.node_mount_gateway import NodeMountGatewayError
 
     api = _Api(_Secret({}, [_Owner(POD_A)]))
 
-    with pytest.raises(GatewayError):
+    with pytest.raises(NodeMountGatewayError):
         _credentials(api).read_secret("kube-system", "anything", POD_A)
 
     assert api.asked == []
 
 
 def test_a_forbidden_read_and_a_missing_secret_are_the_same_answer():
-    from ..csi.gateway import ERROR_SECRET_REFUSED, GatewayError
+    from ..csi.node_mount_gateway import ERROR_SECRET_REFUSED, NodeMountGatewayError
 
     api = _Api(error=RuntimeError("403 Forbidden"))
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         _credentials(api).read_secret("datalayer-runtimes", "mount-1", POD_A)
 
     # Telling the two apart would say whether a Secret exists to somebody who
@@ -361,9 +361,9 @@ def test_a_forbidden_read_and_a_missing_secret_are_the_same_answer():
 
 
 def test_the_default_agent_reads_nothing():
-    from ..csi.gateway import ERROR_SECRET_REFUSED, GatewayError, NoCredentials
+    from ..csi.node_mount_gateway import ERROR_SECRET_REFUSED, NodeMountGatewayError, NoCredentials
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         NoCredentials().read_secret("datalayer-runtimes", "mount-1", POD_A)
 
     assert raised.value.code == ERROR_SECRET_REFUSED
@@ -396,7 +396,7 @@ class _Runner:
 
 
 def _router():
-    from ..csi.gateway_agent import ProcessRouter
+    from ..csi.node_mount_gateway_agent import ProcessRouter
 
     bridges = _Runner("local-bridge", 101)
     buckets = _Runner("cloud-storage", 202)
@@ -421,11 +421,11 @@ def test_each_kind_goes_to_its_own_runner():
 
 
 def test_a_kind_nobody_serves_is_refused_by_name():
-    from ..csi.gateway import ERROR_PROCESS_UNSUPPORTED, GatewayError
+    from ..csi.node_mount_gateway import ERROR_PROCESS_UNSUPPORTED, NodeMountGatewayError
 
     router, _bridges, _buckets = _router()
 
-    with pytest.raises(GatewayError) as raised:
+    with pytest.raises(NodeMountGatewayError) as raised:
         _start(router, "dataset")
 
     # Which tells an operator to turn a switch on, rather than to go looking
@@ -452,3 +452,53 @@ def test_a_pid_inherited_from_a_gone_agent_is_still_alive():
     # mount away from a sandbox.
     assert router.alive(999) is True
     assert router.alive(12345) is False
+
+
+def test_the_watch_is_closed_even_when_the_agent_stops_mid_stream(gateway):
+    """Walking away from the generator leaves its HTTP stream open.
+
+    Prompt collection under refcounting usually hides this. A process that
+    opens a watch every few minutes for months should not be relying on that,
+    and stopping mid-stream is exactly when it happens.
+    """
+    closed: list[bool] = []
+
+    class _Watch:
+        def __init__(self, pods):
+            self._pods = pods
+
+        def __iter__(self):
+            return iter(self._pods)
+
+        def close(self):
+            closed.append(True)
+
+    class Pods(FakePods):
+        def watch_pods(self, timeout: int):
+            return _Watch([pod(POD_A, annotation(mount("home/users/01H-eric", "eric")))] * 5)
+
+    agent = NodeMountGatewayAgent(gateway, Pods([]))
+    agent._stop.set()
+
+    agent.run_once()
+
+    assert closed == [True]
+
+
+def test_the_watch_is_closed_when_it_breaks(gateway):
+    closed: list[bool] = []
+
+    class _Watch:
+        def __iter__(self):
+            raise RuntimeError("connection reset")
+
+        def close(self):
+            closed.append(True)
+
+    class Pods(FakePods):
+        def watch_pods(self, timeout: int):
+            return _Watch()
+
+    NodeMountGatewayAgent(gateway, Pods([])).run_once()
+
+    assert closed == [True]
