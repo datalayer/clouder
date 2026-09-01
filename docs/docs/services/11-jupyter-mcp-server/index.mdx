@@ -1775,6 +1775,71 @@ released either way, so one bad tick does not cost the next hour as well. A
 job that wedges is stopped after its timeout rather than holding the lease
 until the pod is replaced.
 
+## Conformance
+
+`@modelcontextprotocol/conformance` is the specification's own test suite,
+written by the people who define the protocol. It is the only test of this
+gateway that can say we misread the spec rather than that we disagree with
+ourselves.
+
+```bash
+npm install --no-save --prefix /tmp/conf @modelcontextprotocol/conformance
+CONFORMANCE_BIN=/tmp/conf/node_modules/.bin/conformance \
+  pytest tests/test_conformance.py -v
+```
+
+The fixture starts a standalone gateway on loopback, runs the suite against
+it and fails on any scenario that is not in `tests/conformance-baseline.yaml`.
+Without the npm package the tests skip, saying so.
+
+:::warning How the credential gets in, and what was refused
+
+The suite takes `--url`, `--scenario`, `--suite`, `--expected-failures`,
+`--output-dir`, `--spec-version` and `--verbose` — and **nothing that sends a
+header**. Every `/mcp` route needs a bearer token, so pointed straight at
+this gateway the suite fails every scenario including `ping`, which measures
+that authentication works. True, and not what conformance means.
+
+The obvious fix is a switch that turns authentication off for the test run.
+It was refused: that means shipping a mode in which this gateway serves
+unauthenticated, and that is the kind of switch which escapes into a
+deployment.
+
+Instead the fixture *starts* the gateway, so it holds `DATALAYER_JWT_SECRET`
+and mints a token — signature, issuer and expiry all verified by the ordinary
+code path, no bypass — and a small proxy in `tests/` attaches it. **The server
+under test is in exactly the configuration it is deployed in.**
+:::
+
+### What it finds
+
+At 2025-11-25, nine of thirty scenarios pass and twenty-one are baselined, in
+three kinds:
+
+| Kind | Why |
+|---|---|
+| Fixtures (12) | The scenario asks for `test_simple_prompt` or `test://static-text` by name — things only the suite's reference server has. Adding them would put a test fixture in a product |
+| Unimplemented (5) | `completion/complete`, `logging/setLevel`, `resources/subscribe` and `unsubscribe`, and the log notifications that follow |
+| Client capabilities (4) | Elicitation and sampling are the server asking the *client* for something. A tool that stops to ask a question is one an agent cannot run unattended |
+
+:::note None of the twenty-one is this gateway claiming something it cannot do
+
+`initialize` advertises no `logging` and no `completions` capability, and
+`resources.subscribe: false`. The suite runs those scenarios anyway, without
+gating on what the server said it supports — so a `-32601 Method not found`
+there is the honest answer to a request the client was told not to make.
+
+Read the baseline before reading twenty-one failures as twenty-one bugs. Each
+entry names what it is waiting for; an entry is a debt with a name, not a
+silence, and a new failure outside the baseline blocks the release.
+:::
+
+The suite carries scenarios for 2025-03-26, 2025-06-18 and 2025-11-25 and
+**none for 2026-07-28**, which this gateway also serves. The harness asks for
+that version, gets no scenarios, and skips saying so — a run that executes
+nothing must not be read as a pass. When the suite ships them the skip becomes
+a run with no change here.
+
 ## What is not here yet
 
 Named plainly, because an operator reading a route should know what stands
