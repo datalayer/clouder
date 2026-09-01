@@ -45,6 +45,36 @@ the deprecated fallback. A document needs no registration call and no stored
 secret, which is what makes it right for a client that discovers servers at
 runtime.
 
+The fetch is bounded, and the bounds are the security properties rather than
+tuning:
+
+| | |
+|---|---|
+| Timeout | 3 s for the whole fetch — connect, send, read |
+| Redirects | 3, all on the same host |
+| JWKS | 64 KiB |
+| Logo | 256 KiB |
+| Cache | 5 min to 24 h; 1 h where the document says nothing |
+
+A client's document lives on the client's own server, so fetching it is IAM
+reaching out to a third party during an authorization. The timeout and the
+size caps are what stop that server from holding an authorization open or
+handing back a download. Redirects stay on the host because the hostname
+**is** the client's identity: following one off-host would let a document
+delegate its identity to somewhere the person approving it never saw.
+
+:::note `no-store` gets the *lower bound*, not no caching
+
+A document refetched on every request would let the client's server watch
+every authorization its client is part of — who signs in, when, how often.
+The cache exists to prevent that, so a document asking not to be cached is
+still held for five minutes.
+:::
+
+A URL client authenticates at the token endpoint with `none` or
+`private_key_jwt`, never a shared secret: a document anybody can read cannot
+hold one. The symmetric methods remain for the deprecated registration path.
+
 ### Redirect URIs, and the one exception
 
 A redirect URI is matched **exactly** against the client's document — the
@@ -94,27 +124,114 @@ The OpenID Connect scopes — `openid`, `profile`, `email`, `offline_access` —
 pass through so one sign-in answers both questions. None of them grants
 anything on the MCP server.
 
+### Grant types
+
+`grant_types_supported` names three, and the token endpoint accepts exactly
+those three — one list in `services/oauth_provider.py`, read by the OAuth
+metadata, the OpenID document and the `unsupported_grant_type` refusal alike.
+
+| Grant | Who uses it |
+|---|---|
+| `authorization_code` | Every MCP client, with PKCE |
+| `refresh_token` | The same clients, to stay connected |
+| `urn:ietf:params:oauth:grant-type:token-exchange` | Datalayer services only |
+
+:::note Token exchange is advertised, and refused to everyone but services
+
+RFC 8693. The audience of an access token is what stops one minted for the
+MCP gateway being replayed against another API — and the gateway genuinely
+does need to call the Spacer on the user's behalf, holding a token that names
+the gateway. It exchanges that token for one naming the Spacer.
+
+It is in the metadata although only a trusted service may use it: the document
+describes what the server **supports**, and who may use it is what the refusal
+says — `invalid_client`, precisely. A capability left out of the description
+because it is restricted is a capability nobody can discover is there, and
+this one was omitted for exactly that reason until a test held the two lists
+against each other.
+:::
+
+`client_credentials` and `jwt-bearer` are **not** served. Service agents
+authenticate by a different route — see below.
+
+### Organization, team and personal MCP policy
+
+`/api/iam/v1/mcp-policies/{scope}/{subject_uid}` serves and stores the layers
+the [Jupyter MCP Server](/services/jupyter-mcp-server/) enforces, at three
+scopes: `organization`, `team` and `personal`. An organization's owner writes
+its layer, a team's owner writes the team's within it, and a person writes
+their own.
+
+Six rules, and no others:
+
+| Rule | Value |
+|---|---|
+| `toolDenylist` | Tool names refused |
+| `toolAllowlist` | Tool names permitted, everything else refused |
+| `allowedClients` | Client ids — a CIMD URL admits that client and no other |
+| `maxCallsPerMinute` | Per-subject rate cap |
+| `maxCreditsPerDay` | The daily budget |
+| `maxConcurrentSandboxes` | Sandboxes running at once |
+
+:::warning A rule IAM does not know is refused, not stored
+
+The catalogue is kept beside the gateway's own `ENFORCED_RULES`. A rule the
+gateway enforces but IAM does not list cannot be *saved* — harmless, and
+visible immediately. The other way round is a policy page that lies: a rule
+stored, displayed, and enforced by nothing.
+
+So a mistyped `toolDenyList` is an error the administrator sees, rather than
+a setting that quietly does nothing.
+:::
+
+The last three are the **quotas**. They are policy rules rather than a surface
+of their own, because a second place to write a limit would be a second answer
+to what an organization is allowed. The gateway reads them and refuses against
+them; `GET /api/mcp/v1/organizations/{uid}/usage` puts each beside its use.
+
+### Alert rules
+
+`McpAlertRule`, stored per organization. A rule names a condition, an
+operator, a threshold, a window and a destination. IAM **refuses** a rule it
+cannot evaluate — an unknown condition, a window of zero, a threshold of
+`nan` — rather than storing it: a refused rule is visible, while a stored one
+nobody can evaluate is a condition that looks watched and is not.
+
+### Service agents
+
+`/api/iam/v1/mcp-service-agents/…`, owned by an organization: created,
+rotated and revoked by its owners. A pipeline, a CI job or a bot holds its own
+key and spends the organization's credits under its own `agent_uid` — so the
+work does not stop when the engineer who set it up leaves, and its spend is
+attributed to it rather than to them.
+
+They do **not** use `client_credentials`. The gateway presents the key to
+`POST …/authenticate`, which answers with the principal, and the endpoint is
+restricted to trusted services: anything that may call it may test keys.
+
+:::note A bad key is a `401`, never a `200` with an empty principal
+
+A caller that reads a truthful empty answer as an anonymous success is how an
+unauthenticated agent gets a session.
+:::
+
+### `org_uid` and `team_uid` claims
+
+Chosen at consent and stamped into the token. The gateway keys policy, quotas,
+alerts and the audit on `org_uid`, so a token without one is a personal-scope
+session. IAM validates the choice against membership before stamping it: a
+person cannot act for an organization they do not belong to, and a team is
+refused if it is not that organization's.
+
 ### What is not here yet
 
 Named plainly, because the [MCP plan](/services/jupyter-mcp-server/) refers
-to several of these and an operator should know which exist:
+to it and an operator should know:
 
 - **DPoP.** Not implemented, and deliberately not built ahead of the Agent
-  Identity Working Group's finalized MCP profile.
-- **`client_credentials` and `jwt-bearer` grants**, and **service agents** as
-  principals of their own with keys and rotation. The client half is written
-  in `agent-runtimes`; IAM does not yet issue these.
-- **Organization and personal MCP policy.** The gateway fetches, caches and
-  *enforces* these layers already — a tool denylist, a client allowlist, a
-  per-minute cap — but IAM serves none of them, so every rule currently
-  reads "Datalayer default" and nothing narrows.
-- **Quotas** as the agent dimension of the plan limits, and **`McpAlertRule`**.
-  The reservation side of quotas has landed: a credits reservation now
-  carries which client and which service agent asked for it, so usage can be
-  grouped by agent. What is missing is the limit to enforce against.
-- **`org_uid`/`team_uid` claims** chosen at consent. The gateway reads them
-  from the token and narrows audit, policy and spend by them; until IAM
-  stamps them, every session is personal scope.
+  Identity Working Group's finalized MCP profile. Sender-constrained tokens
+  are the right answer to a stolen bearer token, and building against a draft
+  that then changes would leave a deployed proof format nobody else speaks.
 
 ## Where IAM's own audit rows go
 

@@ -1304,21 +1304,43 @@ billing entity with its own delegated wallet, so `agent_credits(team_uid)` is
 a real figure rather than a share of the organization's. Each scope's budget
 is weighed against that scope's own spend, organization first.
 
-:::info The cap is checked at the reservation too
-The gateway checks it before a launch, and that is not the only door: a
+:::info Both limits are checked at the reservation too
+The gateway checks them before a launch, and that is not the only door: a
 client reserving directly, or another service doing it, would otherwise walk
 past a limit an organization set — while the limit *looked* enforced, because
 it is, on the path most people take.
 
-IAM applies it when the reservation is made. Only to **agent** reservations,
-identified by the `client_id_s`/`agent_uid_s` dimension: the cap is a rule
-about agents, and refusing a person launching their own runtime would refuse
-somebody under a rule that was never about them. Only the **organization's**
-layer, since the count is per billing entity — a team's number against an
-entity-wide count would refuse a team holding nothing, and the gateway is
-where the team cap belongs.
+IAM applies **`maxConcurrentSandboxes` and `maxCreditsPerDay`** when the
+reservation is made, reading its own policy and its own ledger with no round
+trip. Only to **agent** reservations, identified by the
+`client_id_s`/`agent_uid_s` dimension: both are rules about agents, and
+refusing a person launching their own runtime would refuse somebody under a
+rule that was never about them. Only the **organization's** layer, since both
+figures are per billing entity — a team's number against an entity-wide count
+or spend would refuse a team holding nothing, and the gateway, which knows
+which team a caller acts for, is where the team layer belongs.
 
-A refusal there is a `409` naming both numbers and who can raise the limit.
+The count is asked **before** the spend: the count is a `rows=0` read and the
+spend reads the day's usage records, so an organization already at its
+sandbox cap does not pay for a lookup to learn what the count knew.
+
+A refusal at either is a `409` naming both numbers and who can raise the
+limit.
+:::
+
+:::warning The two doors have to agree
+Otherwise the same launch is refused at one and admitted at the other, and
+which one you hit is an implementation detail of the client you happen to be
+using. So the reservation follows the gateway exactly: at the budget rather
+than over it, and neither an unreadable budget nor an unreadable spend
+refuses.
+
+A **short** sum does not refuse either, and it is the sharper case. It always
+reads as under budget, so the tempting move is to enforce on a partial figure
+that is *already* over the limit — but that figure is not the number. The
+reason it is unknown is that rows were dropped, and the total could be
+anywhere above it. Both cases are logged, because a limit that is not being
+enforced looks exactly like one nobody set.
 :::
 
 :::note One unreadable count does not disable the other
@@ -1445,7 +1467,7 @@ curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
 
 | Field | Values |
 | --- | --- |
-| `condition` | `tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits`, `spend.budget_fraction`, `sli.availability`, `sli.latency` |
+| `condition` | `tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits`, `spend.budget_fraction`, `sli.availability`, `sli.latency`, `sandbox.lost`, `dependency.down` |
 | `operator` | `gt`, `gte`, `lt`, `lte`, `eq` |
 | `threshold` | a real number — `nan` and `inf` are refused, since `nan > x` is false for every x and such a rule never fires |
 | `severity` | `info`, `warning`, `critical` — delivered as `info`, `warning`, `error` |
@@ -1458,13 +1480,53 @@ evaluator rather than restating its rules. A rule that cannot be evaluated is
 a condition nobody is watching, and that looks exactly like a condition that
 never happens.
 
-:::warning Five of the seven conditions have a reader
-`tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits` and
-`spend.budget_fraction` do. The two `sli.*` do not — they need the OTEL service — so a rule naming one of
-those is counted `unreadable` on every tick and never fires. Deliberately: a
+:::note Every condition has a reader
+There is no longer a condition that validates and then reads `unreadable` on
+every tick. The `sli.*` pair read the **audit** rather than telemetry — the
+audit is never sampled, which makes it the more complete source, and it is
+already scoped by organization and bounded by time.
+
+A reading that could not be *taken* is still `unreadable` rather than zero: a
 reader answering zero would turn "nobody is watching this" into "this never
-happens" — but it is not the same as being watched. Read the tick's counters,
-not the empty alerts list.
+happens". Read the tick's counters, not the empty alerts list — an evaluator
+whose `unreadable` is climbing looks exactly like a platform with no problems.
+:::
+
+#### The two platform conditions
+
+`sandbox.lost` and `dependency.down` watch what `mcp.sandbox.lost` and
+`mcp.dependency.ready` export. Those metrics go to OTEL, where a dashboard
+reads them; an exported counter cannot be read back inside the process that
+exports it, so a rule naming either used to be refused at the point of
+writing it — the two things an operator most wants to be paged about.
+
+`sandbox.lost` is counted in the shared store beside the audit write
+failures, and for the same reason: a session is lost on whichever replica held
+it, and a per-process count would report a third of the losses three times.
+
+:::warning Relaunched losses count
+A provider losing sandboxes steadily and quietly relaunching them is invisible
+from the outside **precisely because it recovers** — which is when an alert
+earns its keep. If you want only the losses somebody noticed, read the audit;
+the rule counts both.
+:::
+
+`dependency.down` is how many *configured* dependencies are not answering —
+the same set the `mcp.dependency.ready` gauge describes. One nobody configured
+is neither ready nor down, and counting it would page somebody for a
+deployment choice.
+
+It is a platform reading answered per organization, deliberately: the gateway
+is what an organization's agents talk to, and "Contents is down" is their
+outage whoever caused it. One probe serves the whole tick, so two
+organizations cannot disagree in the same pass about whether IAM is up, and
+four HTTP probes are not multiplied by the number of rules watching them.
+
+:::note A probe that raised is cached as the failure it is
+Retrying it per rule turns one outage into a burst of timeouts at the moment
+the platform can least afford them. And it reads `unreadable`, never zero — a
+failed probe read as "nothing is down" is an alert that goes quiet exactly
+when the platform is in trouble.
 :::
 
 Use `spend.budget_fraction` rather than `spend.credits` for a "tell me at
