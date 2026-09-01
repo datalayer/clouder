@@ -19,6 +19,44 @@ resolves credential references through Vault and coordinates Runtimes,
 Operator, Library and provider adapters. File bytes remain in managed or
 provider storage; credentials never become catalog fields.
 
+## What a Content Source is
+
+A **Content Source** is a thing in the catalog somebody can attach or query.
+Its `kind` says what it is:
+
+| Kind | What it is | Reached by |
+| --- | --- | --- |
+| `files` | A Home Folder — a person's, a team's or an organization's | Mounting it |
+| `dataset` | A published, versioned set of files | Mounting or downloading a revision |
+| `volume` | A block volume with its own claim | Mounting it at creation |
+| `cloud-storage` | An object-store bucket and prefix | Mounting it, or an object client |
+| `datasource` | A database or warehouse | Querying it |
+| `data-server` | A [Dataserver](/services/dataservers/) registration | Routing queries through it |
+| `mcp` | An MCP server | Calling its tools |
+| `environment` | What an Environment brings to every sandbox of it | The Environment, at launch |
+
+An **attachment** joins a source to a sandbox, and carries its own `delivery`
+— `mount`, `local-bridge`, `materialize`, `client` or `environment` — which
+says *how* it gets there. So a bucket attached as `cloud-storage` +
+`delivery: mount` becomes a filesystem, and the same bucket with
+`delivery: client` becomes a scoped object client instead.
+
+:::note[A source kind is not a gateway mount kind]
+
+The [Node Mount Gateway](/services/system/node-mount-gateway/) also has
+`kind`s — `files`, `shared-folder`, `nfs`, `git`, `local-bridge`,
+`cloud-storage` — and they are a different taxonomy that happens to share two
+spellings. A source kind says *what a thing is*; a gateway kind says *what the
+node agent mounts*. Most sources are never mounted, and several gateway kinds
+are not sources at all.
+
+The mapping between them is on
+[that page](/services/system/node-mount-gateway/#these-kinds-are-not-content-source-kinds),
+along with the same warning about the word `delivery`, which is also used by
+both for different things.
+
+:::
+
 ## Processes and ports
 
 | Process | Purpose | Default port |

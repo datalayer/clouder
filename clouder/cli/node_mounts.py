@@ -259,7 +259,11 @@ def _print_gateway(status: dict) -> None:
 #: asked for. Every check here catches one way that happens, and each says
 #: what to do rather than only that something is wrong.
 NODE_MOUNT_GATEWAY_NAMESPACE = "datalayer-runtimes"
-OPERATOR_NAMESPACE = "datalayer-api"
+#: Where the Operator runs. `datalayer-runtimes`, not `datalayer-api`: it is
+#: deployed beside the runtimes it manages. Looking in the wrong namespace
+#: made `verify` report the Operator's half off on a cluster where it was on —
+#: an empty answer and a `false` are the same string to a jsonpath.
+OPERATOR_NAMESPACE = "datalayer-runtimes"
 RUNTIME_SERVICE_ACCOUNT = "datalayer-runtimes-sa"
 
 #: The `app` label every runtime Pod carries, used to find the containers a
@@ -381,15 +385,35 @@ def collect_gateway_checks(
         f"kubectl -n {operator_namespace} get deploy datalayer-operator -o jsonpath="
         "'{.spec.template.spec.containers[*].env[?(@.name==\"DATALAYER_NODE_MOUNT_GATEWAY_ENABLED\")].value}'",
     )
+    # A deployment that is not there and one deployed with the switch off
+    # answer the same empty string, and reading both as "off" is what let a
+    # wrong namespace look like a deployment choice for as long as it did.
+    operator_found = bool(
+        _kubectl(
+            master_ip, user, key_path,
+            f"kubectl -n {operator_namespace} get deploy datalayer-operator "
+            "-o jsonpath='{.metadata.name}' 2>/dev/null",
+        ).strip()
+    )
     operator_on = operator_env.strip().lower() == "true"
-    if operator_on and gateway_on:
+    if not operator_found:
+        detail, ok = (
+            f"no datalayer-operator deployment in {operator_namespace} — "
+            "pass --operator-namespace if it runs elsewhere",
+            False,
+        )
+    elif operator_on and gateway_on:
         detail, ok = "both halves on", True
     elif not operator_on and not gateway_on:
         detail, ok = "both halves off (the gateway is not in use)", None
     elif operator_on:
         detail, ok = "the Operator grants mounts but no node agent applies them", False
     else:
-        detail, ok = "the node agent is running but the Operator grants nothing", None
+        detail, ok = (
+            "the node agent is running but the Operator has "
+            "DATALAYER_NODE_MOUNT_GATEWAY_ENABLED unset or false",
+            None,
+        )
     checks.append(_check(
         "Operator and agent agree",
         ok,

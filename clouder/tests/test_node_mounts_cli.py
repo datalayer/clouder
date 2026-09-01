@@ -252,6 +252,9 @@ HEALTHY = {
     "findmnt": "shared",
     "/gateway": '{"pods": {}, "counters": {"leaked": 0}}',
     "DATALAYER_NODE_MOUNT_GATEWAY_ENABLED": "true",
+    # The Operator deployment exists. An absent one and one deployed with the
+    # switch off answer the same empty string, so the check asks separately.
+    "{.metadata.name}": "datalayer-operator",
     "persistentVolumeClaim.claimName": "datalayer-shared-fs",
     "can-i patch pods -n datalayer-runtimes --as=system:serviceaccount:datalayer-runtimes:datalayer-node-mounts": "yes",
     "can-i patch pods -n datalayer-runtimes --as=system:serviceaccount:datalayer-runtimes:datalayer-runtimes-sa": "no",
@@ -376,3 +379,23 @@ def test_a_kernel_without_mount_setattr_fails(monkeypatch):
     # a user asks for one.
     assert result.exit_code == 1
     assert checks["Kernel supports mount_setattr (5.12+)"]["ok"] is False
+
+
+def test_an_operator_that_is_not_there_is_not_read_as_one_with_the_switch_off(monkeypatch):
+    result, checks = _verify(monkeypatch, **{"{.metadata.name}": ""})
+
+    # These answer the same empty string, and reading both as "off" is what
+    # let a wrong namespace look like a deployment choice on r1: `verify` said
+    # the Operator granted nothing while looking somewhere it never runs.
+    assert result.exit_code == 1
+    check = checks["Operator and agent agree"]
+    assert check["ok"] is False
+    assert "no datalayer-operator deployment" in check["detail"]
+    assert "--operator-namespace" in check["detail"]
+
+
+def test_the_operator_namespace_is_where_the_operator_runs(monkeypatch):
+    from clouder.cli import node_mounts as module
+
+    # It is deployed beside the runtimes it manages, not with the API.
+    assert module.OPERATOR_NAMESPACE == "datalayer-runtimes"
