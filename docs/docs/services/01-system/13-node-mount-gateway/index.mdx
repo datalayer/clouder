@@ -6,7 +6,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# ☰ 🔀 Datalayer Node Mount Gateway
+# ☰ 🔀 🛢️ Datalayer Node Mount Gateway
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
@@ -168,6 +168,52 @@ The four deliveries are the whole vocabulary:
   leaving a sandbox reading an empty directory.
 - **materialize** — there is nothing to mount yet. A URL is not a filesystem,
   so the content is produced on the node first and then bound.
+
+### These kinds are not Content Source kinds
+
+Two taxonomies use the word **kind**, they share two spellings, and they
+answer different questions. Worth getting straight before reading further,
+because the overlap is exactly wide enough to mislead.
+
+| | Content Source `kind` | Gateway mount `kind` |
+| --- | --- | --- |
+| Answers | *What is this thing?* | *What does the node agent mount?* |
+| Lives in | The Contents catalog | A Pod's grant annotation |
+| Values | `files`, `dataset`, `volume`, `cloud-storage`, `datasource`, `data-server`, `mcp`, `environment` | `files`, `shared-folder`, `nfs`, `git`, `local-bridge`, `cloud-storage` |
+
+A source is a thing you can attach; a gateway kind is a thing the agent can
+mount. Most sources are never mounted at all — a `datasource` is queried, an
+`mcp` server is called — and several gateway kinds are not sources: `git`,
+`nfs` and `shared-folder` come from a `RuntimeContent`, and `local-bridge` is
+an attachment *delivery* rather than a kind of anything.
+
+How one becomes the other:
+
+| A source of kind… | attached with `delivery`… | is mounted as gateway kind… |
+| --- | --- | --- |
+| `files` (a Home Folder) | `mount` | `files` |
+| `cloud-storage` | `mount` | `cloud-storage` |
+| anything, from a person's own machine | `local-bridge` | `local-bridge` |
+| `volume` | `mount` | **nothing** — a Volume has its own PVC, which a running Pod cannot be given |
+| `datasource`, `data-server`, `mcp` | — | **nothing** — these are queried or called, never mounted |
+| An Environment's `RuntimeContent`, `type: git` | — | `git` |
+| An Environment's `RuntimeContent`, `type: nfs` | — | `shared-folder`, or `nfs` when it names its own export |
+| An Environment's `RuntimeContent`, `type: s3` | — | `cloud-storage` |
+
+:::warning[`delivery` is also two words]
+
+The same trap, one level down. An **attachment's** `delivery` says how it
+reaches a sandbox — `mount`, `local-bridge`, `materialize`, `client`,
+`environment`. A **gateway's** delivery says how the agent makes a mount —
+`bind`, `filesystem`, `process`, `materialize`.
+
+`materialize` appears in both and means different things: for an attachment it
+is *copy the bytes into the sandbox*; for the gateway it is *produce the
+content on the node, then bind it* — a Git checkout. Neither ever appears in
+the other's payload, so nothing breaks; but a sentence saying "materialized"
+without saying whose is a sentence two readers will understand differently.
+
+:::
 
 ### The logic, in the order it runs
 

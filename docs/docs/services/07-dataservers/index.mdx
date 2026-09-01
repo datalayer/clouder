@@ -184,6 +184,34 @@ registration:
 `revoke` is what to reach for if a host is lost: it ends the identity at
 Contents, and no certificate on any disk is worth anything afterwards.
 
+## What Contents holds, not this
+
+A Dataserver is half of a pair, and the half that decides most of its
+behaviour is on the other side. Reaching for a lever here that turns out to be
+a Contents setting is the usual way to lose an hour, so:
+
+| What | Where | Why it is there |
+| --- | --- | --- |
+| The **lease** — how long a heartbeat holds `ready`, and how many misses make it `degraded` then `unavailable` | `DATALAYER_CONTENTS_DATASERVER_LEASE_SECONDS` on [Contents](/services/contents/#configuration) | Contents decides a Dataserver is gone; a Dataserver cannot report its own absence |
+| The **CA** that signs its certificate, and how long an issued one lasts | `DATALAYER_CONTENTS_DATASERVER_CA_CERT` / `_CA_KEY` / `_IDENTITY_DAYS` | The issuer is Contents. A Data Server holds a key, never the authority |
+| The **service key** it authenticates with | `DATALAYER_CONTENTS_DATASERVER_API_KEY` | It is Contents' key, given to a Dataserver |
+| The **metrics and the alert** on it | `contents_dataserver_lease_sweeps_total`, `contents_dataserver_refusals_total`, `ContentsDataserverUnavailable` | The sweep that degrades a lease runs in Contents' worker |
+| **Arrow Flight** | Contents' own process — see below | |
+
+### Why Flight is not here
+
+Query results stream to a caller over Arrow Flight, and it is easy to assume
+that is something a Dataserver does. It is not: the Flight gateway is a
+**Contents** process, on a Contents host, in the Contents chart, and this
+package contains no Flight code at all.
+
+The path is worth being exact about. A Dataserver runs the query and uploads
+the result to Contents over ordinary HTTPS, hashed. Contents then serves those
+bytes — over Flight when the gateway is enabled and the ticket names it, over
+HTTPS otherwise. Flight is downstream of every Dataserver and is not reached
+by one, so it is configured, deployed and debugged as
+[Contents](/services/contents/#arrow-flight).
+
 ## Where it lives
 
 | Piece | Where |
@@ -219,25 +247,43 @@ Both, rather than one, because a snapshot that silently goes stale and a
 source that silently vanishes are each a way to mislead somebody reading a
 number. Falling back is the combination where neither happens.
 
-Three things stand in the way, and none is a configuration away:
+### What is built
 
-- **No connector reaches a sandbox.** The `sql` connector opens a DuckDB or
-  SQLite file by path; `athena` and `bigquery` reach a cloud service. None can
-  read an object in a running kernel.
-- **Connectors are static.** They come from a file rendered into a ConfigMap
-  at deploy time, so a Dataserver's set is fixed when its pod starts. A user
-  publishing a table has to add one to a *running* Dataserver.
-- **Registration is manual.** `bootstrap` is run by hand, and the identity's
-  private key is deliberately made where it will be used. A managed Dataserver
-  has to do that for itself, without the key becoming something the platform
-  holds on somebody's behalf.
+The snapshot path's machinery is in, and it is the half that assumed a human
+placed the Dataserver:
 
-What is already right is the shape: a process that only dials out, holds its
-own credentials and is driven entirely by Contents' states is exactly what
-should run close to somebody's data. Registration, heartbeat, leases, job
-polling, result upload, the failure codes, drain and revoke all stand. What
-does not fit is everything assuming a **human placed it** — which is a change
-to who configures a Dataserver, not to how one is configured.
+- **A `table` connector.** DuckDB over Parquet on the shared filesystem, and
+  its own type rather than a setting on `sql` — because `sql` opens a database
+  an administrator named, while this serves files Contents wrote. A `table`
+  names a **relation**, never a path: the path is derived from the root the
+  Dataserver was given, so publishing cannot become a way to read any file the
+  Dataserver can reach, and it holds every other connector's credentials.
+- **Connectors that arrive at runtime**, on the heartbeat. The set is no
+  longer fixed when the pod starts, which is what lets a user publish to a
+  Dataserver that is already up. Contents may add a `table` and nothing else:
+  an instruction from outside that could add an `athena` connector is an
+  instruction that names a role to assume. A published connector never shadows
+  a configured one, and Contents replaces only the published set — so the
+  connectors file stays the administrator's.
+- **Self-registration.** With `selfBootstrap`, a Dataserver obtains its own
+  identity at start rather than waiting for somebody to run `bootstrap`. The
+  key is generated in the pod and never travels — what crosses is a signing
+  request — and the identity volume is a memory-backed `emptyDir`, so the key
+  never touches a disk and goes with the pod.
+
+### What is not
+
+- **`publish()` itself**, and the Contents endpoint behind it: writing the
+  object out, placing it, and creating the source. The **layout** is settled
+  and pinned from both ends (`<root>/<owner uid>/<relation>/part-00000.parquet`,
+  owner-scoped so two people may both publish `sales`).
+- **The live path** entirely: no connector reads an object in a running
+  kernel, and nothing yet decides which of a live answerer and a snapshot a
+  query is served by.
+- **The authorization self-registration assumes.** There is no owner token in
+  a pod, so the service key stands in for it, and Contents must issue only for
+  a registration marked managed — otherwise a service key is a way to obtain
+  an identity for any registration. That change is not written.
 
 The plan is Milestone 10 in `CONTENTS.md`.
 

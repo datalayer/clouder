@@ -29,6 +29,8 @@ on the [gateway's page](/services/system/node-mount-gateway/#datashim-and-what-r
 
 :::
 
+## Deploy
+
 [Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Runtime Content` features.
 
 ```bash
@@ -110,7 +112,7 @@ Without this label, the datashim webhook will **not** inject volume mounts into 
 
 Validate the configuration with the creation of an example Dataset.
 
-### Step 1: Create a Dataset
+### Create a Dataset
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -138,13 +140,13 @@ kubectl get pvc example-dataset
 # example-dataset   Bound    pvc-c26adf05-...                           9765625000Ki    RWX            csi-s3
 ```
 
-### Step 2: Label the namespace
+### Label the namespace
 
 ```bash
 kubectl label namespace default monitor-pods-datasets=enabled
 ```
 
-### Step 3: Mount the Dataset in a Pod
+### Mount the Dataset in a Pod
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -169,14 +171,14 @@ kubectl get pod nginx
 kubectl exec nginx -it -- ls /mnt/datasets/example-dataset
 ```
 
-### Step 4: Clean up
+### Clean up
 
 ```bash
 kubectl delete pod nginx
 kubectl delete dataset example-dataset
 ```
 
-## Tear Down
+## TearDown
 
 If needed, tear down.
 

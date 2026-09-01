@@ -304,6 +304,8 @@ plane down datalayer-shared-filesystem
 
 ## Ceph
 
+### Deploy
+
 Define the storage provider as `ceph`.
 
 ```bash
@@ -445,13 +447,13 @@ The [deployment examples](https://github.com/rook/rook/tree/master/deploy/exampl
 
 :::
 
-Ceph Storage Configuration
+### Ceph Storage Configuration
 
 The users ceph storage is defined on top of the provisioned Filesystem as a PVC through a custom `storageClassName` (itself defined in the ceph cluster configuration).
 
 That chart also defines an pod to set up the default content of the volume.
 
-**How to uninstall?**
+### Teardown 
 
 Make sure to check all resources are deleted before moving to the next steps. If you don't it is highly probable something will go wrong and you will have to delete resource manually (including editing specs to remove finalizers).
 
@@ -508,19 +510,19 @@ kubectl delete cephcluster $DATALAYER_RUN_HOST -n datalayer-storage
 plane down datalayer-storage-operator
 ```
 
-## Tips and Tricks for Ceph
+### Tips and Tricks for Ceph
 
-### Monitoring
+Monitoring
 
 The default values are configuring the gathering of metrics by the Prometheus instance handles in `datalayer-observer`.
 
 Grafana dashboards for Ceph are also provisioned in `datalayer-observer` and should be populated out-of-the-box with the Ceph metrics.
 
-### Handling Ceph OSDs
+Handling Ceph OSDs
 
 Refer to the [Rook documentation](https://rook.io/rook/latest-release/Storage-Configuration/Advanced/ceph-osd-mgmt) to remove or add OSDs.
 
-### Scaling Ceph Global Storage
+Scaling Ceph Global Storage
 
 The [Rook documentation](https://rook.io/rook/latest-release/Storage-Configuration/Advanced/ceph-configuration/#auto-expansion-of-osds) describes how to scale up OSDs vertically and horizontally.
 

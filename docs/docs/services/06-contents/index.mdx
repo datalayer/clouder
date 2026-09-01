@@ -25,7 +25,7 @@ provider storage; credentials never become catalog fields.
 | --- | --- | --- |
 | API | REST, OpenAPI, catalog and operation control | `9400` |
 | Worker | Durable operations (transfers, Volume provisioning, queries, acquisitions), the lease, bridge and synchronization sweeps, retention, the scheduled reconciliation; its own `/health` and `/ready` | `9403` (probes) |
-| Flight gateway | Arrow Flight `DoGet` of query results under a capability ticket, validated once; Flight SQL is not served yet and says so; enabled with `processes.flight.enabled` and routed by `flightHost` | `9401` (Flight), `9404` (probes) |
+| Flight Gateway | Arrow Flight `DoGet` of query results under a capability ticket, validated once; Flight SQL is not served yet and says so; enabled with `processes.flight.enabled` and routed by `flightHost` | `9401` (Flight), `9404` (probes) |
 | Local bridge relay | Pairs the two ends of a local mount — the person's computer and the sandbox — and forwards frames it cannot read; enabled with `processes.bridge.enabled` | `9402` |
 
 All four run from the one image (`datalayer-contents-worker`,
@@ -46,7 +46,7 @@ own switch (`alerts.enabled`).
 | Synchronization | `/api/contents/v1/sync/*` | IAM user JWTs; a session belongs to the principal that opened it and is invisible to any other |
 | Arrow Flight | dedicated HTTP/2 route on `9401` | Short-lived, audience-bound capability issued by the REST API |
 | Local bridge | dedicated relay route on `9402` | One-session, one-sandbox bridge capability; never a stored provider credential |
-| Dataservers | `/api/contents/v1/dataservers/*` | The gateway's routes (register, heartbeat, jobs, result) take the `dataserver` service key and the identity the ingress forwards in `X-Client-Cert-Subject` / `X-Client-Cert-Serial`; the owner's (status, drain, resume, revoke, identity) take the owner's IAM JWT. Tickets are validated with the `flight` key |
+| Dataservers | `/api/contents/v1/dataservers/*` | Two boundaries on one prefix. The **gateway's** routes (register, heartbeat, jobs, result) take the `dataserver` service key plus the identity the ingress forwards in `X-Client-Cert-Subject` / `X-Client-Cert-Serial`; the **owner's** (status, drain, resume, revoke, identity) take the owner's IAM JWT. Tickets are validated with the `flight` key. See [Dataservers](/services/dataservers/#identity) |
 
 `ping`, `health` and dependency-aware `ready` are Kubernetes probe surfaces.
 Catalog, operation and capability endpoints are protected. Runtimes, Operator,
@@ -76,6 +76,13 @@ See [Solr](/services/system/solr/) and
 
 ## Deploy
 
+Contents' charts — `datalayer-contents`, `datalayer-dataservers` and the
+storage under them — are **not public**. Plane reads them from
+`$PLANE_HOME/etc/helm-private/charts`, in the Services repository; the public
+charts stay at `$PLANE_HOME/etc/helm/charts`. The two trees have the same
+shape, so the path is the only thing that distinguishes them — see
+[Helm Registry](/cluster/registries/helm-registry/).
+
 The service imports the synchronization engine and the local-bridge protocol
 from the **published** `datalayer-core` — both ends of a sync or a bridge run
 one implementation — and `common/pyproject.toml` pins the version that
@@ -104,7 +111,7 @@ kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-re
 kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex
 ```
 
-The public REST ingress is `/api/contents`. The Flight gateway gets its own
+The public REST ingress is `/api/contents`. The Flight Gateway gets its own
 Service and a Traefik `IngressRouteTCP` with TLS passthrough on `flightHost`
 (a host of its own — a passthrough router on the API's host would swallow the
 API's TLS); the relay is reached at `DATALAYER_CONTENTS_BRIDGE_URL`. Two
@@ -365,18 +372,16 @@ so Flight is an optimization, not a requirement.
 
 ### A Dataserver
 
-A Dataserver runs where the data is and only ever dials out to Contents; it is
-registered as a `data-server` source, holds its own connector credentials, and
-answers routed queries. Today Datalayer runs it, on the runtimes plane.
-Registering, deploying, its identity and its states are on its own page:
+A Dataserver is a governed gateway that runs close to data and answers queries
+Contents routes to it. It is registered as a `data-server` source and holds
+its own connector credentials. Everything about deploying and running one —
+registration, identity, states, connectors, publishing — is on its own page:
 **[Dataservers](/services/dataservers/)**.
 
-The Contents charts — `datalayer-contents`, `datalayer-data-server` and the
-storage under them — are read by Plane from
-`$PLANE_HOME/etc/helm-private/charts`. They moved out of the public
-`datalayer/helm-charts` submodule and are versioned in the Services
-repository; the public charts are still at `$PLANE_HOME/etc/helm/charts`. See
-[Helm Registry](/cluster/registries/helm-registry/) for which is which.
+What stays here is Contents' half: the routes a Dataserver calls, the lease
+that decides whether it is `ready`, the CA that signs its certificate, and the
+metrics and alert on it. Those are [settings](#configuration) of *this*
+service, and they are listed with the rest of them.
 
 ## Test after a deploy
 
@@ -416,11 +421,10 @@ datalayer contents mounts
 datalayer contents mcp tools EARTHDATA_SOURCE
 datalayer contents mcp call EARTHDATA_SOURCE search_earth_datasets --arg search_keywords=sea-ice --wait
 datalayer contents mcp approvals list --status pending
-# Datasources and Dataservers
+# Datasources (a routed one needs its Dataserver ready: /services/dataservers/#verify)
 datalayer contents datasources test WAREHOUSE
 datalayer contents datasources schema WAREHOUSE
 datalayer contents datasources query WAREHOUSE "select 1 as one" --wait
-datalayer contents dataservers status GATEWAY
 # What gave up, and the catalog against the store
 datalayer contents operations dead-letter
 kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reconcile --verify
@@ -595,8 +599,8 @@ page (default `200`).
 | `DATALAYER_CONTENTS_MCP_CONTENT_CAP_BYTES` | The most a tool may answer *inline* — the JSON kept on the call — before the call is refused as `MCP_RESULT_TOO_LARGE`; default `262144`. Bytes belong in an artifact, which the worker lands through a transfer under the source's own `max_result_bytes`; this keeps a manifest from becoming the download |
 | `DATALAYER_CONTENTS_MCP_SESSION_SECONDS` | How long a minted MCP session lives when the request does not say; default `3600`. `DATALAYER_CONTENTS_MCP_SESSION_MAX_SECONDS` (default `86400`) is the most a request may ask for; a longer `expires_in` is cut to it, not refused |
 | `DATALAYER_CONTENTS_MCP_APPROVAL_SECONDS` | How long a call under an `explicit` source waits for the owner's decision before the approval expires and the call is denied with `MCP_APPROVAL_EXPIRED`; default `86400`. An approval binds to the arguments it was given, so a long wait is safe; it is the stale request nobody is waiting on that this ends |
-| `DATALAYER_CONTENTS_CAPABILITY_SECRET` | Signs the capability tickets a sandbox redeems for a query result — at the Flight gateway, or over HTTPS (HMAC-SHA256, at least 32 bytes; the service refuses to start with less). Unset, no ticket is minted (`CAPABILITY_UNAVAILABLE`) and results are read with the caller's own token. `DATALAYER_CONTENTS_CAPABILITY_TICKET_SECONDS` (default `900`) is a ticket's life when the request does not say; `DATALAYER_CONTENTS_CAPABILITY_TICKET_MAX_SECONDS` (default `3600`) the most a request may ask for |
-| `DATALAYER_CONTENTS_FLIGHT_URL` | Where a sandbox dials the Arrow Flight gateway, as it reaches it — `grpc+tls://flight.example.com:9401`. Empty, `capabilities` reports `flight: false` and every result is read over HTTPS from `DATALAYER_CONTENTS_URL` |
+| `DATALAYER_CONTENTS_CAPABILITY_SECRET` | Signs the capability tickets a sandbox redeems for a query result — at the Flight Gateway, or over HTTPS (HMAC-SHA256, at least 32 bytes; the service refuses to start with less). Unset, no ticket is minted (`CAPABILITY_UNAVAILABLE`) and results are read with the caller's own token. `DATALAYER_CONTENTS_CAPABILITY_TICKET_SECONDS` (default `900`) is a ticket's life when the request does not say; `DATALAYER_CONTENTS_CAPABILITY_TICKET_MAX_SECONDS` (default `3600`) the most a request may ask for |
+| `DATALAYER_CONTENTS_FLIGHT_URL` | Where a sandbox dials the Arrow Flight Gateway, as it reaches it — `grpc+tls://flight.example.com:9401`. Empty, `capabilities` reports `flight: false` and every result is read over HTTPS from `DATALAYER_CONTENTS_URL` |
 | `DATALAYER_CONTENTS_DATASERVER_LEASE_SECONDS` | How long a Dataserver's heartbeat holds its lease; default `90`. One missed lease and the worker marks it `degraded`, three and `unavailable` — never deleted; the next heartbeat with the same identity makes it `ready` again. A Datasource routed through a server that is neither answers `503 DATASERVER_UNAVAILABLE` naming the state |
 | `DATALAYER_CONTENTS_DATASERVER_CA_CERT` / `DATALAYER_CONTENTS_DATASERVER_CA_KEY` | The internal CA that signs Dataserver client certificates: PEM, or a path to PEM, from one Kubernetes secret, set together. Absent, the API generates one at startup that no replica shares and no restart keeps — `GET /dataservers/ca` reports it `ephemeral` — which is right for `plane local` and wrong anywhere else. `DATALAYER_CONTENTS_DATASERVER_IDENTITY_DAYS` (default `30`) is how long an issued certificate lasts; rotation overlaps the previous serial |
 | `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves `/health` and `/ready`; default `9403`, set by the chart from `contents.workerProbePort` so the port and the probes cannot drift apart |
@@ -617,8 +621,8 @@ page (default `200`).
 | `DATALAYER_CONTENTS_WORKER_POLL_SECONDS` | How often an idle worker looks for operations; default `1` |
 | `DATALAYER_CONTENTS_WORKER_BATCH_SIZE` | How many operations one turn of the worker's loop claims; default `25` |
 | `DATALAYER_CONTENTS_WORKER_LEASE_SECONDS` | How long a claimed operation stays the worker's before another may take it over; default `30`. It must outlast the longest handler turn, or a slow attachment is run twice |
-| `DATALAYER_CONTENTS_FLIGHT_HOST` | The address the Flight gateway binds; default `0.0.0.0` |
-| `DATALAYER_CONTENTS_FLIGHT_PROBE_PORT` | Where the Flight gateway serves its own `/health` and `/ready`; default `9404` |
+| `DATALAYER_CONTENTS_FLIGHT_HOST` | The address the Flight Gateway binds; default `0.0.0.0` |
+| `DATALAYER_CONTENTS_FLIGHT_PROBE_PORT` | Where the Flight Gateway serves its own `/health` and `/ready`; default `9404` |
 | `DATALAYER_CONTENTS_FLIGHT_STALL_SECONDS` | How long the gateway's loop may go without coming round before `/health` reports `stalled`; default `60` |
 | `DATALAYER_CONTENTS_FLIGHT_TLS_CERT` / `DATALAYER_CONTENTS_FLIGHT_TLS_KEY` | The gateway's TLS certificate and key, PEM text or a path; both or neither. With them the Traefik route is TLS passthrough on `flightHost`; without them the gateway serves plain gRPC and must not be exposed |
 | `DATALAYER_CONTENTS_FLIGHT_VALIDATE_TIMEOUT_SECONDS` | How long the gateway waits for Contents to validate a ticket before answering unavailable; default `10` |
@@ -742,7 +746,7 @@ readiness and protocol implementations are available in the selected image.
 
 ## Observability
 
-Every Contents process — the API, the worker, the Flight gateway, the bridge
+Every Contents process — the API, the worker, the Flight Gateway, the bridge
 relay — exports logs, traces and metrics through the standard `OTEL_*`
 settings to the observer's collector; `OTEL_SDK_DISABLED=true` silences all
 four. Logs and spans never contain JWTs, Vault values, provider credentials,
