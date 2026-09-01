@@ -271,15 +271,166 @@ placed the Dataserver:
   request — and the identity volume is a memory-backed `emptyDir`, so the key
   never touches a disk and goes with the pod.
 
+### Publishing, in two calls
+
+1. `POST /published-tables` reserves one and answers with the directory the
+   parts will go in.
+2. `PUT /published-tables/{relation}/parts/{part}` writes each part, streamed.
+   A part is written under a dot name and renamed into place, so a part still
+   arriving is never one the Dataserver can read — it lists `part-*.parquet`,
+   and a half-written file with that name is rows nobody published.
+3. `POST /published-tables/{relation}/complete` checks they landed and answers
+   with the Datasource that queries the table.
+
+A client makes all three as one call: `contents.publish(frame, name="sales")`.
+
+**The record is not written until the files are there.** A Datasource whose
+parts never arrived answers `CONNECTOR_UNAVAILABLE` to everyone who finds it,
+and reads as a platform fault rather than as an upload that stopped half way —
+so completing with nothing written is `409 NO_PARTS_WRITTEN`, and only
+`part-*.parquet` counts: a `_SUCCESS` marker is not data.
+
+For the same reason a published table **cannot be created by hand**. `POST
+/sources` refuses a `datasource` with `connector_type: table`
+(`422 PUBLISHED_TABLE_MANAGED`): the record and the files have to come into
+being together, or you get one without the other — a Datasource nobody can
+query, or bytes on the shared filesystem nothing will ever remove.
+
+Every directory is derived from the caller's own uid, so completing somebody
+else's publication reaches your own empty area rather than their parts.
+
+### The publishing root
+
+`DATALAYER_CONTENTS_PUBLISHED_TABLES_SUBPATH` (default `published`), under
+`DATALAYER_SHARED_FS_MOUNT_PATH` — so the root is
+`/mnt/shared-fs/published` unless a deployment moves either. It is **derived**
+rather than configured on its own: a root that could drift from the shared
+filesystem is a root a Dataserver would read and Contents would not write.
+
+A deployment with no shared filesystem has no publishing root, and
+`POST /published-tables` answers `503 PUBLISHING_NOT_CONFIGURED` rather than
+failing later — the caller asked for something reasonable and this deployment
+has nowhere to put it. The same answer covers a deployment with no Dataserver
+to serve published tables:
+`DATALAYER_CONTENTS_PUBLISHED_TABLES_DATASERVER_UID` names it, and there is
+one per deployment — a table is published to the platform, not to a gateway a
+user picked, and asking them to choose would be asking about a thing they
+should not have to know exists.
+
+### Live tables
+
+A table published `live` has **two** possible answerers: the sandbox that
+holds the object, and the managed Dataserver holding its last snapshot.
+
+The `live` connector queries a Python object in the memory of the process it
+runs in — so it only makes sense in a Dataserver running *inside* a sandbox.
+Two properties define it:
+
+- **The object is re-read on every query, never captured.** The registry holds
+  a way to *get* the object, not the object; otherwise "live" would mean "live
+  as of registration", which is a snapshot with a misleading name. Registering
+  a value rather than a callable is refused.
+- **A schema may change between two queries.** A column dropped in the kernel
+  is a column gone from the next answer. Nothing prevents that, because
+  preventing it would mean holding a copy — the thing this is not.
+
+Contents chooses the answerer per query: **live when the sandbox is `ready`,
+the snapshot otherwise**, and the answer says which. `degraded` falls back
+deliberately — it means a lease was missed, so the sandbox may answer and may
+not, and a live table's whole promise is currency: waiting on a maybe is worse
+than reading the snapshot and saying so.
+
+That distinction is carried into the result rather than left implicit. A value
+from a live object and a value from a snapshot are not the same claim, and a
+query that cannot tell them apart is how somebody quotes a stale number.
+
+A `live` connector is publishable over the wire for the same reason a `table`
+is: it reaches nothing the process did not already have. An instruction from
+outside can ask for a live table **by name** and gets `CONNECTOR_UNAVAILABLE`
+unless the sandbox registered one — so the wire can select among live tables
+and never create one.
+
+### A published table is a Datasource
+
+The design decision worth knowing, because it decides how much of this is new:
+**publishing does not create a new kind of thing.** What a user gets back is a
+Datasource, routed through the managed Dataserver, with `connector_type:
+table` and the relation as its database.
+
+Everything about querying it therefore already exists — `POST
+/sources/{uid}/queries`, the operation allowlist, the limits, the result
+transfer, tickets, Arrow Flight. Nothing about *reading* a published table is
+new code, which is why publishing is a small amount of it.
+
+Three properties fall out of that configuration rather than being enforced
+separately:
+
+- **No credential.** The Dataserver already has the publishing root, so a
+  published table adds no secret for anyone to hold, rotate or leak.
+- **Read-only.** `allowed_operations` is `select` alone: it is somebody's
+  dataframe, and there is no statement that should be able to change what it
+  holds.
+- **The Dataserver is told a relation, never a path.** It derives the
+  directory from the root it was configured with, so a connector arriving over
+  the wire cannot be pointed at another table's files.
+
+### How a published table reaches its Dataserver
+
+On the heartbeat, and **derived from the catalog** rather than stored.
+
+The set of published tables *is* the set of Datasources routed to this
+Dataserver with a `table` connector. Contents recomputes it on every beat and
+sends the whole set; the Dataserver replaces its published set with what
+arrives. So a table published a moment ago is servable within a lease third,
+and a table that is deleted stops being served because it stopped existing —
+not because something remembered to withdraw it. There is no second list to
+keep in step.
+
+Two details that matter more than they look:
+
+- **Connector names are owner-scoped** (`<owner uid>.<relation>`). A
+  Dataserver looks a connector up by name, so two people publishing `sales`
+  must not arrive as one name twice — the second would be dropped as a
+  collision and somebody would silently lose their table.
+- **A record that cannot be served is left out**, not sent broken. A
+  publication with no owner, or a relation that no longer passes the name
+  rule, would otherwise make the Dataserver log a refusal every lease third
+  for something nobody can fix from there.
+
+Nothing is pushed. A Dataserver only dials out, so the beat it already keeps
+is the only channel there is — which is why the connector set travels on it
+rather than on an endpoint of its own.
+
+### The sandbox as a Dataserver
+
+A live table is served by a Dataserver that is a **thread in the kernel**, not
+a deployment — because the thing it serves is a Python object in that kernel's
+memory, and no separate process can reach one.
+
+That inverts a property worth being explicit about. A deployed Dataserver
+outlives the queries it answers; this one lives exactly as long as the sandbox,
+and its going away is **normal rather than a fault**. Contents already models
+that: the lease lapses, the registration reads `unavailable`, and queries fall
+back to the last snapshot. So the shutdown path is deliberately quiet — a
+sandbox stopping is not an incident, and should not page anybody.
+
+Three rules keep it from becoming a nuisance:
+
+- **Nothing runs until a table is served.** A sandbox that never publishes
+  live holds no registration, no lease and no thread. A process that registers
+  on the chance it might be useful is one Contents has to sweep later.
+- **One per process.** A second would register a second identity for the same
+  sandbox, and Contents would see one sandbox claiming to be two Dataservers.
+- **The last table out stops it.** A sandbox with nothing live left should not
+  keep a registration alive, or the lease says a Dataserver is ready and every
+  query routed to it finds nothing.
+
+A runner that raises does not take the kernel with it. The kernel is the
+user's, and a Dataserver thread raising into it would look like their own code
+failing; the registration lapses on its own and queries fall back.
+
 ### What is not
 
-- **`publish()` itself**, and the Contents endpoint behind it: writing the
-  object out, placing it, and creating the source. The **layout** is settled
-  and pinned from both ends (`<root>/<owner uid>/<relation>/part-00000.parquet`,
-  owner-scoped so two people may both publish `sales`).
-- **The live path** entirely: no connector reads an object in a running
-  kernel, and nothing yet decides which of a live answerer and a snapshot a
-  query is served by.
 - **The authorization self-registration assumes.** There is no owner token in
   a pod, so the service key stands in for it, and Contents must issue only for
   a registration marked managed — otherwise a service key is a way to obtain
