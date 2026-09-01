@@ -95,7 +95,7 @@ def _collect_status(master_ip: str, user: str, key_path: str, namespace: str, re
                 master_ip,
                 user,
                 key_path,
-                f"kubectl -n {namespace} exec {name} -c driver -- wget -qO- http://127.0.0.1:{health_port}/mounts 2>/dev/null || true",
+                f"kubectl -n {namespace} exec {name} -c driver -- curl -fsS http://127.0.0.1:{health_port}/mounts 2>/dev/null || true",
                 check=False,
             )
             try:
@@ -106,7 +106,7 @@ def _collect_status(master_ip: str, user: str, key_path: str, namespace: str, re
                 master_ip,
                 user,
                 key_path,
-                f"kubectl -n {namespace} exec {name} -c driver -- wget -qO- http://127.0.0.1:{health_port}/gateway 2>/dev/null || true",
+                f"kubectl -n {namespace} exec {name} -c driver -- curl -fsS http://127.0.0.1:{health_port}/gateway 2>/dev/null || true",
                 check=False,
             )
             try:
@@ -262,6 +262,10 @@ NODE_MOUNT_GATEWAY_NAMESPACE = "datalayer-runtimes"
 OPERATOR_NAMESPACE = "datalayer-api"
 RUNTIME_SERVICE_ACCOUNT = "datalayer-runtimes-sa"
 
+#: The `app` label every runtime Pod carries, used to find the containers a
+#: tenant runs code in.
+RUNTIME_POD_LABEL_VALUE = "runtime-pools"
+
 
 def _check(name: str, ok: bool | None, detail: str, fix: str = "") -> dict:
     return {"name": name, "ok": ok, "detail": detail, "fix": fix}
@@ -342,17 +346,31 @@ def collect_gateway_checks(
     gateway = _kubectl(
         master_ip, user, key_path,
         f"kubectl -n {namespace} exec daemonset/{release} -c driver -- "
-        f"wget -qO- http://127.0.0.1:{health_port}/gateway",
+        f"curl -fsS http://127.0.0.1:{health_port}/gateway",
     )
+    # An empty answer is ambiguous and was, for one release, read as "off":
+    # the image has no `wget`, so the command printed nothing and a gateway
+    # that was running perfectly reported as not enabled. `curl -fsS` fails
+    # loudly, and a body that is neither valid nor empty is now its own state
+    # rather than being folded into "off".
     gateway_on = bool(gateway) and '"pods"' in gateway
+    gateway_unreadable = bool(gateway) and not gateway_on and "not enabled" not in gateway
     # Informational on its own: off is a deployment choice, not a fault. What
     # is a fault is the two halves disagreeing, which the next check catches —
     # reporting "off" as broken would teach an operator to ignore this command.
     checks.append(_check(
         "Node Mount Gateway enabled on the node",
-        True if gateway_on else None,
-        "serving /gateway" if gateway_on else "not enabled (the driver answers 404)",
-        "helm upgrade with nodeMountGateway.enabled=true and gateway.sharedFilesystemClaim set",
+        True if gateway_on else (False if gateway_unreadable else None),
+        "serving /gateway"
+        if gateway_on
+        else (
+            f"the endpoint answered something unreadable: {gateway[:80]}"
+            if gateway_unreadable
+            else "not enabled (the driver answers 404)"
+        ),
+        "helm upgrade with nodeMountGateway.enabled=true and "
+        "nodeMountGateway.sharedFilesystemClaim set, or set "
+        "DATALAYER_NODE_MOUNT_GATEWAY_ENABLED=true and re-run `plane up datalayer-node-mounts`",
     ))
 
     # 5. The Operator's half. On without an agent means pods carry the volume
@@ -411,12 +429,38 @@ def collect_gateway_checks(
         f"kubectl auth can-i patch pods -n {gateway_namespace} "
         f"--as=system:serviceaccount:{gateway_namespace}:{RUNTIME_SERVICE_ACCOUNT}",
     )
+    # Whether the SA can patch is half the question. The half that decides
+    # whether a *tenant* can is where its token goes: a runtime Pod holds it in
+    # the companion, which is our code, and not in the containers that run the
+    # user's. Reporting only the first turns a real but narrow finding into a
+    # red line an operator learns to scroll past.
+    tenant_containers = _kubectl(
+        master_ip, user, key_path,
+        f"kubectl get pods -n {gateway_namespace} "
+        f"-l app={RUNTIME_POD_LABEL_VALUE} -o json 2>/dev/null "
+        "| python3 -c \"import json,sys;"
+        "pods=json.load(sys.stdin).get('items') or [];"
+        "print(','.join(sorted({c['name'] for p in pods for c in p['spec']['containers'] "
+        "if c['name'] not in ('companion',) and any('serviceaccount' in m['mountPath'] "
+        "for m in (c.get('volumeMounts') or []))})) or 'none')\"",
+    )
+    reachable = tenant_containers not in ("none", "", None)
     checks.append(_check(
         "A runtime may NOT grant itself a mount",
-        runtime_patch == "no",
-        f"runtime service account can patch pods: {runtime_patch or 'unknown'}",
+        # Only a token inside a container the tenant runs code in is a way for
+        # the tenant to use the permission.
+        None if runtime_patch != "no" and not reachable else runtime_patch == "no",
+        (
+            f"runtime service account can patch pods: {runtime_patch or 'unknown'}"
+            + (
+                f"; its token is in tenant container(s): {tenant_containers}"
+                if reachable
+                else "; its token is not in any container that runs user code"
+            )
+        ),
         "A sandbox that can patch its own pod can mount any folder on the claim. "
-        "Take patch on pods away from the runtime service account",
+        "Narrow the runtime service account to what the companion actually needs, "
+        "and keep its token out of the containers a tenant runs code in",
     ))
 
     agent_secrets = _kubectl(
@@ -503,6 +547,35 @@ def node_mounts_verify(
     failures = [check for check in checks if check["ok"] is False]
     for check in failures:
         print(f"[red]{check['name']}:[/red] {check['fix']}.")
-    if not failures:
-        print("[green]The gateway can mount. Launch a runtime with the home folders to prove it does.[/green]")
+    if failures:
+        return
+
+    # "No failures" is not "the gateway works". With the gateway off every
+    # gateway check is a warning rather than a failure — correctly, since
+    # nothing is broken — and reporting that as success tells an operator the
+    # thing they just tried to turn on is running when it is not.
+    enabled = next(
+        (c for c in checks if c["name"] == "Node Mount Gateway enabled on the node"),
+        None,
+    )
+    if enabled is not None and enabled["ok"] is not True:
+        print(
+            "[yellow]The node driver is healthy and the Node Mount Gateway is NOT enabled.[/yellow]\n"
+            "Nothing is broken, and nothing will be mounted through the gateway either: "
+            "the agent is running as the CSI driver alone.\n"
+            f"To enable it: [bold]{enabled['fix']}[/bold]."
+        )
+        return
+    # The node half being ready is not the whole gateway either: with the
+    # Operator's half off, no grant is ever written, so "launch a runtime to
+    # prove it" would send an operator to watch a launch that cannot succeed.
+    agreement = next((c for c in checks if c["name"] == "Operator and agent agree"), None)
+    if agreement is not None and agreement["ok"] is not True:
+        print(
+            "[yellow]The node agent is ready and the Operator is not granting.[/yellow]\n"
+            f"{agreement['detail'].capitalize()}, so no launch will use the gateway yet.\n"
+            f"To finish: [bold]{agreement['fix']}[/bold]."
+        )
+        return
+    print("[green]The gateway can mount. Launch a runtime with the home folders to prove it does.[/green]")
     raise typer.Exit(1 if failures else 0)

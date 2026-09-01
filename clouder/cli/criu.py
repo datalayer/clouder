@@ -92,21 +92,47 @@ def _api_call(
         raise typer.BadParameter(f"API {method} {url} failed: {e}") from e
 
 
+#: Kube contexts that name no cluster in particular. `kubeadm init` writes
+#: `kubernetes-admin@kubernetes` on every cluster it creates, so it is the
+#: context on all of them and identifies none — using it as a cluster name
+#: sends the VM lookup after `kubernetes-admin@kubernetes-master`, which
+#: exists nowhere.
+_GENERIC_KUBE_CONTEXTS = frozenset({"kubernetes-admin@kubernetes", "kubernetes", "default"})
+
+
 def _infer_cluster_name(cluster: Optional[str]) -> str:
-    """Resolve the cluster name from argument or current kube context."""
+    """Resolve the Clouder cluster name: argument, environment, or kube context.
+
+    The environment comes before the context because a `datalayerrc` names the
+    cluster exactly (`DATALAYER_CLOUDER_CLUSTER_NAME=r1`) while a kube context
+    only sometimes does — on kubeadm it never does.
+    """
     if cluster:
         return cluster
+
+    for variable in ("DATALAYER_CLOUDER_CLUSTER_NAME", "DATALAYER_CLUSTER_NAME"):
+        value = os.environ.get(variable, "").strip()
+        if value:
+            return value
 
     result = subprocess.run(
         ["kubectl", "config", "current-context"],
         capture_output=True,
         text=True,
     )
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
+    context = result.stdout.strip() if result.returncode == 0 else ""
+    if context and context not in _GENERIC_KUBE_CONTEXTS:
+        return context
 
     raise typer.BadParameter(
-        "Cluster name is required (pass --cluster) when current kube context cannot be resolved."
+        "Cluster name is required: pass --cluster, or set "
+        "DATALAYER_CLOUDER_CLUSTER_NAME (a datalayerrc does)."
+        + (
+            f" The current kube context is '{context}', which kubeadm writes on"
+            " every cluster it creates and so names none of them."
+            if context
+            else " The current kube context could not be resolved."
+        )
     )
 
 

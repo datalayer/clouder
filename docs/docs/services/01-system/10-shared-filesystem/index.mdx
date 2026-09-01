@@ -20,9 +20,9 @@ layout below or a path recorded by one is unresolvable in another:
 
 | Component | How it mounts it |
 | --- | --- |
-| Runtime Pods (Operator) | Whole claim in the companion container at `DATALAYER_SHARED_FS_MOUNT_PATH`; one `subPath` per home folder in the runtime container, at `/home/jovyan/<handle>`. |
+| Runtime Pods (Operator) | Whole claim in the companion container at `DATALAYER_SHARED_FS_MOUNT_PATH`. The runtime container gets its folders one of two ways: from the gateway when it is on, or — when it is off — one `subPath` per home folder, at `/home/jovyan/<handle>`. |
 | `datalayer-contents` | Whole claim, at the same path. It serves the Home Folder browser from the same bytes the sandbox sees. |
-| [Node Mount Gateway](/services/system/node-mount-gateway/) | Whole claim, **once per node** in the `datalayer-node-mounts` DaemonSet, at `gateway.sharedFilesystemMountPath`. It binds sub-paths of it into Pods that are already running. |
+| [Node Mount Gateway](/services/system/node-mount-gateway/) | Whole claim, **once per node** in the `datalayer-node-mounts` DaemonSet, at `nodeMountGateway.sharedFilesystemMountPath`. It binds sub-paths of it into Pods that are already running — home folders from `home/`, and Environment datasets from wherever an administrator put them. |
 | `plane` provisioning | Creates the top-level directories and their ownership. |
 
 ### The layout
@@ -41,6 +41,25 @@ are produced in one place — `datalayer_common.home_folders` — because the
 Operator, Contents and the gateway all have to call one folder by one name. A
 team is named after its organization and itself joined by a double underscore
 (`datalayer__research`).
+
+### Two ways in, and why the claim only sees one of them
+
+A `subPath` volume mount and a gateway bind are the same bytes reached
+differently, and the difference is *when*. A `subPath` is part of the Pod's
+spec, so it is fixed when the Pod is created — which is why a pooled Pod,
+built before anyone knew whose folder it would carry, cannot have one. The
+gateway binds after the Pod is running, which is what makes a warm start
+possible.
+
+Nothing about the claim changes between the two. The layout is the same, the
+ownership is the same, and a path written by one is read by the other — which
+is the property that lets a deployment turn the gateway on, and off again,
+without migrating anything. `plane` provisioning creates the same directories
+either way, and Contents serves the browser from the same bytes either way.
+
+The `subPath` rendering is kept as the gateway-off path, and it is still what
+a deployment gets by default. Deleting it belongs with making the gateway
+mandatory, which has not happened.
 
 ### The mount set is the boundary
 

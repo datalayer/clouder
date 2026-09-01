@@ -1,0 +1,254 @@
+---
+title: Dataservers
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🛜 Datalayer Dataservers
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Managed</Label>
+  <Label color="green">Outbound only</Label>
+  <Label color="yellow">mTLS identity</Label>
+</Stack>
+
+A **Dataserver** runs where the data is and answers queries routed to it by
+Contents. Today that is **this cluster**: Datalayer deploys and manages it,
+beside everything else on the runtimes plane.
+
+Its defining property is not where it runs but which way it connects: **a
+Dataserver only ever dials out.** It opens no port, has no Service and no
+ingress, and nothing connects *to* it. It registers with Contents,
+heartbeats, and long-polls for work.
+
+That is worth keeping even here, where both ends are ours, for two reasons.
+It is what lets a Dataserver sit next to data that must not be exposed — a
+private subnet, a network Datalayer does not route to — without any inbound
+rule at all. And it is what makes a Dataserver something a **user** can be
+given: a process that can only fetch work and post results is one that can
+run close to somebody's data without becoming a way into it.
+
+The user-facing side is under
+[Dataservers](https://datalayer.ai/docs/contents/dataservers); this page is
+for whoever deploys one.
+
+## How a query reaches the data
+
+~~~mermaid
+flowchart LR
+  user["Notebook or agent<br/>queries a Datasource"]
+  contents["Contents<br/>routes and holds the result"]
+  ds["Dataserver<br/>close to the data"]
+  data[("The data<br/>DuckDB · Athena · BigQuery · SQL")]
+  user -- "SQL over the Datasource" --> contents
+  ds -- "outbound: register,<br/>heartbeat, long-poll" --> contents
+  ds -- "runs the query" --> data
+  ds -- "outbound: uploads the result" --> contents
+  contents -- "the result" --> user
+~~~
+
+Contents never holds the connector credentials: the connectors file lives with
+the Dataserver, beside the data. What crosses is a query and a result, both
+through a connection the Dataserver opened.
+
+## Registering and deploying one
+
+<Tabs>
+<TabItem value="chart" label="Helm chart">
+
+~~~bash
+# 1. Register it with Contents, from anywhere with the owner's token.
+datalayer contents dataservers register --identity <name> ...
+
+# 2. On the Dataserver host, obtain its identity. The private key is made
+#    here and never leaves: `bootstrap` sends a CSR and gets a certificate.
+datalayer-data-server bootstrap
+
+# 3. Check before deploying: `check` validates the configuration and tests
+#    every connector, and prints no secret while doing it.
+datalayer-data-server check
+
+# 4. The two Secrets. Neither can be made by a deploy — the identity's
+#    private key was generated on the host and does not travel.
+kubectl create namespace datalayer-dataservers
+kubectl create secret generic datalayer-dataservers-api-key \
+  -n datalayer-dataservers --from-literal=api-key=<the dataserver service key>
+kubectl create secret generic datalayer-dataservers-identity \
+  -n datalayer-dataservers \
+  --from-file=tls.crt=identity/tls.crt \
+  --from-file=tls.key=identity/tls.key \
+  --from-file=ca.crt=identity/ca.crt
+
+# 5. Deploy.
+export DATALAYER_DATASERVERS_ENABLED=true
+export DATALAYER_DATASERVER_IDENTITY=<name>    # what step 1 registered
+plane up datalayer-dataservers
+
+# 6. From the Datalayer side, confirm it arrived.
+datalayer contents dataservers status <name>
+~~~
+
+The chart is a Deployment and a ConfigMap of connectors, with Secret
+references — **no Service, no ingress**, because there is nothing to expose.
+
+`plane up datalayer-dataservers` is off unless `DATALAYER_DATASERVERS_ENABLED`
+says otherwise, and refuses rather than guessing when the identity or either
+Secret is missing — a Dataserver deployed without them registers as nobody.
+This is the operator's path, for a Dataserver an administrator places
+deliberately. A Dataserver a **user** creates from a sandbox is a different
+route to the same component, and is not built yet — see
+[From a sandbox](#from-a-sandbox-not-built-yet).
+`plane down datalayer-dataservers` removes the release and **leaves the
+Secrets**: the identity cannot be regenerated from the cluster, so taking it
+away would turn a redeploy into a re-bootstrap.
+`datalayer contents dataservers revoke <name>` is what ends an identity.
+
+| Variable | Default | What it sets |
+| --- | --- | --- |
+| `DATALAYER_DATASERVERS_ENABLED` | `false` | Whether to deploy at all |
+| `DATALAYER_DATASERVER_IDENTITY` | *(required)* | The registration name it answers as |
+| `DATALAYER_DATASERVERS_NAMESPACE` | `datalayer-dataservers` | Where it runs |
+| `DATALAYER_DATASERVER_API_KEY_SECRET` | `datalayer-dataservers-api-key` | The Secret holding the `dataserver` service key |
+| `DATALAYER_DATASERVER_IDENTITY_SECRET` | `datalayer-dataservers-identity` | The Secret holding the mTLS identity |
+
+`contentsUrl` comes from `DATALAYER_CONTENTS_URL` (or `DATALAYER_RUNTIMES_URL`).
+
+</TabItem>
+<TabItem value="process" label="As a process">
+
+For a host that is not Kubernetes:
+
+~~~bash
+export DATALAYER_CONTENTS_URL=https://<contents host>
+export DATALAYER_CONTENTS_DATASERVER_API_KEY=<the dataserver service key>
+datalayer-data-server check     # configuration and every connector
+datalayer-data-server run       # registers, heartbeats, serves
+~~~
+
+`run` needs the certificate and key from `bootstrap` and the connectors file.
+
+</TabItem>
+</Tabs>
+
+## What it does once it is running
+
+`run` registers (`POST /dataservers/register`, retrying an unreachable
+Contents with backoff — a refusal of the *identity* ends the process instead,
+since that will not fix itself), heartbeats every third of the lease, and
+long-polls `GET /dataservers/{uid}/jobs?wait=N` while it has capacity. Each
+job runs on its own thread, and a `query_uid` in the answer's `cancel` list
+stops it — the connector is told, so DuckDB is interrupted, an Athena
+execution stopped, a BigQuery job cancelled.
+
+A result is spooled to disk, shaped by the policy **as it is written**,
+hashed, and uploaded with `Content-SHA256` and `X-Rows`. A job that cannot run
+posts to `.../failed` with a code rather than a message: `OPERATION_DENIED`,
+`OBJECT_DENIED`, `POLICY_VERSION_MISMATCH`, `CONNECTOR_MISSING`,
+`QUERY_FAILED`, `LIMIT_SECONDS`, `CANCELLED`, `BUSY`, `INTERNAL`.
+
+## The states, and who moves it between them
+
+Contents holds the state and the Dataserver obeys it — there is no other way
+round, because Datalayer cannot reach in to change anything.
+
+| State | What the Dataserver does | Who sets it |
+| --- | --- | --- |
+| `ready` | Polls for jobs and runs them | Registration, and every heartbeat |
+| `draining` | Stops taking work; running jobs finish | The owner (`drain`), or SIGTERM on the host |
+| `unavailable` | The lease lapsed. Registers again with the same identity | Contents, when heartbeats stop |
+| `revoked` | Stops. The identity is finished | The owner (`revoke`) |
+
+A 404 on the registration means the same as `unavailable`: register again.
+SIGTERM drains rather than killing — no new work, then
+`DATALAYER_DATASERVER_DRAIN_SECONDS` for what is running, then cancellation.
+
+## Identity
+
+A Dataserver authenticates with **mTLS**, and the certificate is issued per
+registration:
+
+- `bootstrap` makes the key and a CSR on the host and calls
+  `POST /dataservers/{uid}/identity` with the owner's token. **The private key
+  never leaves the host**, which is the property worth protecting: an identity
+  that could be copied off a host is an identity that can be used from
+  anywhere.
+- `GET /dataservers/ca` publishes the CA the certificates chain to.
+- The gateway routes — register, heartbeat, jobs, result — take the
+  `dataserver` service key plus the identity the ingress forwards in
+  `X-Client-Cert-Subject` and `X-Client-Cert-Serial`. The owner's routes —
+  status, drain, resume, revoke, identity — take the owner's IAM JWT. Tickets
+  are validated with the `flight` key.
+
+`revoke` is what to reach for if a host is lost: it ends the identity at
+Contents, and no certificate on any disk is worth anything afterwards.
+
+## Where it lives
+
+| Piece | Where |
+| --- | --- |
+| Service | `services/dataservers` — `datalayer_dataservers`, with its own [README](https://github.com/datalayer/services) |
+| CLI | `datalayer-data-server` — `run`, `check`, `bootstrap` |
+| Image | `plane/etc/dockerfiles/datalayer-dataservers` |
+| Chart | `plane/etc/helm-private/charts/datalayer-data-server`, released as `datalayer-dataservers` |
+| Plane | `plane up datalayer-dataservers`, `plane down datalayer-dataservers` — off unless `DATALAYER_DATASERVERS_ENABLED=true`, since most clusters have no Dataserver in them |
+| Contents routes | `/api/contents/v1/dataservers/*` — see [Contents](/services/contents/) |
+
+## From a sandbox (not built yet)
+
+The route above places a Dataserver deliberately, with an administrator
+naming its connectors in a file. The one being built next is the opposite: a
+**user**, in a sandbox, turns something they already have into a Dataserver
+that other people can query — a dataframe they just assembled, or a live
+object in the kernel.
+
+The shape it will take is decided: **a snapshot by default, live as an
+opt-in.**
+
+- `publish(df)` writes the object to the shared filesystem and a managed
+  Dataserver serves it. It outlives the sandbox and the query load is off the
+  user's runtime — but it is a snapshot, and a later change in the kernel is
+  not seen until it is published again.
+- `publish(df, live=True)` also lets the sandbox answer while it is up, so
+  every query sees the current value. When the sandbox stops, the source falls
+  back to the last snapshot rather than disappearing, and says that is what it
+  is serving.
+
+Both, rather than one, because a snapshot that silently goes stale and a
+source that silently vanishes are each a way to mislead somebody reading a
+number. Falling back is the combination where neither happens.
+
+Three things stand in the way, and none is a configuration away:
+
+- **No connector reaches a sandbox.** The `sql` connector opens a DuckDB or
+  SQLite file by path; `athena` and `bigquery` reach a cloud service. None can
+  read an object in a running kernel.
+- **Connectors are static.** They come from a file rendered into a ConfigMap
+  at deploy time, so a Dataserver's set is fixed when its pod starts. A user
+  publishing a table has to add one to a *running* Dataserver.
+- **Registration is manual.** `bootstrap` is run by hand, and the identity's
+  private key is deliberately made where it will be used. A managed Dataserver
+  has to do that for itself, without the key becoming something the platform
+  holds on somebody's behalf.
+
+What is already right is the shape: a process that only dials out, holds its
+own credentials and is driven entirely by Contents' states is exactly what
+should run close to somebody's data. Registration, heartbeat, leases, job
+polling, result upload, the failure codes, drain and revoke all stand. What
+does not fit is everything assuming a **human placed it** — which is a change
+to who configures a Dataserver, not to how one is configured.
+
+The plan is Milestone 10 in `CONTENTS.md`.
+
+## Verify
+
+~~~bash
+datalayer contents dataservers status <name>     # ready, with its lease
+datalayer contents dataservers test <name>       # Flight and HTTPS reachability
+~~~
+
+Then run a query against a Datasource created with `--dataserver <name>`: the
+Dataserver detail page reports what the connector answered, and a query that
+never arrives is the difference between a registration problem and a connector
+problem.

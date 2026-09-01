@@ -295,19 +295,47 @@ def test_the_operator_granting_with_no_agent_is_a_failure(monkeypatch):
     assert "FIRST" in checks["Operator and agent agree"]["fix"]
 
 
+#: `kubectl auth can-i patch pods` as the runtime service account.
+_RUNTIME_CAN_PATCH = (
+    "can-i patch pods -n datalayer-runtimes "
+    "--as=system:serviceaccount:datalayer-runtimes:datalayer-runtimes-sa"
+)
+
+
 def test_a_runtime_that_could_grant_itself_a_mount_is_a_failure(monkeypatch):
     result, checks = _verify(
         monkeypatch,
         **{
-            "can-i patch pods -n datalayer-runtimes --as=system:serviceaccount:datalayer-runtimes:datalayer-runtimes-sa": "yes"
+            _RUNTIME_CAN_PATCH: "yes",
+            # ...and the token is in a container the tenant runs code in.
+            "-l app=runtime-pools": "jupyter",
         },
     )
 
     # A sandbox that can patch its own pod can mount any folder on the claim.
     # This is the exit gate's security claim, as a command rather than an
-    # argument.
+    # argument — and it is a failure precisely because the tenant can reach
+    # the credential that makes the permission usable.
     assert result.exit_code == 1
     assert checks["A runtime may NOT grant itself a mount"]["ok"] is False
+    assert "jupyter" in checks["A runtime may NOT grant itself a mount"]["detail"]
+
+
+def test_the_permission_without_a_reachable_token_is_a_warning_not_a_failure(monkeypatch):
+    result, checks = _verify(
+        monkeypatch,
+        **{_RUNTIME_CAN_PATCH: "yes", "-l app=runtime-pools": "none"},
+    )
+
+    # The permission is real and worth narrowing, but a tenant cannot use it
+    # without the token, and on a runtime Pod the token is in the companion —
+    # our code — not in the containers that run theirs. Reporting this as a red
+    # line beside the propagation failure teaches an operator to scroll past
+    # both, so it warns instead and says exactly why.
+    assert result.exit_code == 0
+    check = checks["A runtime may NOT grant itself a mount"]
+    assert check["ok"] is None
+    assert "not in any container that runs user code" in check["detail"]
 
 
 def test_secret_access_without_the_switch_is_a_failure(monkeypatch):

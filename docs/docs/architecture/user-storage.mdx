@@ -21,9 +21,11 @@ The current primary deployment path is NFS-based shared storage, with Ceph avail
 
 You can find storage provider configuration and deployment details in [Shared File System](/services/system/shared-filesystem/).
 
-When a user enables persistent storage in a remote runtime, the scheduler may create a dedicated pod instead of reusing an already warmed-up pod.
+When a user enables persistent storage in a remote runtime, how the folder arrives depends on whether the [Node Mount Gateway](/services/system/node-mount-gateway/) is deployed.
 
-That pod mounts the user home folder through a PVC (using `subPath`) backed by the configured shared filesystem provider.
+Without it, the scheduler creates a dedicated pod rather than reusing an already warmed-up one, and that pod mounts the user home folder through a PVC (using `subPath`) backed by the configured shared filesystem provider. A pod's volumes are fixed when it is created, so a pod that was warmed before anyone knew whose folder it would carry cannot have the mount — which is why persistent storage used to cost a cold start.
+
+With the gateway on, the warmed pod is reused and a node agent binds the folder into it after it is running, out of the same claim, at the same path. The user waits for a bind rather than for a pod.
 
 :::note
 

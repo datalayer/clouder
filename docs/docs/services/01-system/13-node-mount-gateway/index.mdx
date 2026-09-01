@@ -611,7 +611,7 @@ to use none of it.
 ~~~bash
 clouder node-mounts status        # adds a "Node Mount Gateway" table: per pod, what is bound
 kubectl -n datalayer-runtimes exec ds/datalayer-node-mounts -c driver -- \
-  wget -qO- http://127.0.0.1:9808/gateway
+  curl -fsS http://127.0.0.1:9808/gateway
 kubectl get pod -n datalayer-runtimes POD \
   -o jsonpath='{.metadata.annotations.runtime-pools\.datalayer\.io/node-mount-gateway-ready}'
 ~~~

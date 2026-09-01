@@ -22,7 +22,10 @@ classifiers = [
 #    "avionix",
 dependencies = [
     "boto3",
-    "datalayer_core",
+    # 1.1.63 is where `contents_node_mount_gateway` — the Node Mount Gateway
+    # wire format the node agent reads — first exists. An older core builds
+    # an image that cannot import `clouder.csi` at all.
+    "datalayer-core>=1.1.63",
     "jupyter-server",
     "kopf",
     "kubernetes",

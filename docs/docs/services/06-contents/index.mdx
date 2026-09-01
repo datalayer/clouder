@@ -111,8 +111,8 @@ API's TLS); the relay is reached at `DATALAYER_CONTENTS_BRIDGE_URL`. Two
 things deploy beside Contents when their workflows are wanted: the Local CSI
 node driver for local mounts on Datalayer runtimes
 ([Local CSI](/services/system/local-csi/), off by default), and the
-Dataserver for Datasources in a customer network
-(`plane/etc/helm/charts/datalayer-data-server`, outbound only, its README
+Dataserver for Datasources, managed on the runtimes plane
+(`plane/etc/helm-private/charts/datalayer-data-server`, outbound only, its README
 covers the identity bootstrap).
 
 ### Local development
@@ -363,33 +363,20 @@ so Flight is an optimization, not a requirement.
    followed by the query's `ticket` — the SDK's `Query.to_arrow()` uses the
    gateway when the ticket names it and falls back to HTTPS otherwise.
 
-### A Dataserver in a customer network
+### A Dataserver
 
-A Dataserver runs where the data is and only ever dials out to Contents; it
-is registered as a `data-server` source, holds its own connector
-credentials, and answers routed queries.
+A Dataserver runs where the data is and only ever dials out to Contents; it is
+registered as a `data-server` source, holds its own connector credentials, and
+answers routed queries. Today Datalayer runs it, on the runtimes plane.
+Registering, deploying, its identity and its states are on its own page:
+**[Dataservers](/services/dataservers/)**.
 
-1. Register it: `datalayer contents dataservers register --identity <name> ...`
-   (or the Dataservers page) — the source, with its registration identity.
-2. Issue its identity: from the Dataserver host,
-   `datalayer-data-server bootstrap` makes a key and a CSR and obtains the
-   client certificate from `POST /dataservers/{uid}/identity` with the
-   owner's token; the private key never leaves the host.
-3. Deploy it there with the `datalayer-data-server` chart
-   (`plane/etc/helm/charts/datalayer-data-server`: a Deployment and a
-   ConfigMap of connectors, no Service, no ingress) or run
-   `datalayer-data-server run` with `DATALAYER_CONTENTS_URL`,
-   `DATALAYER_CONTENTS_DATASERVER_API_KEY`, the certificate and key, and the
-   connectors file. `datalayer-data-server check` validates the
-   configuration and tests every connector before it registers.
-4. `datalayer contents dataservers status <name>` shows `ready` with its
-   lease; a Datasource created with `--dataserver <name>` is then queried
-   through it, and the Dataserver detail's Test reports Flight and HTTPS
-   reachability.
-
-The Contents and Local CSI charts are read by Plane from `$PLANE_HOME/etc/helm/charts`
-on the operator's checkout — that directory is not versioned in the Services
-repository.
+The Contents charts — `datalayer-contents`, `datalayer-data-server` and the
+storage under them — are read by Plane from
+`$PLANE_HOME/etc/helm-private/charts`. They moved out of the public
+`datalayer/helm-charts` submodule and are versioned in the Services
+repository; the public charts are still at `$PLANE_HOME/etc/helm/charts`. See
+[Helm Registry](/cluster/registries/helm-registry/) for which is which.
 
 ## Test after a deploy
 

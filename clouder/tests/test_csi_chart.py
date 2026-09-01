@@ -9,17 +9,39 @@ from pathlib import Path
 import pytest
 import yaml
 
-CHART = (
-    Path(__file__).resolve().parents[3]
-    / "services"
-    / "plane"
-    / "etc"
-    / "helm"
-    / "charts"
-    / "datalayer-node-mounts"
+#: The chart moved from the public `helm` submodule to the private
+#: `helm-private` tree with the rest of the Contents charts. Both are searched
+#: rather than one hard-coded, because a path that has now moved twice is a
+#: path that will move again — and the failure mode is the quiet one: these
+#: tests SKIP when the chart is absent, so a stale path does not go red, it
+#: just stops testing. `test_the_chart_is_actually_found` below is what turns
+#: that back into a failure.
+_PLANE = Path(__file__).resolve().parents[3] / "services" / "plane" / "etc"
+CHART = next(
+    (
+        candidate
+        for tree in ("helm-private", "helm")
+        if (candidate := _PLANE / tree / "charts" / "datalayer-node-mounts").is_dir()
+    ),
+    _PLANE / "helm-private" / "charts" / "datalayer-node-mounts",
 )
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+
+
+def test_the_chart_is_actually_found():
+    """The rest of this file skips when the chart is missing; this one fails.
+
+    Moving the chart to `helm-private` silently disabled all eighteen chart
+    tests: every one of them skips on a missing directory, so the suite went
+    from 239 passed to 221 passed and 18 skipped, and nothing went red. A
+    check that turns itself off when its subject moves is not a check.
+    """
+    assert CHART.is_dir(), (
+        f"the datalayer-node-mounts chart is at neither "
+        f"{_PLANE}/helm-private/charts nor {_PLANE}/helm/charts — every other "
+        "test in this file is skipping, not passing"
+    )
 
 
 @pytest.fixture(scope="module")

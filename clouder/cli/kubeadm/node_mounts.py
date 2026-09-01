@@ -25,21 +25,29 @@ DRIVER_NAME = "local.csi.datalayer.io"
 DEFAULT_IMAGE = "datalayer/node-mounts:0.1.0"
 
 
+#: The two chart trees under `plane/etc`, in the order they are searched.
+#: `helm-private` first because that is where this chart lives — it moved
+#: there with the rest of the Contents charts — and `helm` second so a
+#: checkout that has not taken the move yet still resolves.
+CHART_TREES = ("helm-private", "helm")
+
+
 def resolve_chart_dir(explicit: str | None = None) -> Path | None:
     """Find the chart: an explicit path, PLANE_HOME, DATALAYER_HOME, or the source tree."""
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit).expanduser())
+    roots: list[Path] = []
     plane_home = os.environ.get("PLANE_HOME")
     if plane_home:
-        candidates.append(Path(plane_home) / "etc" / "helm" / "charts" / CHART_NAME)
+        roots.append(Path(plane_home) / "etc")
     datalayer_home = os.environ.get("DATALAYER_HOME")
     if datalayer_home:
-        candidates.append(
-            Path(datalayer_home) / "src" / "k8s" / "services" / "plane" / "etc" / "helm" / "charts" / CHART_NAME
-        )
+        roots.append(Path(datalayer_home) / "src" / "k8s" / "services" / "plane" / "etc")
     # clouder/cli/kubeadm/node_mounts.py -> .../src/k8s
-    candidates.append(Path(__file__).resolve().parents[4] / "services" / "plane" / "etc" / "helm" / "charts" / CHART_NAME)
+    roots.append(Path(__file__).resolve().parents[4] / "services" / "plane" / "etc")
+    for root in roots:
+        candidates.extend(root / tree / "charts" / CHART_NAME for tree in CHART_TREES)
     for candidate in candidates:
         if (candidate / "Chart.yaml").is_file():
             return candidate
