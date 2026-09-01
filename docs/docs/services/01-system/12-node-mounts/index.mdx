@@ -92,7 +92,9 @@ Objects `datalayer-node-mounts` ships, all in `datalayer-runtimes`:
   ([details](/services/system/local-csi/#what-the-driver-adds-to-the-chart));
 - a `NetworkPolicy` (`networkPolicy.enabled`) allowing egress to DNS, to the
   bridge relay port, and — when the gateway is on — to the API server;
-- a `PrometheusRule` (`monitoring.rules`).
+- a `PrometheusRule` (`monitoring.prometheusRule`, off by default because it
+  needs the Prometheus operator's CRD and an unappliable manifest fails the
+  whole release).
 
 The values divide the same way: `driver.*`, `registrar.*` and `relay.*` are
 the driver's, `nodeMountGateway.*` is the gateway's, and `monitoring.*` and

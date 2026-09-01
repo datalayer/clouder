@@ -456,6 +456,13 @@ clouder kubeadm setup my-cluster --node-mounts --node-mounts-gateway \
   --node-mounts-shared-claim datalayer-shared-fs
 ~~~
 
+`up.sh` reads those two variables and passes `nodeMountGateway.enabled` and
+`nodeMountGateway.sharedFilesystemClaim` to the chart; asking for the gateway
+without the claim fails the deploy rather than installing an agent with
+nothing to bind. Each mount kind is a further switch, off unless exported —
+`DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS`, `_BUCKETS`, `_LOCAL_BRIDGES`,
+`_REPOSITORIES`; see [Chart values](#chart-values).
+
 The Operator must have `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED=true` as well, or it
 never writes a grant and every mounting launch keeps spawning its own Pod.
 Turning it on in the Operator without the agent is the worse order: Pods would
@@ -606,7 +613,7 @@ clouder node-mounts status        # adds a "Node Mount Gateway" table: per pod, 
 kubectl -n datalayer-runtimes exec ds/datalayer-node-mounts -c driver -- \
   wget -qO- http://127.0.0.1:9808/gateway
 kubectl get pod -n datalayer-runtimes POD \
-  -o jsonpath='{.metadata.annotations.runtime-pools\.datalayer\.io/gateway-mounts-ready}'
+  -o jsonpath='{.metadata.annotations.runtime-pools\.datalayer\.io/node-mount-gateway-ready}'
 ~~~
 
 The driver serves Prometheus metrics at `/metrics` on the same port, and the

@@ -366,11 +366,26 @@ off by default and has two halves, which are turned on in this order:
 | Setting | Where | Meaning |
 | --- | --- | --- |
 | `nodeMountGateway.enabled`, `nodeMountGateway.sharedFilesystemClaim` | `datalayer-node-mounts` chart | Run the node agent and name the RWX claim it binds from. Installing the chart with the first and not the second fails. |
-| `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` | `datalayer-operator` | Give pooled Pods the gateway volume and serve Home Folder launches from the pool. |
+| `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` | `datalayer-operator`, and `plane up` | Give pooled Pods the gateway volume and serve Home Folder launches from the pool. `up.sh` reads the same variable to set `nodeMountGateway.enabled` on the chart, so one export turns on both halves. |
+| `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | `plane up` | The claim `up.sh` passes as `nodeMountGateway.sharedFilesystemClaim`. Asking for the gateway without it fails the deploy rather than installing an agent with nothing to bind. |
 | `DATALAYER_NODE_MOUNT_GATEWAY_READY_TIMEOUT_SECONDS` | `datalayer-operator` | How long a launch waits for the node agent to confirm the mounts (default 20). |
 | `DATALAYER_NODE_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD` | `datalayer-operator` | The most folders one sandbox may be granted (default 32). |
 | `nodeMountGateway.maxMountsPerNode` | `datalayer-node-mounts` chart | The most the node agent will hold at once (default 512). |
-| `apiServer.cidr` | `datalayer-node-mounts` chart | The control-plane address the agent's NetworkPolicy allows. The Pod watch is the agent's only input; without this egress it mounts nothing. |
+| `apiServer.cidr` | `datalayer-node-mounts` chart, or `DATALAYER_KUBERNETES_API_SERVER_CIDR` for `plane up` | The control-plane address the agent's NetworkPolicy allows. The Pod watch is the agent's only input; without this egress it mounts nothing. |
+
+Each **mount kind** is a switch of its own, off unless asked for, and each has
+a variable `plane up` reads:
+
+| Setting | Variable | Serves |
+| --- | --- | --- |
+| `nodeMountGateway.credentials` | `DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS` | Nothing on its own: it lets the agent read a Secret a grant names, which the three below need. It is never implied by asking for a mount kind — reading a Secret is the one thing the agent does that its RBAC would otherwise forbid |
+| `nodeMountGateway.buckets` | `DATALAYER_NODE_MOUNT_GATEWAY_BUCKETS` | `cloud-storage` grants, through Mountpoint for S3 |
+| `nodeMountGateway.localBridges` | `DATALAYER_NODE_MOUNT_GATEWAY_LOCAL_BRIDGES` | `local-bridge` grants: a person's own folder into a running sandbox |
+| `nodeMountGateway.repositories` | `DATALAYER_NODE_MOUNT_GATEWAY_REPOSITORIES` | `git` grants: a pinned commit checked out on the node. A public repository needs no credential |
+
+A grant of a kind whose switch is off is refused with a reason the user sees,
+not silently skipped — see
+[what it can mount](/services/system/node-mount-gateway/#what-it-can-mount).
 
 Deploy the node agent **first**. With the Operator setting on and no agent,
 pooled Pods carry the volume and wait for mounts nobody makes. The nodes must
