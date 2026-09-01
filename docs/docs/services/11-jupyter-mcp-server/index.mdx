@@ -311,10 +311,23 @@ tools until it is re-authorized. The refusal says so and names the remedy. An
 agent re-authorizing against an IAM that cannot yet grant the scope gets a
 grant that still does not work, so IAM goes first.
 
-A test holds the two ends together — every scope the gateway's tool table
-requires must be one IAM's catalogue can grant — because a mapping typo
-otherwise fails as a refusal, and a refusal is what a correctly configured
-agent also gets.
+A test holds the ends together — because a mapping typo otherwise fails as a
+refusal, and a refusal is what a correctly configured agent also gets.
+
+**Three lists have to agree**, and only checking two is how this scope
+shipped unreachable:
+
+| List | Where | If a scope is missing |
+| --- | --- | --- |
+| `TOOL_POLICIES` | gateway | The tool asks for nothing and anyone may call it |
+| `SCOPES_SUPPORTED` | gateway | **No client can request it.** It is what the protected-resource metadata publishes, so it is the only thing a client reads to know what to ask for — the consent screen never shows it, no token carries it, and the tool is refused for everybody |
+| `RESOURCE_SCOPE_NAMES` | IAM | The authorization server refuses the request |
+
+`sandboxes:manage` was in the first and the third and not the second, so
+`launch_sandbox`, `use_sandbox` and `terminate_sandbox` were unreachable for
+every agent — with a message that reads like the caller's own fault. Fixed in
+`99020fa4`; the test now checks tools against what is advertised, in both
+directions.
 :::
 
 A client's own URL may narrow what it gets: `…/mcp?scopes=notebooks:read,code:execute`.
