@@ -314,7 +314,16 @@ def ctx_sync():
     if not discovered_any:
         typer.echo("No OVH, Azure, or AWS contexts discovered.", err=True)
 
-    ctx_list()
+    try:
+        ctx_list()
+    except typer.Exit:
+        # Listing at the end of a sync is a courtesy, and `ctx ls` exits 1
+        # when there is nothing to list — which is right for `ctx ls` typed on
+        # its own and wrong as the verdict on a sync. A sync that reached no
+        # cloud because no credentials are configured has done its job and
+        # already said so on stderr; failing here would report that as a
+        # broken command.
+        pass
 
 
 @ctx_app.command("ls")
@@ -328,7 +337,14 @@ def ctx_list():
     try:
         (cloud, context_id) = get_current_context()
         print(f"[bold]Current context:[/bold] [cyan]{cloud}[/cyan] [green]{context_id}[/green]\n")
-    except SystemExit:
+    except typer.Exit:
+        # `typer.Exit` is `click.exceptions.Exit`, which derives from
+        # `RuntimeError` and **not** from `SystemExit` — so catching the
+        # latter caught nothing. Listing contexts on a machine with no
+        # current one set is not a failure, but `ctx sync` calls this at the
+        # end, so it exited 1 having synced everything successfully: the
+        # first run on a new machine, which is when sync is most likely to
+        # be the very first command somebody types.
         print("[dim]No current context set.[/dim]\n")
 
     context = _ensure_context_shape(load_context())

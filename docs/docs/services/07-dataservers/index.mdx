@@ -284,10 +284,24 @@ placed the Dataserver:
    A part is written under a dot name and renamed into place, so a part still
    arriving is never one the Dataserver can read — it lists `part-*.parquet`,
    and a half-written file with that name is rows nobody published.
-3. `POST /published-tables/{relation}/complete` checks they landed and answers
-   with the Datasource that queries the table.
+3. `POST /published-tables/{relation}/complete` checks they landed, **creates
+   the Datasource record**, and answers with it — its configuration and its
+   `datasource_uid`.
 
 A client makes all three as one call: `contents.publish(frame, name="sales")`.
+
+Step 3 is where the record comes from, and there is nowhere else it can come
+from — which is what makes the sequence a round trip rather than three writes.
+Two consequences worth knowing when reading the catalog:
+
+- **Republishing does not make a second record.** The existing one is found by
+  the relation inside its configuration, not by its name, so an owner who
+  renames their Datasource still gets one record for one table rather than a
+  second pointing at the same files.
+- **A completion retried after a timeout is not a second record either.** The
+  idempotency key is `published-table:{owner_uid}:{relation}`, derived rather
+  than generated, and a completion that loses the race answers with what the
+  winner created instead of failing a publication whose bytes are on disk.
 
 **The record is not written until the files are there.** A Datasource whose
 parts never arrived answers `CONNECTOR_UNAVAILABLE` to everyone who finds it,

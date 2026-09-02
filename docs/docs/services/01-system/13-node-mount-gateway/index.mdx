@@ -42,6 +42,25 @@ the agent: it has no listener, and its only input is the Kubernetes API. A
 sandbox that could reach it would be a sandbox that could mount any folder on
 the shared claim.
 
+The agent's only input being the Kubernetes API is what makes the **token** the
+thing to guard. `datalayer-runtimes-sa` can `get`, `patch` and `delete` pods in
+its namespace, because the companion needs that — and patching a pod is
+rewriting its grant annotation. What stops a tenant using it is that no
+container running user code has a token for it: the ServiceAccount sets
+`automountServiceAccountToken: false`, so kubelet injects nothing, and the one
+token in the Pod is an explicit projected volume mounted only into the
+companion. `clouder node-mounts verify` checks both halves and reports the
+permission on its own as a warning rather than a failure, because the
+permission without a reachable token is not a way in.
+
+Two more properties of the Pod, for the same reason: the grant annotation is
+never projected into a container — the downward API publishes named keys, not
+`metadata.annotations` — and the one privileged container in a runtime Pod is
+the `block-cloud-metadata` init container, which drops the route to
+169.254.169.254 and exits before any tenant code runs. All of this is asserted
+against the rendered Pod template in the Operator's
+`tests/test_runtime_pod_isolation.py`, rather than argued here.
+
 ## Where it runs
 
 In the **[`datalayer-node-mounts`](/services/system/node-mounts/)
@@ -637,6 +656,25 @@ cannot have. A gateway that only did buckets would replace one of the three and
 leave the pool unusable for any Environment carrying the other two — so all
 three are grants, and the `Dataset` is the only one of the three that also
 takes a dependency with it when it goes.
+
+**A pooled Pod is the only one that gets them this way.** A spawned Pod already
+carries the Environment's contents in its spec, so granting them again would
+mount each one twice. A pooled Pod was built before anyone knew which
+Environment it would serve, which is why the grant is the only route it has.
+
+Two rules decide what a pooled Pod is given, and they are separate on purpose:
+
+- **The Environment's contents are granted whether or not the launch brings
+  folders of its own.** They are the Environment's promise, not the person's
+  request. A launch with no Home Folders and no attachments still gets the
+  tutorial repository its Environment declared — and the pool was only allowed
+  for that launch *because* those contents could be granted, so not granting
+  them would be the one outcome the check exists to prevent.
+- **A launch that asked for no folders gets no home folder.** The caller's own
+  folder is added to any home-folder mount set automatically, so that a sandbox
+  mounting folders never starts without its owner's. That rule must not be
+  reached by a launch that asked for none: a runtime without the
+  `home-folder` capability is not one to mount a home folder on.
 
 ### Yes, it is meant to replace it
 

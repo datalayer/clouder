@@ -320,7 +320,7 @@ Datalayer runtimes, the **Local CSI driver** on the runtime nodes, which
 mounts the far end into the pod. External sandboxes need no driver — the
 sandbox runs the mount itself when its environment lists the `fuse` feature.
 What a person does with it is the user manual:
-[datalayer.ai/docs/contents/mounts](https://datalayer.ai/docs/contents/mounts).
+[datalayer.ai/docs/contents/local-mounts](https://datalayer.ai/docs/contents/local-mounts).
 
 **What has to be deployed for it — the runtimes plane only.** Nothing on the
 core plane takes part in a local mount: IAM, Spacer, the Library, OTel, the
@@ -437,6 +437,12 @@ Regenerate with `make openapi schemas` and
 `python scripts/generate-contents-types.py`. Worth running before a deploy
 rather than after: drift here is silent, and it is detectable at the moment it
 is introduced by anyone who looks.
+
+This page itself is held to the code by `services/scripts/check_contents_docs.py`
+— the Solr collections it names, the `plane` commands, the settings — and that
+checker has its own tests (`contents/tests/test_doc_checker.py`), which plant
+a fault for each check and assert it is caught. A check that cannot fail is
+not protecting anything.
 
 ## Test after a deploy
 
@@ -711,6 +717,23 @@ The value is returned exactly as IAM stored it — not decoded. `datalayer_core`
 base64-encodes on create and the web application does not, and nothing on the
 record says which happened; the caller that knows how a credential was written
 is the one that can decode it.
+
+### Contents does not vend bucket credentials to a caller
+
+Worth stating because people ask for it: there is no route that hands a client
+process short-lived, bucket-scoped credentials for a Cloud Storage source. The
+client-facing surface is five routes — `objects`, `objects/stat`,
+`objects/content`, `objects/presign` and `test` — and reads go **through** the
+service, which applies the source's prefix and mode. `datalayer_core`'s
+`storage.filesystem()` is an `fsspec` filesystem over exactly those routes,
+and asking it for a provider-native `s3fs` is refused rather than answered.
+
+Credentials that expire *are* issued, but to the **node**, not to a caller: a
+mount is a filesystem that lives for days, so `mount_role_arn` gives the node
+an STS session instead of the stored key. That is the mount path, described in
+[Node Mounts](/services/system/node-mounts/). A process that wants a real
+filesystem over a bucket gets one by having the bucket attached to its
+sandbox — not by asking Contents for a key.
 
 ## The shared filesystem
 

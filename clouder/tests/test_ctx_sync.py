@@ -9,6 +9,19 @@ from ..cli import ctx as ctx_cli
 runner = CliRunner()
 
 
+def _no_ovh(monkeypatch):
+    """Stop `ctx sync` reaching the real OVH API.
+
+    `sync` grew OVH discovery after these tests were written, and they only
+    patched Azure and AWS — so on a machine with OVH credentials the suite
+    called the live API and asserted against whatever projects it found. The
+    two helpers are imported into `clouder.cli.ctx` at module scope, unlike
+    the Azure and AWS ones, so they are patched there rather than at source.
+    """
+    monkeypatch.setattr(ctx_cli, "get_ovh_projects", lambda: [])
+    monkeypatch.setattr(ctx_cli, "get_ovh_project", lambda project_id: {})
+
+
 def _read_yaml(path: Path) -> dict:
     with open(path, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
@@ -21,6 +34,7 @@ def test_ctx_sync_creates_context_file_with_discovered_azure_and_aws(monkeypatch
     monkeypatch.setattr(ctx_cli, "CLOUDER_CONFIG_FOLDER", config_folder)
     monkeypatch.setattr(ctx_cli, "CLOUDER_CONTEXT_FILE", context_file)
 
+    _no_ovh(monkeypatch)
     monkeypatch.setattr(
         "clouder.cloud.azure.api.list_azure_subscriptions",
         lambda: [{"id": "sub-1", "name": "Subscription One"}],
@@ -39,7 +53,10 @@ def test_ctx_sync_creates_context_file_with_discovered_azure_and_aws(monkeypatch
     payload = _read_yaml(context_file)
     contexts = payload["clouder"]["contexts"]
     assert contexts["azure"] == {"sub-1": {"name": "Subscription One"}}
-    assert contexts["aws"] == {"acc-1": {"name": "Account One"}}
+    # `arn` as well as `name`: `list_aws_accounts` reports the caller's ARN
+    # as the account name, and sync copies it so `ctx ls` has something for
+    # its Details column. The duplication is odd and it is what ships.
+    assert contexts["aws"] == {"acc-1": {"name": "Account One", "arn": "Account One"}}
     assert contexts["ovh"] == {}
 
 
@@ -66,6 +83,7 @@ def test_ctx_sync_updates_existing_entries_without_removing_other_clouds(monkeyp
     monkeypatch.setattr(ctx_cli, "CLOUDER_CONFIG_FOLDER", config_folder)
     monkeypatch.setattr(ctx_cli, "CLOUDER_CONTEXT_FILE", context_file)
 
+    _no_ovh(monkeypatch)
     monkeypatch.setattr("clouder.cloud.azure.api.list_azure_subscriptions", lambda: [])
     monkeypatch.setattr(
         "clouder.cloud.aws.api.list_aws_accounts",
@@ -80,7 +98,7 @@ def test_ctx_sync_updates_existing_entries_without_removing_other_clouds(monkeyp
     payload = _read_yaml(context_file)
     contexts = payload["clouder"]["contexts"]
     assert contexts["ovh"] == {"ovh-1": {"name": "OVH Project"}}
-    assert contexts["aws"] == {"acc-1": {"name": "New Name"}}
+    assert contexts["aws"] == {"acc-1": {"name": "New Name", "arn": "New Name"}}
 
 
 def test_ctx_sync_handles_missing_cloud_credentials(monkeypatch, tmp_path):
@@ -96,6 +114,7 @@ def test_ctx_sync_handles_missing_cloud_credentials(monkeypatch, tmp_path):
     def raise_aws():
         raise RuntimeError("aws unavailable")
 
+    _no_ovh(monkeypatch)
     monkeypatch.setattr("clouder.cloud.azure.api.list_azure_subscriptions", raise_azure)
     monkeypatch.setattr("clouder.cloud.aws.api.list_aws_accounts", raise_aws)
 
@@ -104,7 +123,7 @@ def test_ctx_sync_handles_missing_cloud_credentials(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Could not fetch Azure subscriptions (skipping)." in result.stderr
     assert "Could not fetch AWS account (skipping)." in result.stderr
-    assert "No Azure or AWS contexts discovered." in result.stderr
+    assert "No OVH, Azure, or AWS contexts discovered." in result.stderr
 
     payload = _read_yaml(context_file)
     contexts = payload["clouder"]["contexts"]
