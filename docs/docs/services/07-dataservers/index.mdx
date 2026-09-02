@@ -673,6 +673,25 @@ Upgrade Contents. The symptom from the pod's side is a Data Server that stays
 in `registering` and never reaches `ready`, which reads like a network or
 credential problem and is neither.
 
+### If `bootstrap` says the owner lacks owner access
+
+~~~
+Contents answered 403: Content source owner access required
+~~~
+
+Said to the person who owns the registration, which is why it reads as
+nonsense. A Data Server's client sends its **service key on every request**,
+and `bootstrap` adds the **owner's token** to that one, so this call carries
+both — and a Contents that resolved the service key first treated it as the
+platform, which must then pass a `managed` check the owner never had to pass.
+
+Upgrade Contents; the person is resolved first now, and the platform's context
+is reached only where there is no user credential at all. If you cannot
+upgrade, marking the registration `--managed` also clears it, but that grants
+the platform the right to mint identities for it — a real change, not a
+workaround, and not one to make for a Data Server somebody deployed on their
+own hardware.
+
 ### After a failed run
 
 The run cleans up after itself when it completes. When it fails partway, two
