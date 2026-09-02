@@ -485,6 +485,13 @@ declares it; an Environment added without it will not offer
 `snapshot_sandbox` to any session, and nothing about that reads as an error
 — the tool is simply absent from `tools/list`.
 
+A **deployment** can take it away again: a snapshot is written to the shared
+filesystem, so the Operator turns `snapshot` off where
+`SHARED_FS_VOLUME_CLAIM_NAME` is unset, exactly as it does `home-folder`. On
+such a deployment no session reports the capability however the Environments
+are written, and a launch that requires it is refused rather than given a
+sandbox that cannot snapshot.
+
 `server/discover` is where to look. Under `io.jupyter-mcp/capabilities` it
 answers three things:
 
