@@ -336,6 +336,48 @@ one per deployment — a table is published to the platform, not to a gateway a
 user picked, and asking them to choose would be asking about a thing they
 should not have to know exists.
 
+### Switching publishing on
+
+Publishing is off until a deployment has both halves, and the failure is
+silent in the sense that matters: everything else about Contents works, and
+`publish()` is the only call that refuses. On a cluster with the services up
+but this never done, `contents.publish(frame, name="sales")` answers
+`503 PUBLISHING_NOT_CONFIGURED` and a user has no way to tell that apart from
+a fault.
+
+Two settings, and the second cannot be chosen before the first exists:
+
+~~~bash
+# 1. Somewhere for the files, on the shared filesystem. `published` is the
+#    default sub-path; the root is derived from the claim, never from a
+#    caller.
+export DATALAYER_CONTENTS_PUBLISHED_TABLES_SUBPATH=published
+
+# 2. The Dataserver that serves them, by the **uid of its content source** —
+#    not its identity name. Register and deploy one as above, then read the
+#    uid back:
+datalayer contents dataservers list
+export DATALAYER_CONTENTS_PUBLISHED_TABLES_DATASERVER_UID=01...
+
+plane up datalayer-contents
+~~~
+
+One per deployment, deliberately: a table is published to the platform, not to
+a gateway a user picked. That Dataserver reads the publishing root, so it
+needs the same shared claim mounted as Contents — which is why the managed
+route (`selfBootstrap`, a registration marked `managed`) is the one that fits
+here, and an operator-placed Dataserver beside somebody else's warehouse is
+not.
+
+Check it took:
+
+~~~bash
+kubectl exec -n datalayer-api deploy/datalayer-contents -- \
+  printenv DATALAYER_CONTENTS_PUBLISHED_TABLES_DATASERVER_UID
+~~~
+
+Empty output is publishing off, whatever else the deployment looks like.
+
 ### Live tables
 
 A table published `live` has **two** possible answerers: the sandbox that
@@ -495,3 +537,83 @@ Then run a query against a Datasource created with `--dataserver <name>`: the
 Dataserver detail page reports what the connector answered, and a query that
 never arrives is the difference between a registration problem and a connector
 problem.
+
+### What `connectors` answers
+
+`datalayer contents dataservers connectors <uid>` prints the set the Data
+Server reported on its **last heartbeat**, not the set it registered with. The
+two differ constantly: published tables are adopted between beats, so a table
+published a moment ago appears here within a lease third without anything
+being restarted, and an unpublished one disappears the same way.
+
+Until recently this was not true — the heartbeat body was accepted and
+discarded, so the catalog described the moment of registration for as long as
+the process ran. Nothing broke, because queries are routed from the Datasource
+rather than from this record; what was wrong was the only view an operator has
+of what a Data Server is actually serving. Worth knowing if you are reading an
+older cluster: a `connectors` list that never changes is that bug, not a Data
+Server that has stopped adopting.
+
+## The smoketest
+
+`plane dataservers-smoketest` runs the whole publishing path against a live
+cluster — register, obtain an identity, deploy, wait for `ready`, switch
+publishing on, publish a table, query it back, clean up — and fails on the
+first step that does not work. It exists because none of the unit suites can
+see this path: every defect it has found was a join between two processes that
+each passed its own tests.
+
+~~~bash
+source ~/.datalayer/datalayerrc-r1
+plane dataservers-smoketest
+~~~
+
+### What it needs
+
+One credential, on whatever runs it — a laptop, CI:
+
+~~~bash
+export DATALAYER_API_KEY=...        # the owner's token
+~~~
+
+Everything else it derives or makes. The service key Contents uses to answer
+heartbeats is read from the running deployment rather than passed in, and the
+run refuses to start if the two do not match — a mismatch there fails later as
+an authentication error on a heartbeat, which reads like a Dataserver problem
+and is not.
+
+### Two credentials, two different things
+
+Worth keeping straight, because they fail in ways that look alike:
+
+- **The owner's token** registers the Dataserver and obtains its identity.
+  Obtaining an identity is an *owner* operation: a service credential is
+  refused there, deliberately.
+- **The service key** (`DATALAYER_CONTENTS_DATASERVER_API_KEY`) is what the
+  Dataserver presents on every heartbeat. Contents must be deployed with the
+  same value, and the smoketest checks this before it does anything else.
+
+### It must run where the claim is
+
+The smoketest deploys into `datalayer-api`, and not by preference. A
+PersistentVolumeClaim does not cross a namespace: there are two claims named
+`datalayer-shared-filesystem`, in `datalayer-api` and `datalayer-runtimes`,
+bound to **different** volumes. A Dataserver serving published tables reads
+the Parquet Contents wrote, so it has to run where Contents' claim is. Deploy
+it elsewhere and it comes up healthy, registers, goes `ready`, and reports
+every published table as missing — a message about a file, from a process that
+could not have seen it whatever anybody published.
+
+### After a failed run
+
+The run cleans up after itself when it completes. When it fails partway, two
+things are left:
+
+~~~bash
+helm uninstall datalayer-dataservers -n datalayer-api
+~~~
+
+and the published table's Datasource, which is a normal content source and can
+be archived like one. Revoked registrations stay in the catalog by design —
+revocation keeps the record — so a cluster that has run the smoketest often
+accumulates `smoketest-*` registrations in `revoked`. They are inert.
