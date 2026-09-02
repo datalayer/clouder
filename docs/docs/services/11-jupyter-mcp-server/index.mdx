@@ -985,6 +985,7 @@ access-controlled spans and in the audit rows.
 | --- | --- | --- | --- |
 | `mcp.calls` | counter | `tool`, `outcome` | Declared, **not written yet** |
 | `mcp.refusals` | counter | `reason` — `scope`, `item`, `attribution_failed`, `header_body_mismatch`, `access_check_failed`, `unknown_handle`, `sandbox_lost`, `runtimes_unavailable`, `rate_limited:user`, `rate_limited:agent` | Calls refused before they reached a worker |
+| `mcp.limit.unenforced` | counter | `limit` — `maxCreditsPerDay`, `maxConcurrentSandboxes`; `reason` — `unreadable`, `incomplete` | A limit **not** applied because the figure it compares against could not be read |
 | `mcp.workers` | gauge | `state=running` | Worker processes on this replica, set on every directory heartbeat |
 | `mcp.worker_start_seconds` | histogram | `provider=process` | How long a worker took to answer after being started |
 | `mcp.forwards` | counter | `outcome` (`ok`, `unreachable`) | Requests forwarded to another replica |
@@ -1482,6 +1483,36 @@ what their organization's policy is, because "why was my agent refused" is a
 question every member of it will ask, and an answer only owners can see is an
 answer nobody gets. Every change writes an IAM audit row naming who, when and
 which rules — by name, never by value.
+
+### A limit that stopped being enforced
+
+`mcp.limit.unenforced` is the one metric here that counts something *not*
+happening, and it is the one to alert on.
+
+The gateway does not refuse when it cannot read the figure a limit compares
+against: an organization whose agents stop launching because a billing lookup
+timed out is a worse failure than one that spends a little over. That is the
+right call, and it has a consequence — the limit is still on the Policy page,
+the refusals just stop, and **an organization whose budget is no longer being
+enforced looks exactly like one that never set a budget.**
+
+:::warning It is not `mcp.refusals`
+
+A refusal is the limit *working*. Folding the two together would make a
+gateway that refuses nothing because it can read nothing look like a gateway
+with nothing to refuse.
+:::
+
+The two reasons are different problems:
+
+| `reason` | What happened | What to do |
+|---|---|---|
+| `unreadable` | The lookup failed — IAM down, Solr down, a timeout | Look at the dependency; `mcp.dependency.ready` says which |
+| `incomplete` | The ledger holds more rows than one reading sums | The organization is busy enough to exceed the read bound, which is exactly the one the limit was set for |
+
+`incomplete` is the sharper of the two. A quota that fails open there fails
+open for the customers who bought it and holds for everybody else — a quiet
+failure of the worst shape, since the page still shows the limit.
 
 ## Alert rules
 
