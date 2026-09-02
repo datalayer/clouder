@@ -38,8 +38,23 @@ adding it is a configuration change and not a fork.
 
 ## Where it runs, and what it talks to
 
-On the **runtimes plane**, beside the runtimes whose sessions its workflows
-execute in. The gateway is on the platform plane and calls it across planes at
+In **`datalayer-durable`**, on the **runtimes plane**, beside the runtimes
+whose sessions its workflows execute in.
+
+Three namespaces, one for each thing that has its own lifecycle:
+
+| Namespace | Holds | Deleting it means |
+| --- | --- | --- |
+| `datalayer-durable` | The workers, their Service and their Secrets | The workers go; the workflows do not |
+| `datalayer-dbos` | What the DBOS engine needs to exist: the `datalayer-postgresql-dbos` cluster and its two databases | Every workflow is gone |
+| `datalayer-temporal` | What the Temporal engine will need — a server and its own store. Empty today | — |
+
+The engine is a **value** (`DATALAYER_DURABLE_ENGINE`), so the workers must not
+live in the namespace of the engine they happen to be using: switching engines
+would otherwise mean moving them. And the engines are separated from each other
+so tearing one down cannot put a `kubectl delete namespace` near the other's
+store — or near `datalayer-postgresql`, which holds the platform's own database
+and has nothing to do with durable execution. The gateway is on the platform plane and calls it across planes at
 `DATALAYER_DURABLE_URL` — a public URL, never an in-cluster name, because the
 two are not guaranteed to share a cluster and a name that resolves in one
 works right up until they do not.
@@ -158,7 +173,7 @@ does not carry refuses that caller rather than admitting everybody. Put a
 caller's key in the secret when that path is wanted:
 
 ```bash
-kubectl -n datalayer-api create secret generic datalayer-durable \
+kubectl -n datalayer-durable create secret generic datalayer-durable \
   --from-literal=DATALAYER_JUPYTER_MCP_SERVER_API_KEY=... \
   --from-literal=DATALAYER_CONTENTS_API_KEY=... \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -182,7 +197,7 @@ already has one.
 | Setting | Meaning |
 | --- | --- |
 | `DATALAYER_DURABLE_ENGINE` | `dbos` (deployed) or `temporal` (planned). Any other value refuses to start |
-| `DBOS_DATABASE_URL` | The DBOS system database. **Never the SQLite default in a cluster**: a worker whose state is on its own disk has no state at all the moment it moves |
+| `DBOS_DATABASE_URL` | The DBOS system database. Read from `secret/datalayer-durable-dbos`, written by `plane postgresql-dbos-create` — not a value the chart is given. **Never the SQLite default in a cluster**: a worker whose state is on its own disk has no state at all the moment it moves |
 | `DATALAYER_JUPYTER_MCP_SERVER_API_KEY` | The gateway's key, for calls **in**. Empty refuses that caller |
 | `DATALAYER_CONTENTS_API_KEY` | Contents' key, for calls in. Not in the chart today |
 | `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for calls in. Not in the chart today |
@@ -227,20 +242,35 @@ databases:
 | `dbos_durable` | the durable workers | Every workflow, every step's recorded result, every queue |
 | `dbos_agents` | agent-runtimes | Its own durable state, through `DBOS_DATABASE_URL` injected by the Operator |
 
-Then the workers:
+Then the workers. There is nothing to export:
 
 ```bash
-export DBOS_DATABASE_URL=...   # built from the cluster's application secret
 plane up datalayer-durable
 ```
 
-`plane up` refuses without `DBOS_DATABASE_URL` and says to create the cluster
-first. Neither command prints the connection string: it is a password, and a
-password echoed into a terminal is a password in a scrollback buffer.
+`postgresql-dbos-create` assembles the connection string from the cluster's
+application secret and writes it into `secret/datalayer-durable-dbos` in
+`datalayer-durable`, which is where the chart reads it — so the password never
+travels through `helm --set`, never lands in the Helm release's values, and
+is not something anybody has to hold in a shell.
+
+`plane up` checks that secret is there and says to create the cluster if it is
+not, because a missing one otherwise surfaces as a pod stuck in
+`CreateContainerConfigError`, which says nothing about what to do. Neither
+command prints the string: it is a password, and a password echoed into a
+terminal is a password in a scrollback buffer.
 
 ```bash
-kubectl get secret datalayer-postgresql-dbos-app -n datalayer-postgresql
+kubectl get secret datalayer-durable-dbos -n datalayer-durable   # the workers read this
+kubectl get secret datalayer-postgresql-dbos-app -n datalayer-dbos  # where it came from
 ```
+
+`postgresql-dbos-create` is safe to run again. It will not re-apply the cluster
+spec — that cluster holds work in flight, so it says so and stops — but it does
+republish the secret. That is what you want after a password rotation, or if
+the workers' namespace has been recreated: without it there is no command that
+writes the secret, and the only route back is by hand. The workers pick up a
+changed secret on their next rollout.
 
 Finally, tell the gateway where it is — `DATALAYER_DURABLE_URL` in the gateway
 chart, passed by `up.sh`. Left empty the gateway falls back to an in-process
@@ -313,7 +343,7 @@ a way into the engine that goes around it.
 Reach them by exec, when you mean to:
 
 ```bash
-kubectl -n datalayer-api exec deploy/datalayer-durable-notebook -- \
+kubectl -n datalayer-durable exec deploy/datalayer-durable-notebook -- \
   curl -s localhost:4407/workflows
 ```
 
@@ -374,5 +404,31 @@ plane down datalayer-durable
 ```
 
 The workers go and the workflows do not — they are in PostgreSQL, and a worker
-of the same version picks them up when it starts. Deleting the cluster is a
-separate and deliberate act, because it is the only copy of what is in flight.
+of the same version picks them up when it starts. That is the whole point of
+the split: `plane down` is reversible.
+
+Deleting the database is the act that is not:
+
+```bash
+plane postgresql-dbos-terminate          # asks for the cluster name to confirm
+plane postgresql-dbos-terminate --yes    # for a scripted teardown of a whole environment
+```
+
+It removes `dbos_durable` and `dbos_agents` and everything in them: every
+workflow that has not finished, every step result already recorded, every
+queued item. A durable engine's promise is that a worker dying loses no work,
+and this is the one way to lose it anyway — so it names what it is about to
+delete, warns if durable workers are still deployed against it (they will
+retry against a database that is gone), and requires the cluster name typed
+back rather than a `y`.
+
+It also removes `secret/datalayer-durable-dbos`. Leaving it would mean the next
+`plane up datalayer-durable` finds a connection string, starts, and fails
+against a host that no longer exists — which reads as a broken deploy rather
+than as a missing cluster.
+
+The namespace is left in place. It belongs to the engine rather than to any one
+cluster, and an empty namespace costs nothing.
+
+Recreate with `plane postgresql-dbos-create`, which makes the cluster and
+republishes the secret.

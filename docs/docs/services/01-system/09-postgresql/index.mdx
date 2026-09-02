@@ -100,8 +100,10 @@ The memory cluster hosts the `mem0` database owned by the `mem0` role, with the 
 ## Datalayer PostgreSQL DBOS Cluster
 
 A second cluster on the same operator and the same operand image — not a
-second operator. It holds the state of the durable execution service and of
-`agent-runtimes`:
+second operator. It lives in **`datalayer-dbos`**, not here: this namespace
+holds the platform's own database, and what an engine needs to exist belongs
+with that engine, so tearing DBOS down cannot come near the platform's data.
+It holds the state of the durable execution service and of `agent-runtimes`:
 
 | Database | Owner | Holds |
 | --- | --- | --- |
@@ -109,8 +111,9 @@ second operator. It holds the state of the durable execution service and of
 | `dbos_agents` | `agent-runtimes` | Its own durable state, reached through `DBOS_DATABASE_URL` injected by the Operator |
 
 ```bash
-plane postgresql-dbos-create
+plane postgresql-dbos-create      # cluster, both databases, and the workers' secret
 plane postgresql-dbos-status
+plane postgresql-dbos-terminate   # deletes every workflow in it; see Durable
 ```
 
 Three instances, because losing one instance must lose no workflow: a durable
@@ -122,12 +125,15 @@ concurrencies, with room for a rolling upgrade running two versions at once.
 memory cluster a re-apply is an update; this one holds work that is in
 flight, so it points at `-status` and leaves the decision to you.
 
-Neither command prints the connection string. It is what `DBOS_DATABASE_URL`
-is built from, and a password echoed into a terminal is a password in a
-scrollback buffer:
+No command prints the connection string. `postgresql-dbos-create` assembles it
+from the cluster's application secret and writes it into
+`secret/datalayer-durable-dbos` in `datalayer-durable`, which is where the
+chart reads it — so there is no `DBOS_DATABASE_URL` to export, and a password
+never travels through `helm --set` or a shell history:
 
 ```bash
-kubectl get secret datalayer-postgresql-dbos-app -n datalayer-postgresql
+kubectl get secret datalayer-postgresql-dbos-app -n datalayer-dbos       # where it comes from
+kubectl get secret datalayer-durable-dbos -n datalayer-durable           # where the workers read it
 ```
 
 Unlike a cache, this cluster is the record of what work is in flight.
