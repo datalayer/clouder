@@ -806,11 +806,20 @@ share a session, and it is the one misconfiguration every other check here
 reports as healthy. See [Turning it off](#turning-it-off).
 
 Readiness is gated on what **every** request needs: IAM (to verify a token) and
-the store (to find a handle). Spacer, Runtimes and Contents are *reported* and
-never gate — an outage in Contents must read as "Contents unavailable" in the
-Contents tools, not as a gateway that stopped serving notebooks. OTEL is listed
-and **never probed**: telemetry is never a readiness dependency. A draining
-replica is not ready.
+the store (to find a handle). Spacer, Runtimes, Contents, the audit ledger and
+the task projection are *reported* and never gate — an outage in Contents must
+read as "Contents unavailable" in the Contents tools, not as a gateway that
+stopped serving notebooks. OTEL is listed and **never probed**: telemetry is
+never a readiness dependency. A draining replica is not ready.
+
+The `store`, `audit` and `tasks` lines each name **which implementation
+answered**, not only whether it did, and that is the point of them. Each lives
+in its own Solr collection, so the bindings collection being healthy says
+nothing about the other two — a deployment whose task collection is missing
+would otherwise serve a green page and lose every long-running call. And a
+line reading `MemoryTaskStore` is perfectly healthy *and* means tasks do not
+survive a restart and are invisible to the other replicas, which is the same
+warning `"records": "memory"` gives above and worth reading twice.
 
 Each dependency probe is bounded at three seconds
 (`PROBE_TIMEOUT_SECONDS`), and they run concurrently, so a hung dependency is
