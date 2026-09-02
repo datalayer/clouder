@@ -461,6 +461,16 @@ beside it would be a second way to obtain a sandbox and a second place to
 remember all three — and the gateway intercepts by tool name, so the one it
 did not know about is the one that skips the checks.
 
+**A sandbox started from a snapshot cannot also ask for `on_lost:
+relaunch`,** and that pair is refused. A relaunch is built from what the
+binding recorded — the alias, the provider, the environment — and a snapshot
+is not among them: the name an agent gives is resolved to a snapshot at
+launch time, and the same name can point at a different snapshot later. A
+relaunch is also silent, so the alternative is a sandbox that comes back
+empty after being asked for a saved state, found whenever somebody next
+looks for a variable. Launch with `on_lost: fail` and launch again with the
+same `snapshot_name` when you are told the sandbox is gone.
+
 Only sandboxes on providers that declare the `snapshot` capability are
 offered the tool at all: it is filtered out of `tools/list` for a session
 whose sandbox cannot do it, and a call to it anyway is refused naming the
@@ -1037,7 +1047,7 @@ and looked complete.
 | `mcp.task.duration` | histogram | `tool` | How long a task ran before reaching a terminal state |
 | `sandbox.launch_seconds` | histogram | `provider`, `environment` | How long a sandbox took to become usable |
 | `mcp.dependency.ready` | gauge | `dependency` | 1 or 0 per dependency, so an alert need not wait for a readiness scrape |
-| `mcp.refusals` | counter | `reason` — `access_check_failed`, `attribution_failed`, `capability_missing`, `environment_capability`, `header_body_mismatch`, `item`, `policy_unavailable`, `runtimes_unavailable`, `sandbox_lost`, `scope`, `unknown_handle`, `policy:…`, `rate_limited:…`, `quota:…` | Calls refused before they reached a worker |
+| `mcp.refusals` | counter | `reason` — `access_check_failed`, `attribution_failed`, `capability_missing`, `environment_capability`, `header_body_mismatch`, `item`, `policy_unavailable`, `relaunch_from_snapshot`, `runtimes_unavailable`, `sandbox_lost`, `scope`, `unknown_handle`, `policy:…`, `rate_limited:…`, `quota:…` | Calls refused before they reached a worker |
 | `mcp.limit.unenforced` | counter | `limit` — `allowedProviders`, `environmentCapabilities`, `maxConcurrentSandboxes`, `maxCreditsPerDay`; `reason` — `incomplete`, `unreadable` | A limit **not** applied because the figure it compares against could not be read |
 | `mcp.workers` | gauge | `state` | Worker processes on this replica, set on every directory heartbeat |
 | `mcp.worker_start_seconds` | histogram | `provider` | How long a worker took to answer after being started |
