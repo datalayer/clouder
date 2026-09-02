@@ -1018,18 +1018,39 @@ a tool, an outcome, a dependency, a refusal reason. A user, an agent, an
 organization or a sandbox is **never** a metric label; those belong in
 access-controlled spans and in the audit rows.
 
+The table below is generated from `telemetry.CATALOGUE`, which a test holds
+against the instruments actually created — in both directions — and against
+the label values actually passed. It was hand-copied once and drifted three
+ways: it listed ten of these twenty, it called `mcp.calls` "declared, not
+written yet" after it had a call site, and it named five of the
+`mcp.refusals` reasons. A refusals panel built from that would have drawn
+scope and rate refusals, missed every policy, quota and capability refusal,
+and looked complete.
+
+`dependency` is one of (`audit`, `contents`, `iam`, `otel`, `runtimes`, `spacer`, `store`, `tasks`) everywhere it appears.
+
 | Instrument | Kind | Labels | What it says |
 | --- | --- | --- | --- |
-| `mcp.calls` | counter | `tool`, `outcome` | Declared, **not written yet** |
-| `mcp.refusals` | counter | `reason` — `scope`, `item`, `attribution_failed`, `header_body_mismatch`, `access_check_failed`, `unknown_handle`, `sandbox_lost`, `runtimes_unavailable`, `rate_limited:user`, `rate_limited:agent` | Calls refused before they reached a worker |
-| `mcp.limit.unenforced` | counter | `limit` — `maxCreditsPerDay`, `maxConcurrentSandboxes`; `reason` — `unreadable`, `incomplete` | A limit **not** applied because the figure it compares against could not be read |
-| `mcp.workers` | gauge | `state=running` | Worker processes on this replica, set on every directory heartbeat |
-| `mcp.worker_start_seconds` | histogram | `provider=process` | How long a worker took to answer after being started |
-| `mcp.forwards` | counter | `outcome` (`ok`, `unreachable`) | Requests forwarded to another replica |
-| `mcp.dependency.duration` | histogram | `dependency` (`iam`, `store`, `spacer`, `runtimes`, `contents`), `outcome` | How long one call to a dependency took |
+| `mcp.calls` | counter | `tool`, `method`, `outcome` | Tool calls the gateway forwarded |
+| `mcp.call.duration` | histogram | `tool` | How long a tool call took, end to end — the latency SLI |
+| `mcp.tasks` | counter | `status` | Tasks that reached a terminal state — a rate, because an SLO is written against one |
+| `mcp.task.duration` | histogram | `tool` | How long a task ran before reaching a terminal state |
+| `sandbox.launch_seconds` | histogram | `provider`, `environment` | How long a sandbox took to become usable |
+| `mcp.dependency.ready` | gauge | `dependency` | 1 or 0 per dependency, so an alert need not wait for a readiness scrape |
+| `mcp.refusals` | counter | `reason` — `access_check_failed`, `attribution_failed`, `capability_missing`, `environment_capability`, `header_body_mismatch`, `item`, `policy_unavailable`, `runtimes_unavailable`, `sandbox_lost`, `scope`, `unknown_handle`, `policy:…`, `rate_limited:…`, `quota:…` | Calls refused before they reached a worker |
+| `mcp.limit.unenforced` | counter | `limit` — `allowedProviders`, `environmentCapabilities`, `maxConcurrentSandboxes`, `maxCreditsPerDay`; `reason` — `incomplete`, `unreadable` | A limit **not** applied because the figure it compares against could not be read |
+| `mcp.workers` | gauge | `state` | Worker processes on this replica, set on every directory heartbeat |
+| `mcp.worker_start_seconds` | histogram | `provider` | How long a worker took to answer after being started |
+| `mcp.forwards` | counter | `outcome` | Requests forwarded to another replica |
+| `mcp.dependency.duration` | histogram | `dependency`, `outcome` | How long one call to a dependency took |
 | `mcp.dependency.timeouts` | counter | `dependency` | Calls to a dependency that ran out of time |
 | `mcp.readiness.failures` | counter | `dependency` | Readiness probes that found a required dependency down |
-| `mcp.sandbox.lost` | counter | `provider`, `then` (`reported`, `relaunched`) | Sessions whose sandbox was found gone |
+| `mcp.sandbox.lost` | counter | `provider`, `then` | Sessions whose sandbox was found gone |
+| `mcp.audit.writes` | counter | `decision` | Audit rows written to the ledger |
+| `mcp.audit.write_failures` | counter | `decision` | Audit rows that could not be written — the one number that says the security record has a hole in it |
+| `mcp.audit.deleted` | counter | `reason` | Audit rows deleted past their retention |
+| `mcp.jobs` | counter | `job`, `outcome` | Periodic job ticks — `skipped` is the ordinary outcome on a replica without the lease |
+| `mcp.job.duration` | histogram | `job` | How long one periodic job took |
 
 :::info Exporting depends on one setting
 
