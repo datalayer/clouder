@@ -355,6 +355,17 @@ upgrade finishes on a worker that still matches its history rather than being
 replayed by code that no longer does. Roll workers freely; let the old
 version's workers drain rather than deleting them.
 
+That mechanism rests on a workflow being identifiable, which is worth stating
+because it was not. DBOS resolves a run — resumed after a restart, or picked
+up from a queue — by looking up **the name recorded on the run** in a registry
+keyed by name. Each workflow is registered explicitly as its catalog name
+(`NotebookRunWorkflow`, `SandboxWorkflow`, …). Registering without a name is
+not an option here: DBOS then keys on `__qualname__`, every workflow is built
+by the same nested function in `DbosEngine._build`, and the four would share
+one key — a dict, so three of them silently replaced. An approval could come
+back as a sandbox launch. Fixed 2026-09-02; DBOS had been logging
+"Duplicate registration of function" on every worker startup since.
+
 ## Backup: not configured, and what that means
 
 The workflows **are** the database. There is no second copy, and a run in

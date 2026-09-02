@@ -587,6 +587,39 @@ measurement:
 | Agent Secret access matches its configuration | Either a mount that needs a credential cannot read one, or the agent holds a permission nothing uses. |
 | No leaked mounts | Each one is a Pod that will stick in `Terminating`. |
 
+One of those rows is a **warning rather than a failure**, and the distinction
+matters when you read the output. "A runtime may not grant itself a mount"
+goes yellow when the runtime service account can patch pods but its token is
+not in any container that runs user code — which is the normal, healthy state.
+`datalayer-runtimes-sa` holds `pods: get, delete, patch` because the
+**companion** uses all three: on pause it labels its own Pod `pod-status:
+paused` and then deletes it. RBAC has no way to say "patch only your own Pod",
+so the permission cannot be narrowed away without breaking snapshot and pause.
+
+What keeps a tenant from using it is where the token is. The ServiceAccount
+sets `automountServiceAccountToken: false`, so kubelet injects nothing, and
+the only token in the Pod is an explicit projected volume mounted into the
+companion alone. `verify` checks both halves and reports the permission on its
+own as a warning, because a permission without a reachable credential is not a
+way in — and a red line beside a real failure teaches an operator to scroll
+past both.
+
+A worked example, from r1 on 2026-09-02, all ten checks:
+
+~~~text
+Node driver DaemonSet                  ok  5/5 ready
+Mount propagation (rshared)            ok  shared
+Kernel supports mount_setattr (5.12+)  ok  6.8.0-1057-aws
+Node Mount Gateway enabled on the node ok  serving /gateway
+Operator and agent agree               ok  both halves on
+Shared filesystem claim                ok  datalayer-shared-filesystem
+Agent may patch a pod                  ok  yes
+A runtime may NOT grant itself a mount  -  runtime service account can patch pods: yes;
+                                           its token is not in any container that runs user code
+Agent Secret access matches config     ok  can-i get secrets: no; credentials off
+No leaked mounts                       ok  0 mount(s) would not unmount
+~~~
+
 **Then prove it end to end**, which needs a runtime and a person:
 
 ~~~bash
