@@ -485,10 +485,17 @@ declares it; an Environment added without it will not offer
 `snapshot_sandbox` to any session, and nothing about that reads as an error
 — the tool is simply absent from `tools/list`.
 
-`server/discover` is where to look: `known` says what the deployment's
-vocabulary defines and `capabilities` says what this session's sandbox
-reported. A tool missing while its capability is in `known` and not in
-`capabilities` is this, and not a broken gateway.
+`server/discover` is where to look. Under `io.jupyter-mcp/capabilities` it
+answers three things:
+
+| Field | Says |
+| --- | --- |
+| `known` | Every capability name the shared vocabulary defines — what exists at all |
+| `knownFamilies` | Prefixes with one member per thing they name. `contents.` is the only one: an Environment that brings a Content declares `contents.<uid>`, which no fixed list can hold |
+| `capabilities` | What **this session's** sandbox reported, which is empty when the session has no sandbox |
+
+A tool missing while its capability is in `known` and not in `capabilities`
+is an Environment that has not declared it, and not a broken gateway.
 
 :::
 
