@@ -471,10 +471,26 @@ empty after being asked for a saved state, found whenever somebody next
 looks for a variable. Launch with `on_lost: fail` and launch again with the
 same `snapshot_name` when you are told the sandbox is gone.
 
-Only sandboxes on providers that declare the `snapshot` capability are
+Only sandboxes whose **Environment declares the `snapshot` capability** are
 offered the tool at all: it is filtered out of `tools/list` for a session
 whose sandbox cannot do it, and a call to it anyway is refused naming the
-capability. An agent on Modal never sees it.
+capability. An agent on Modal never sees it — an external provider's
+environment never gets `snapshot` from the shared vocabulary.
+
+:::warning A capability nobody declares hides the tool from everybody
+
+This is per Environment, like `home-folder`, and it is opt-in. Every
+platform Environment shipped in `plane/etc/specs/runtime-environments`
+declares it; an Environment added without it will not offer
+`snapshot_sandbox` to any session, and nothing about that reads as an error
+— the tool is simply absent from `tools/list`.
+
+`server/discover` is where to look: `known` says what the deployment's
+vocabulary defines and `capabilities` says what this session's sandbox
+reported. A tool missing while its capability is in `known` and not in
+`capabilities` is this, and not a broken gateway.
+
+:::
 
 ## What it stores
 
