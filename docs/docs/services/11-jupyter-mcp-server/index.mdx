@@ -316,9 +316,9 @@ on the request path.
 `code:execute` and `sandboxes:manage` are separate because they are different
 questions. The first is running code on a sandbox; the second is *deciding
 which* sandbox, keeping it, sharing it and ending it — each spending credits
-on a decision the agent made. `launch_sandbox`, `use_sandbox` and
-`terminate_sandbox` require it; `list_sandboxes` does not, since seeing what
-you have is not managing it; and the implicit launch a session does when it
+on a decision the agent made. `launch_sandbox`, `use_sandbox`,
+`terminate_sandbox` and `snapshot_sandbox` require it; `list_sandboxes` does
+not, since seeing what you have is not managing it; and the implicit launch a session does when it
 has none stays under `code:execute`, because an agent granted "run this" and
 given nowhere to run it would otherwise be refused for asking to do exactly
 what it was granted.
@@ -437,6 +437,34 @@ in. That sandbox **is** the session, and it is an `sb_…` handle in
 `GET /api/mcp/v1/bindings` lists a caller's handles in every state, `lost`
 included — a session whose sandbox is gone is exactly what an operator and a
 user want to see, with why.
+
+### Snapshots, and why there is no restore tool
+
+A sandbox is the one place a session's state is *not* recoverable. The
+notebook is in the Spacer, the binding is in `mcp-gateway`, a lost sandbox can
+be relaunched — but what is loaded inside one, the data read and the packages
+installed and the model fitted, lives nowhere else. That is what `on_lost:
+relaunch` means when it says the replacement is empty.
+
+`snapshot_sandbox` saves it. It costs `sandboxes:manage`, not `code:execute`:
+it writes storage the account is billed for and produces something another
+session can be started from, so an agent granted "run this" may run it and may
+not leave a copy behind. `datalayer://snapshots` is the catalogue, fetched
+with the caller's own token — a service credential there would list
+everybody's saved working state — and it costs `data:read`, because finding
+out which snapshots exist is not making one.
+
+**Restoring is `launch_sandbox(snapshot_name=…)`, not a tool of its own.** A
+launch is the door where the gateway reserves the session, counts the sandbox
+against the quota and checks the provider against policy. A `restore_snapshot`
+beside it would be a second way to obtain a sandbox and a second place to
+remember all three — and the gateway intercepts by tool name, so the one it
+did not know about is the one that skips the checks.
+
+Only sandboxes on providers that declare the `snapshot` capability are
+offered the tool at all: it is filtered out of `tools/list` for a session
+whose sandbox cannot do it, and a call to it anyway is refused naming the
+capability. An agent on Modal never sees it.
 
 ## What it stores
 
