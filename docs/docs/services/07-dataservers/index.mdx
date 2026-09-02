@@ -497,7 +497,33 @@ Three rules keep it from becoming a nuisance:
 
 A runner that raises does not take the kernel with it. The kernel is the
 user's, and a Dataserver thread raising into it would look like their own code
-failing; the registration lapses on its own and queries fall back.
+failing; the registration lapses on its own and queries fall back. **Building**
+the runner is guarded the same way and for a stronger reason: it registers and
+obtains a certificate, so it reaches the network and can fail for every reason
+a network call can — and by then the table's snapshot is already written.
+A sandbox that cannot register publishes its snapshot and reports
+`live: False`.
+
+#### What it registers, and what you will see
+
+Each sandbox serving a live table registers as an ordinary Dataserver, under
+an identity derived from its **hostname** — `sandbox-<pod>`, unless
+`DATALAYER_DATASERVER_IDENTITY` names one. It is the registration's identity,
+so a restart of the same sandbox resumes rather than leaving a second one
+behind, and two sandboxes are never one.
+
+It registers with the **owner's token**, not the platform's service
+credential, and its registration is therefore **not** `managed`: there is a
+person at the keyboard by definition, so none of the self-bootstrap path
+applies. Anyone auditing which registrations Datalayer may mint identities for
+should expect to see none of these.
+
+What this means operationally is that a busy cluster accumulates one
+registration per sandbox that has published a live table, each with a lease
+that lapses when the sandbox stops. That is by design — the lapse is what
+makes queries fall back — but it is the reason the sweep matters, and the
+reason `dataservers list` on such a cluster is longer than the list of
+Dataservers anybody deployed.
 
 ### Who may obtain an identity
 
@@ -603,6 +629,49 @@ the Parquet Contents wrote, so it has to run where Contents' claim is. Deploy
 it elsewhere and it comes up healthy, registers, goes `ready`, and reports
 every published table as missing — a message about a file, from a process that
 could not have seen it whatever anybody published.
+
+### The self-bootstrap mode
+
+~~~bash
+DATALAYER_DATASERVER_SMOKETEST_MODE=self-bootstrap plane dataservers-smoketest
+~~~
+
+The default mode mounts a certificate somebody obtained with `bootstrap`. This
+mode deploys a pod with **no identity Secret at all** and lets it obtain its
+own at start — the path a managed Data Server takes, where there is nobody at
+a keyboard to bootstrap it. It registers with `--managed`, deletes any
+identity Secret left by an earlier run (a stale one would be mounted and the
+pod would never need to bootstrap, so the test would pass without testing
+anything), and reports the certificate serial Contents recorded.
+
+It then does the half that matters: the **same** request, with the **same**
+service credential, against a registration that is *not* marked `managed`,
+which Contents must refuse. That refusal is what keeps "Datalayer manages some
+gateways" from meaning "Datalayer can impersonate any of them", and it is
+checked here with the credential and on the route a pod really uses — a unit
+test can only ask a fake whether it would refuse.
+
+The credential goes in as both `X-API-Key` and the `Authorization: Bearer`
+token, because the move being tested is precisely the service key standing in
+for the owner's. Send only the first and the request is refused for the wrong
+reason, and the check passes without checking anything.
+
+### If a managed Data Server logs `Contents answered 401`
+
+~~~
+cannot obtain an identity: Contents answered 401: Authentication failed
+~~~
+
+This is a Contents that predates the fix, not a misconfigured pod, and no
+amount of checking the service key will help — the key was right. The identity
+route used to resolve its caller as a **user**, and a service credential is not
+one, so the request was refused before the check that would have allowed it for
+a `managed` registration. The permission existed and was documented; nothing
+could reach it.
+
+Upgrade Contents. The symptom from the pod's side is a Data Server that stays
+in `registering` and never reaches `ready`, which reads like a network or
+credential problem and is neither.
 
 ### After a failed run
 
