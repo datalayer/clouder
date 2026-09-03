@@ -189,6 +189,18 @@ of their own, because a second place to write a limit would be a second answer
 to what an organization is allowed. The gateway reads them and refuses against
 them; `GET /api/mcp/v1/organizations/{uid}/usage` puts each beside its use.
 
+:::info A team layer cannot widen its organization's
+
+The gateway intersects a team's layer with the organization's, so a team
+owner who saves `maxCreditsPerDay: 500` under an organization capped at 100
+gets 100 in practice. Until IAM refused it, the write was accepted and shown
+on the page as 500 — a policy page that lied. IAM now refuses a team layer
+wider than its organization's at the write (`400`, `WidensPolicy`): every
+cap above the organization's ceiling, and a `toolAllowlist` that reaches
+into the organization's `toolDenylist`. An organization layer IAM cannot
+read does not block the write.
+:::
+
 ### Alert rules
 
 `McpAlertRule`, stored per organization. A rule names a condition, an

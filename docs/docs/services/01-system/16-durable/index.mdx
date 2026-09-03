@@ -80,6 +80,7 @@ takes milliseconds do not belong in the same line.
 | `sandbox` | `SandboxWorkflow` | A sandbox's life: reserve, launch, expire, terminate |
 | `contents` | `ContentsOperationWorkflow` | Transfers and queries, mirrored as tasks |
 | `approval` | `ApprovalWorkflow` | Waits on people; costs nothing while waiting, so its concurrency is high |
+| `agent` | `AgentRunWorkflow` | An agent run: blocks for as long as the agent works, and holds a sandbox through a child workflow |
 
 ## The workflow catalog
 
@@ -94,6 +95,7 @@ afterwards.
 | `SandboxWorkflow` | `sandbox` | `reserve` → `launch` → `await_expiry` → `terminate` → `project_task` | A sandbox's whole life. Blocks — most of it is the timer |
 | `ContentsOperationWorkflow` | `contents` | `claim_operation` → `run_operation` → `mirror_state` → `project_task` | A transfer, query or materialization, mirrored as a task. Heartbeats every 60 s |
 | `ApprovalWorkflow` | `approval` | `request_approval` → `await_decision` → `project_task` | Waits on a person. A timeout is a decision, not a crash |
+| `AgentRunWorkflow` | `agent` | `mint_run_credential` → `launch_compute` → `await_agent` → `release_compute` → `project_task` | An agent's run, the first non-gateway user of this service. Blocks until ai-agents signals `agent_done`. Heartbeats every 60 s |
 
 Two properties every entry carries:
 
@@ -101,6 +103,15 @@ Two properties every entry carries:
 workflow. It decides *which* runtime the work goes to — the one this session
 is bound to. Running a cell in some other runtime would give it none of the
 session's variables, mounts or identity, and it would look like it worked.
+
+**The agent run owns no sandbox of its own.** `launch_compute` starts a
+child `SandboxWorkflow` keyed on `<task uid>:compute` — found again on a
+replay rather than launched twice — and `release_compute` signals that
+child's expiry when the agent ends, whichever way it ended. The step is
+never cancelled, so a cancelled run still lets go of its sandbox, and there
+is one place that stops a sandbox and one record of why. The credential the
+run works with is a temporary key IAM issues for the person the run is for,
+never the scheduler's.
 
 **Every workflow ends in `project_task`.** A run whose engine finished but
 whose task still says `working` is a run nobody can see the end of, and the

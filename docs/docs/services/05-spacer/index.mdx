@@ -68,6 +68,53 @@ open https://${DATALAYER_RUN_HOST}/api/spacer/version
 open https://${DATALAYER_RUN_HOST}/api/spacer/v1/ping
 ```
 
+## Notebook versions
+
+A version is a notebook's bytes at a moment, kept on purpose — by a person
+pressing *snapshot*, by an agent's `snapshot_notebook` through the
+[Jupyter MCP Server](/services/jupyter-mcp-server/), or by a restore.
+Autosave is not a version: the collaboration room saves continuously, and a
+history of every keystroke is not one anybody reads.
+
+| Route | Access | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/notebooks/{id}/versions` | `view` | The versions, newest first, each naming its actor |
+| `POST …/versions` `{"message": "…"}` | `update` | Keep the notebook as it is now |
+| `GET …/versions/{version}` | `view` | One version, with its content as `model_s` |
+| `POST …/versions/{version}/restore` | `update` | Make it current — after keeping what it replaces |
+
+Versions live beside the notebook in the same bucket
+(`<s3_path>.versions/<stamp>-<uid>.ipynb`), with the actor and message on
+the object's own metadata; nothing else records them, so there is one place
+a version can be. A restore keeps the current content first, as a `restore`
+version by the same actor, so restoring the wrong one is a second restore
+away and not a loss. A notebook a caller cannot read answers `403`, not
+`404`: "not found" would send them looking for a typo.
+
+## Sharing with an agent
+
+An item can be shared with an **agent** at any of the three levels, beside
+users and teams: `agentUids` under `view`, `update` or `execute` on the
+sharing routes (`shared_<level>_agent_uids_ss` on the item). The grant is
+matched on the token's own `agent_uid` and never on the person behind it, so
+sharing with one service agent does not share with its owner's other agents,
+or with the owner. Sharing with a person, as before, shares with everything
+that acts for them.
+
+The token's `agent_uid` and `client_id` reach the services at all now: the
+shared authentication (`datalayer_common.auth`) verified them and then
+dropped them with the rest of the top-level claims, so every service saw the
+person and none saw the agent.
+
+## Who last edited
+
+Every model save and every restore stamps the item with who did it and
+through what: `last_edited_by_uid_s`, `last_edited_by_agent_uid_s`,
+`last_edited_by_client_id_s` and `last_edited_at_dt`. The agent field is
+empty for a person's own edit, so a page says "edited by <agent>" only when
+there was one. The room-open event posted to the activity feed names its
+actor the same way — person or agent, with the agent uid and the client.
+
 ## Tear Down Datalayer Spacer
 
 If needed, tear down.

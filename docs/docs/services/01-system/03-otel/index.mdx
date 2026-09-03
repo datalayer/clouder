@@ -109,8 +109,41 @@ The FastAPI query service exposes the following endpoints under `/api/otel/v1`:
 | `/query/sql` | POST | JWT | Run ad-hoc SQL via DataFusion |
 | `/system/stats` | GET | Admin | Storage statistics |
 | `/ws` | WS | Token | Real-time WebSocket stream |
+| `/dashboards/` | GET, POST | JWT | The built-in MCP dashboards, then the account's own |
+| `/dashboards/{id}` | GET, PUT, DELETE | JWT | One dashboard; built-ins are read-only (`409`) |
+| `/dashboards/{id}/data` | GET | JWT | Every panel, answered under the caller's account scope |
 
 API docs are available at `https://<RUN_HOST>/api/otel/v1/docs` (Swagger) and `/api/otel/v1/redoc` (ReDoc).
+
+## Dashboards
+
+The MCP gateway keeps its metrics catalogue and serves no telemetry route:
+this service is where its signals are read, so its dashboards live here,
+beside the platform's others. Five are built in, one per marketed area —
+**calls and refusals**, **runs**, **sandboxes by provider**, **data access**,
+**agents by organization** — and they are *generated* from a copy of the
+gateway's catalogue (`datalayer_otel/dashboards.py`) that a contract test
+holds equal to the gateway's `telemetry.CATALOGUE`. An instrument the
+gateway adds without a panel fails a test rather than going undrawn; a
+panel naming a label the gateway does not emit fails at import.
+
+A dashboard is a list of panels. A panel is one metric, optionally split by
+one of its labels, summarised one way: counters add up (`sum`), a gauge is
+its latest reading (`last`), a duration is averaged (`avg`); `max` and
+`count` exist. No percentile is promised — the metrics rows carry what the
+exporter wrote per interval, not histogram buckets.
+
+`GET /dashboards/{id}/data?start=&end=&account_uid=` answers every panel
+under the caller's resolved account scope, the same scope every other query
+here gets. That is what "agents by organization" means: the same panels,
+read as one organization by passing its `account_uid`. A panel whose query
+fails answers with its `error` and the other panels still answer.
+
+People's own dashboards are JSON files under the data directory, one per
+dashboard per account (`{data_dir}/dashboards/{account}/{id}.json`);
+dashboards are few, small and edited by hand, so there is no table to
+migrate. A custom panel may chart any metric this service holds — the other
+services report here too. Built-in ids cannot be taken, updated or deleted.
 
 ## CLI
 

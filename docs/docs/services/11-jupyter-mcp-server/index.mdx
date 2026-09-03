@@ -461,6 +461,17 @@ beside it would be a second way to obtain a sandbox and a second place to
 remember all three — and the gateway intercepts by tool name, so the one it
 did not know about is the one that skips the checks.
 
+**`restore_notebook` is not that tool.** It restores a *notebook version* —
+the Spacer's kept copy of a notebook's content — and touches no sandbox.
+`snapshot_notebook`, `list_notebook_versions` and `restore_notebook` resolve
+a name the way `use_notebook` does and hand the uid to the Spacer with the
+caller's exchanged credential, so the Spacer decides who may and its `403`
+reaches the agent in words. A restore keeps what it replaces first, so it
+can itself be undone. They cost `notebooks:read` for the listing and
+`notebooks:write` for the two that change history — a notebook's history,
+not a sandbox's state, which is why they sit beside the editing tools and
+not here.
+
 **A sandbox started from a snapshot cannot also ask for `on_lost:
 relaunch`,** and that pair is refused. A relaunch is built from what the
 binding recorded — the alias, the provider, the environment — and a snapshot
