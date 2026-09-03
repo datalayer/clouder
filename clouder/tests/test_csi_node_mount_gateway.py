@@ -100,16 +100,62 @@ def pod(annotation_value: str = "", *, terminating: bool = False, ready: str = "
 # ---------------------------------------------------------------------------
 
 
-def test_a_target_that_is_not_one_segment_is_dropped():
+def test_a_target_that_walks_or_is_absolute_is_dropped():
     grants = parse_grants(
         annotation(
             mount("home/users/01H-eric", "eric"),
             mount("home/users/01H-eve", "../../etc"),
-            mount("home/users/01H-eve", "a/b"),
+            mount("home/users/01H-eve", "a/../b"),
+            mount("home/users/01H-eve", "/abs"),
+            mount("home/users/01H-eve", "a//b"),
             mount("home/users/01H-eve", ""),
+            mount("home/users/01H-eve", "a/b/c/d"),
+            mount("home/teams/01K-research", "datasets/genome"),
         )
     )
-    assert [grant.target for grant in grants] == ["eric"]
+    # `datasets/genome` is an Environment's content at its promised depth;
+    # everything that walks, starts at the root, or goes too deep is not.
+    assert sorted(grant.target for grant in grants) == ["datasets/genome", "eric"]
+
+
+def test_a_nested_target_is_bound_beneath_a_plain_parent_directory(gateway, mounter):
+    report = gateway.reconcile(
+        pod(annotation(mount("home/users/01H-eric", "eric"), mount("home/teams/01K-research", "datasets/genome", "ro")))
+    )
+
+    assert report.failed == {}
+    assert report.state == STATE_READY
+    assert report.mounted == ["datasets/genome", "eric"]
+    tree = gateway.pod_tree(POD)
+    assert mounter.is_mount_point(os.path.join(tree, "datasets", "genome"))
+    assert os.path.isdir(os.path.join(tree, "datasets"))
+    assert not mounter.is_mount_point(os.path.join(tree, "datasets")), "the parent is a directory, not a mount"
+
+
+def test_revoking_a_nested_target_takes_its_empty_parent_with_it(gateway, mounter):
+    gateway.reconcile(
+        pod(annotation(mount("home/users/01H-eric", "eric"), mount("home/teams/01K-research", "datasets/genome", "ro")))
+    )
+    report = gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric"))))
+
+    tree = gateway.pod_tree(POD)
+    assert report.mounted == ["eric"]
+    assert not mounter.is_mount_point(os.path.join(tree, "datasets", "genome"))
+    assert not os.path.exists(os.path.join(tree, "datasets")), "made for the leaf, gone with it"
+    assert gateway.counters["leaked"] == 0
+
+
+def test_releasing_a_pod_with_a_nested_mount_leaves_nothing_behind(gateway, mounter):
+    # The release sweep once took every entry of the tree for a mount and
+    # tried to unmount `datasets` — a directory — which counted as a leak and
+    # kept the tree standing.
+    gateway.reconcile(
+        pod(annotation(mount("home/users/01H-eric", "eric"), mount("home/teams/01K-research", "datasets/genome", "ro")))
+    )
+    gateway.reconcile(pod(annotation(mount("home/teams/01K-research", "datasets/genome", "ro")), terminating=True))
+
+    assert not os.path.isdir(gateway.pod_tree(POD))
+    assert gateway.counters["leaked"] == 0
 
 
 def test_a_source_that_walks_out_is_dropped():

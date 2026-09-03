@@ -313,6 +313,24 @@ configured with for the cluster.
 Three things run beside the API and the worker only when a cluster wants the
 workflow. Each is a switch, a secret and a verification; none is on by default.
 
+### Revoking a mount that is in a running sandbox
+
+`DELETE /api/contents/v1/attachments/{uid}` moves a mount attachment to
+`revoking`. For a mount the node gateway holds in a Datalayer runtime — a
+`files` folder or a bucket bound under `/home/jovyan` — Contents then makes
+the revoke reach the sandbox: it calls Runtimes'
+`DELETE /api/runtimes/v1/runtimes/{runtime}/mounts/{target}` **with the
+caller's own credentials** (`DATALAYER_RUNTIMES_URL`), so ownership is checked
+where it always is. The Operator unmounts, waits for the node agent to
+confirm, and reports the attachment `revoked` itself, after the mount is
+gone and never before; a `404` from Runtimes means nothing carries the mount
+any more and the attachment is `revoked` at once; anything else — Runtimes out
+of reach included — leaves `revoking` standing, with the mount, for the
+runtime's deletion to settle as it always did. A Volume is not asked of the
+gateway: its claim is fixed at creation and stays until the runtime is
+deleted. An attachment at `/home/jovyan` itself is the Home Folder capability
+and is left alone.
+
 ### Local mounts: the relay and the Local CSI driver
 
 A local mount is a folder of a person's computer, served over an encrypted
@@ -656,6 +674,7 @@ page (default `200`).
 | `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://r1.datalayer.run` (the runtimes plane, where the NFS lives), local Plane uses `http://localhost:9400` |
 | `DATALAYER_IAM_URL` | IAM endpoint used to resolve the caller's memberships and to read credentials. The chart default is the in-cluster service, correct only where Contents is co-located with IAM; on the runtimes plane `up.sh` overrides it with the platform plane's public endpoint |
 | `DATALAYER_SPACER_URL` | Spacer endpoint used to resolve accessible spaces, overridden the same way as `DATALAYER_IAM_URL` |
+| `DATALAYER_RUNTIMES_URL` | Runtimes endpoint a revoke of a mounted folder is forwarded to, as the caller (`DELETE /api/runtimes/v1/runtimes/{name}/mounts/{target}`). The chart sets the in-cluster service (`datalayer-runtimes-svc.datalayer-api:9500`); left unset, the common default is the public prod1 URL — another plane, whose `404` for a runtime it has never heard of is not "nothing to unmount", which is why a `404` settles a revoke only in the Operator's own words. |
 | `DATALAYER_SOLR_ZK_HOST` | ZooKeeper ensemble the Solr DAOs connect through; required by the API and the worker |
 | `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint, polled by the readiness probe. Address the `-solrcloud-common` service **without a port** — it listens on 80, while only the `-solrcloud-headless` service listens on 8983. Pointing the common service at 8983 leaves readiness reporting Solr `unreachable` while the worker, which goes through ZooKeeper, stays healthy |
 | `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | Solr identity, supplied through Kubernetes secrets in production |

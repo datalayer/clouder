@@ -151,6 +151,10 @@ account's. Runtimes' part, in order:
    the caller's credentials again — a source the caller cannot read refuses
    the launch — because the Operator renders a Home Folder (`files`) and a
    Volume differently and the catalog is where that difference is written.
+   A `files` source attached under `/home/jovyan` — a share — comes back
+   from prepare with its `source_path`, the claim-relative folder the
+   Operator binds; the manifest carries the same field, so a listing and
+   a launch name the same place.
 2. **Resolve the Home Folders.** When the request asks for the `home_folder`
    capability or one attachment is a Home Folder, Runtimes asks IAM for the
    caller's memberships and sets `home_folder_mounts` to their own folder plus

@@ -330,10 +330,28 @@ share a mount path or one is not an absolute path. Then, per `delivery`:
 | Attachment | What the pod gets |
 | --- | --- |
 | Home Folder (a `files` source, stamped by Runtimes) | subpaths of the platform shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`), one per membership the caller has — their own, each organization, each team — at `/home/jovyan/<handle>`; an init container creates the folders and hands them to the runtime user. The list of memberships is resolved by Runtimes from IAM and travels on the pod as `runtime-pools.datalayer.io/home-folder-mounts`. Contents reads the same claim at the same path, which is why the two services' mount paths must agree. With the Node Mount Gateway on, the same folders reach the same paths through a pooled pod instead — see below |
+| A **share** — a `files` source attached at `/home/jovyan/<name>`, carrying the `source_path` Contents puts on its prepare answer | a gateway `files` grant: that claim sub-path bound at `/mnt/datalayer/<name>` (linked as `/home/jovyan/<name>` by the companion), in the attachment's `mode`. Someone else's Home Folder shared with the caller, or the caller's own read-only under a second name. A `<name>` that is already a mount is skipped, not bound twice; a path outside `/home/jovyan` is refused with `FILES_PATH_UNSUPPORTED`. Without a `source_path` (a Contents older than this row) the attachment is not mounted — the Home Folder rendering above knows only the caller's memberships. |
 | `mount` of a Volume | the Volume's PVC, at the attachment's `mount_path` (default `/home/jovyan/volumes/<volume name>`), read-only when the `mode` is `ro`. A Volume of another account refuses the launch; a required Volume that cannot be found refuses it, an optional one is dropped |
 | `local-bridge` (a person's own folder over the relay) | an inline `csi:` volume of the `local.csi.datalayer.io` driver — `content-bridge-<n>`, attributes `bridge-uid`, `sandbox-uid`, `mount-mode`, `relay-url` — with `nodePublishSecretRef` pointing at the Secret **`bridge-<bridge uid>`** (key `mount-token`, label `contents.datalayer.io/bridge-uid`). The Secret is created right after the pod and owned by it, so the token goes when the pod goes; the pod spec names the bridge and never carries the token. The [Local CSI driver](/services/system/local-csi/) on the node dials the relay and binds the filesystem before the container starts. An attachment Contents did not prepare a bridge session for is reported `failed` with `BRIDGE_NOT_PREPARED`: a required one refuses the launch, an optional one is left out — never rendered as an empty directory |
 | `environment` (brought by the Environment, see above) | the pinned git checkout, the shared-filesystem subpath or the Datashim claim; no Contents record, nothing reported |
 | anything else | refused when required, dropped when optional |
+
+A mount the gateway holds can also be taken **out** of a running runtime:
+`DELETE /api/operator/v1/runtimes/{name}/mounts/{target}` rewrites the pod's
+mount set without it, waits for the node agent to answer for the new set, and
+only then reports the attachment behind the removed grant `revoked` to
+Contents — the order is the point; a record that said `revoked` while the
+sandbox could still read the folder would be a lie. A grant with no
+attachment uid (a membership Home Folder) has nothing to report. Contents
+calls this route, through Runtimes and as the person revoking, when a
+gateway-served mount is revoked; a person can call it directly.
+
+After the mounts, the home links. The node agent binds each folder at
+`/mnt/datalayer/<name>`; the companion in the pod is what makes
+`/home/jovyan/<name>` point at it, and on a freshly spawned pod the companion
+is routinely a second or two behind the gateway. The Operator asks for the
+links again, with backoff, for up to `90` seconds, and gives up at once only
+on a companion that *answers* with a refusal.
 
 The rendered list is written on the pod as the
 `contents.datalayer.io/attachments` annotation. It is the record: a pod spec
@@ -394,6 +412,7 @@ Folder. What decides, per launch:
 | Mounts nothing | The pool. |
 | Home Folder only (the `home-folder` capability, or a `files` attachment), gateway on, a pooled Pod carrying the gateway | **The pool**, with a hot attach: the Operator writes the mount set on the Pod and the node agent binds it in. |
 | Home Folder only, gateway off | Its own Pod. |
+| An Environment whose contents mount deeper than one segment below the home (`/home/jovyan/datasets/<name>`) | **The pool**, now: a gateway target may be a path of up to three clean segments, so the Environment's contents are grants like the folders. Before that rule changed, such an Environment could not be served from the pool and every launch of it that mounted anything got its own Pod — the p95 gate's twenty seconds. |
 | A Volume, a Local Mount, or anything else the gateway cannot serve | Its own Pod, whatever the gateway setting. A Volume has a PVC nothing staged on the node; a Local Mount is an inline CSI volume fixed at creation. |
 | Home Folder only, gateway on, but the pool holds only Pods built before it | Its own Pod. Handing out a pre-gateway Pod would start a runtime whose folders never arrive. |
 

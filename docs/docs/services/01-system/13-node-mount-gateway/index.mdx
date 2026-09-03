@@ -188,6 +188,24 @@ The four deliveries are the whole vocabulary:
 - **materialize** — there is nothing to mount yet. A URL is not a filesystem,
   so the content is produced on the node first and then bound.
 
+### A target is a path, one segment usually
+
+A grant's `target` is where it appears under `/mnt/datalayer` and, through
+the companion's link, under `/home/jovyan`. For a Home Folder or a share it
+is one segment — `eric`, `eric-ro`. For an Environment's contents it is the
+path the Environment declares beneath the home, `datasets/<name>` or
+`models/<name>`, because that is where the manual says they are and where a
+spawned pod already puts them. The rule was one segment only, and its cost
+was invisible: an Environment whose contents sit two deep could not be
+served from the pool at all, so every launch of it that mounted anything —
+a Home Folder launch included — was given a cold pod, twenty seconds
+instead of three. A target is now a relative path of clean segments, three
+at most; the agent makes the parent directories in the pod's tree and takes
+them away again when the leaf is revoked, its release sweep looks for mount
+points rather than entries (a nested target's parent is a directory, not a
+mount), and the companion links at the same depth, making `~/datasets` when
+it has to and never overwriting a folder of the user's.
+
 ### These kinds are not Content Source kinds
 
 Two taxonomies use the word **kind**, they share two spellings, and they
@@ -210,7 +228,7 @@ How one becomes the other:
 
 | A source of kind… | attached with `delivery`… | is mounted as gateway kind… |
 | --- | --- | --- |
-| `files` (a Home Folder) | `mount` | `files` |
+| `files` (a Home Folder — yours, or one shared with you) | `mount` | `files`, from the `source_path` Contents puts on the prepare answer |
 | `cloud-storage` | `mount` | `cloud-storage` |
 | anything, from a person's own machine | `local-bridge` | `local-bridge` |
 | `volume` | `mount` | **nothing** — a Volume has its own PVC, which a running Pod cannot be given |
@@ -218,6 +236,24 @@ How one becomes the other:
 | An Environment's `RuntimeContent`, `type: git` | — | `git` |
 | An Environment's `RuntimeContent`, `type: nfs` | — | `shared-folder`, or `nfs` when it names its own export |
 | An Environment's `RuntimeContent`, `type: s3` | — | `cloud-storage` |
+
+The first row has two cases, and the Operator tells them apart by the
+attachment's `mount_path`. An attachment at `/home/jovyan` itself is the Home
+Folder capability said as an attachment: it is rendered with the person's own
+folders, one grant per membership, and never as a share. An attachment at
+`/home/jovyan/<name>` is a **share** — a `files` folder attached by claim
+path, which is how someone else's Home Folder, or your own read-only under a
+second name, reaches a sandbox. The Operator builds that grant from the
+`source_path` Contents puts on the attachment's *prepare* answer (and on the
+manifest): source is that path, target is `<name>`, mode is the attachment's,
+kind is `files`. A share whose `<name>` is already a mount is skipped rather
+than bound twice at one place; one outside `/home/jovyan` is refused with
+`FILES_PATH_UNSUPPORTED`; a walking source is refused where the grant is
+written, with `INVALID_SOURCE`. An attachment with no `source_path` is what a
+Contents older than this page sends, and is left alone — which is to say not
+mounted, the state every `files` share was in before the two halves agreed.
+The same builder serves a pooled pod, a spawned one, and a hot attach into a
+running one.
 
 :::warning[`delivery` is also two words]
 
@@ -286,7 +322,7 @@ ready annotation rather than only a node log:
 | --- | --- |
 | `NODE_MOUNT_GATEWAY_UNSUPPORTED_KIND` | A kind this deployment does not serve — or one nothing serves anywhere |
 | `NODE_MOUNT_GATEWAY_INVALID_SOURCE` | A source that is not the shape its kind requires, or a path that walks outside the shared claim |
-| `NODE_MOUNT_GATEWAY_INVALID_TARGET` | A target that is not one path segment |
+| `NODE_MOUNT_GATEWAY_INVALID_TARGET` | A target that is not a relative path of clean segments — one for a Home Folder or a share, `datasets/<name>` for an Environment's contents, three at most; never absolute, never walking |
 | `NODE_MOUNT_GATEWAY_SECRET_REFUSED` | A Secret the Pod does not own, or one the agent may not read |
 | `NODE_MOUNT_GATEWAY_MOUNT_FAILED` | The mount was attempted and did not happen — including a checkout that failed or timed out |
 | `NODE_MOUNT_GATEWAY_MOUNT_DEAD` | A `process` mount whose filesystem died; the Pod is `degraded` |

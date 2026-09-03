@@ -51,6 +51,7 @@ from .mounter import MountError, Mounter
 log = logging.getLogger("clouder.csi.node_mount_gateway")
 
 from datalayer_core.contents_node_mount_gateway import (  # noqa: F401
+    TARGET_MAX_SEGMENTS,
     CLOUD_STORAGE_KIND,
     DELIVERY_BIND,
     DELIVERY_FILESYSTEM,
@@ -557,7 +558,7 @@ class NodeMountGateway:
             return
 
         errors: list[str] = []
-        for target in sorted(applied) + sorted(_entries(tree) - set(applied)):
+        for target in sorted(applied) + sorted(_stray_mounts(tree, set(applied), self.mounter)):
             path = os.path.join(tree, target)
             pid = _pid_of(applied.get(target))
             if pid:
@@ -824,11 +825,17 @@ class NodeMountGateway:
             self.counters["leaked"] += 1
             log.error("pod %s: '%s' would not unmount: %s", pod_uid, target, exc)
             return
-        try:
-            os.rmdir(path)
-        except OSError as exc:
-            if exc.errno not in (errno.ENOENT, errno.ENOTEMPTY, errno.EBUSY):
-                log.warning("pod %s: '%s' could not be removed: %s", pod_uid, target, exc)
+        # The leaf, then any parent `makedirs` made for a nested target, as
+        # far up as the pod's tree and only while empty.
+        tree = self.pod_tree(pod_uid)
+        while path != tree and path.startswith(tree + os.sep):
+            try:
+                os.rmdir(path)
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTEMPTY, errno.EBUSY):
+                    log.warning("pod %s: '%s' could not be removed: %s", pod_uid, target, exc)
+                break
+            path = os.path.dirname(path)
 
     # -- state -------------------------------------------------------------
 
@@ -930,6 +937,34 @@ def _pod_uid(value: str) -> str:
     if not _POD_UID_RE.match(raw):
         raise NodeMountGatewayError(ERROR_INVALID_TARGET, f"'{value}' is not a pod uid")
     return raw
+
+
+def _stray_mounts(tree: str, applied: set[str], mounter: Any) -> set[str]:
+    """Mount points beneath a pod's tree that the state does not know about.
+
+    Once the entries of the tree; wrong since a target may be `datasets/<name>`,
+    whose parent `datasets` is a plain directory the leaf's `makedirs` made —
+    an entry, not a mount, and unmounting it fails, which counted as a leak
+    and kept the tree from being removed. So the tree is walked to the depth
+    a target may have, and only mount points are returned, by the relative
+    path a target would have. Nothing under an applied target is entered: a
+    mount's own contents are the source's, not ours.
+    """
+    stray: set[str] = set()
+
+    def walk(directory: str, prefix: str, depth: int) -> None:
+        for name in sorted(_entries(directory)):
+            relative = f"{prefix}/{name}" if prefix else name
+            path = os.path.join(directory, name)
+            if relative in applied:
+                continue
+            if mounter.is_mount_point(path):
+                stray.add(relative)
+            elif depth > 1 and os.path.isdir(path) and not os.path.islink(path):
+                walk(path, relative, depth - 1)
+
+    walk(tree, "", TARGET_MAX_SEGMENTS)
+    return stray
 
 
 def _entries(path: str) -> set[str]:
