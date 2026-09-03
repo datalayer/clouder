@@ -295,8 +295,10 @@ written beside the backup is what lets a restore say whether the store it
 found is the store the catalog expects, before the catalog is trusted:
 
 ```bash
-kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest write /tmp/objects.json
-kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest verify /tmp/objects.json
+# On the shared filesystem, not in the pod. The drill's next step stops the
+# worker, and a manifest written to the pod's /tmp goes with it.
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest write /mnt/shared-fs/backups/objects.json
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest verify /mnt/shared-fs/backups/objects.json
 ```
 
 `verify` exits `1` for a key that is missing, of another size or of another
@@ -532,8 +534,13 @@ silently rather than with an error. The reindex is what finishes a mapping
 change: it walks every family, applies the migrations from the version the
 family is on to the version the code writes, and writes each document back.
 Each family then records the version it is on, as a
-`content_migration_state` document **in its own collection** — so a restored
-backup carries its own migration state and knows where it stands.
+`content_migration_state` document **inside the collection it describes** —
+not a fifth collection: the four are `contents`, `content-objects`,
+`content-operations` and `content-audit`, and each carries its own state
+document. So a restored backup of any one collection carries its own migration
+state and knows where it stands, and a page that listed a separate
+migration-state collection (as this one did) described something that does
+not exist on any cluster.
 
 CI enforces the other half: the mapping is regenerated on every build, and a
 codec change whose fingerprint moved without a new version, a migration with

@@ -512,11 +512,26 @@ an identity derived from its **hostname** — `sandbox-<pod>`, unless
 so a restart of the same sandbox resumes rather than leaving a second one
 behind, and two sandboxes are never one.
 
-It registers with the **owner's token**, not the platform's service
-credential, and its registration is therefore **not** `managed`: there is a
-person at the keyboard by definition, so none of the self-bootstrap path
-applies. Anyone auditing which registrations Datalayer may mint identities for
-should expect to see none of these.
+Two credentials are involved, and they are not interchangeable:
+
+- The **owner's token** creates the registration and obtains its certificate.
+  Both are owner operations, and the sandbox already holds the token.
+- The **`dataservers` service key** (`DATALAYER_CONTENTS_DATASERVER_API_KEY`)
+  is what the runner presents to `register` and on every heartbeat. Those
+  routes are gated on a service scope a person's token does not carry, so a
+  sandbox that tried the owner's token there answered
+  `401 Service authentication required` on every beat and never registered.
+
+That division is the right one rather than an inconvenience: `register` is how
+the platform knows which Data Servers exist, and a credential that let anybody
+register one would let anybody claim to be one. The practical consequence is
+that only a sandbox **Datalayer runs** can serve live tables — a process
+started outside the platform has no service key, publishes its snapshot, and
+reports `live: False`.
+
+The registration is **not** `managed`: the owner is present, so none of the
+self-bootstrap path applies. Anyone auditing which registrations Datalayer may
+mint identities for should expect to see none of these.
 
 What this means operationally is that a busy cluster accumulates one
 registration per sandbox that has published a live table, each with a lease
@@ -630,6 +645,17 @@ it elsewhere and it comes up healthy, registers, goes `ready`, and reports
 every published table as missing — a message about a file, from a process that
 could not have seen it whatever anybody published.
 
+### The three modes
+
+| Mode | What it adds |
+| --- | --- |
+| `DATALAYER_DATASERVER_SMOKETEST_MODE=identity` | The default. A certificate obtained here, as the owner, and mounted from a Secret. |
+| `DATALAYER_DATASERVER_SMOKETEST_MODE=self-bootstrap` | A pod with **no** identity Secret obtains its own — and an unmanaged registration is refused the same thing. |
+| `DATALAYER_DATASERVER_SMOKETEST_MODE=live` | The run becomes the sandbox: a table served out of memory, followed as it changes, and lost when the process stops. |
+
+Each is a superset of the deployment the default performs; they differ in how
+the Data Server gets its identity and in what is asked of it afterwards.
+
 ### The self-bootstrap mode
 
 ~~~bash
@@ -691,6 +717,78 @@ upgrade, marking the registration `--managed` also clears it, but that grants
 the platform the right to mint identities for it — a real change, not a
 workaround, and not one to make for a Data Server somebody deployed on their
 own hardware.
+
+### How long a stopped sandbox keeps being routed to
+
+A live table's fallback is driven by the **lease**, read at routing time. A
+query against a live table checks the sandbox's last heartbeat against its
+lease when the query is created, so once one lease (90 seconds) has passed
+with no heartbeat, queries go to the snapshot — whether or not the lease sweep
+has run yet.
+
+It used to depend on the sweep. Routing read the registration's *stored*
+state, and only the sweep wrote a lapsed lease into it, on its own interval
+(`DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS=300`): a stopped sandbox went on
+receiving queries for up to five minutes, and each of those was accepted,
+never picked up, and counted against its owner's concurrency. Both halves are
+fixed — routing reads the lease directly, and a `query-expiry` sweep ends any
+query that outlives its own `max_seconds`. The sweep still records the state
+transition for the catalog and the audit trail; nothing waits for it.
+
+If you are reading a report of "queries hanging after a notebook was shut
+down" on a cluster running an older Contents, that is the five-minute window,
+and the relief is upgrading.
+
+Verified on r1: a live table answered `live` while its process ran, followed a
+change made in that process, and after the process stopped and the sweep
+marked the registration `unavailable`, answered from the snapshot with
+`answered: snapshot` and a reason in words.
+
+### The live mode
+
+~~~bash
+DATALAYER_DATASERVER_SMOKETEST_MODE=live plane dataservers-smoketest
+~~~
+
+Deploys the snapshot Data Server exactly as the default mode does, and then
+adds the half no deployment can check: **the run itself becomes the sandbox**.
+It publishes a table it holds in memory with `live=True`, queries it and
+asserts the answer came back `live`, changes the object and asserts the next
+query follows it, then stops serving and asserts the query falls back to the
+snapshot — two rows where the live table had three — and says why.
+
+A Data Server only ever dials out, which is what makes this possible: the
+process holding the object is the process serving it, wherever it runs. No
+Code Sandbox is needed to check a sandbox's behaviour.
+
+It needs `DATALAYER_CONTENTS_DATASERVER_API_KEY`, because the sandbox's Data
+Server registers with the platform's credential rather than the owner's token,
+and it refuses to start without it rather than registering something that
+would answer `401` on every beat.
+
+The fallback is the slow part: it waits for one lease of silence (90 seconds)
+before queries go to the snapshot, so this mode takes a lease longer than the
+others. `DATALAYER_DATASERVER_SMOKETEST_FALLBACK=false` stops after the live
+half when you want a quick check of the serving path alone.
+
+### Queries left behind by a Data Server that went away
+
+A query routed to a Data Server that has stopped is **accepted** and then
+never picked up. It is not refused and it does not time out at the transport;
+it simply stays `pending`.
+
+The worker's `query-expiry` sweep ends those: a query that has outlived its
+own `max_seconds` (with a grace multiple, so a query allowed five minutes is
+not killed at four minutes fifty-nine) is failed as `QUERY_EXPIRED`. The code
+is deliberately not a timeout — "nobody ever started this" usually means a
+Data Server went away, and that is a different thing to tell somebody than
+"this ran too long".
+
+Without it the queries accumulate against the caller's **concurrency limit**,
+and the refusal they eventually get says `you have 8 queries pending or
+running; the limit is 8. Wait for one to finish` — about queries that cannot.
+If you see that on an older cluster, the fix is the sweep, and the immediate
+relief is cancelling the pending queries.
 
 ### After a failed run
 
