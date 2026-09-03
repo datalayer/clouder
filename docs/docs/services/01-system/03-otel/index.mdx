@@ -288,11 +288,12 @@ reason. A user, an agent, an organization or a sandbox is never a metric label.
 | `mcp.readiness.failures` | counter | `dependency` |
 | `mcp.sandbox.lost` | counter | `provider`, `then` (`reported`, `relaunched`) |
 
-Not implemented, and therefore not queryable: `mcp.call.duration`,
-`mcp.bindings`, `mcp.tasks`, `mcp.task.duration`, `sandbox.launch_seconds`,
-`mcp.audit.write_failures`, `mcp.dependency.ready`, and every `durable.*`
-instrument — those belong to the durable execution service, which is not
-deployed.
+The `durable.*` instruments are written by the durable execution service
+under `service.name` `datalayer-durable`, and `sandbox.launch_seconds` by
+the Runtimes path; both are listed, with their alert rules, on the
+[durable service page](../16-durable/index.mdx#metrics-and-alerts). This
+sentence used to say they belonged to a service that was not deployed,
+which stopped being true with the durable chart and was left standing.
 
 ##### Correlation
 

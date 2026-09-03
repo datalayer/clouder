@@ -333,6 +333,46 @@ endpoint can answer leaves a healthy process at `0/1` forever with
 hypothetical — it is exactly what happened to the MCP gateway.
 :::
 
+## Metrics and alerts
+
+Five instruments, written by the workers under `service.name`
+`datalayer-durable` and read through the Datalayer OTEL service. Labels are
+bounded to closed sets — the workflow catalog and each workflow's steps — and
+the task uid goes on the span, never on a metric everybody scrapes.
+
+| Instrument | Kind | Labels | What it says |
+| --- | --- | --- | --- |
+| `durable.step.duration` | histogram (s) | `workflow`, `step` | How long one workflow step took |
+| `durable.queue.wait` | histogram (s) | `queue` | How long work waited before a worker took it — the number that says a queue is under-provisioned, and not derivable from step duration: a fast step that waited an hour looks fine there |
+| `durable.recoveries` | counter | `workflow` | Workflows resumed after the worker running them was lost |
+| `durable.runs` | counter | `workflow`, `status` | Workflows that reached a terminal state |
+| `durable.steps` | counter | `workflow`, `step`, `outcome` | Steps that finished |
+
+`sandbox.launch_seconds{provider}` is the Runtimes path's and sits beside
+these in the Observability view: it says how long an agent waited for a
+sandbox, and the `runtimes.launch` and `sandbox.<provider>` spans say
+whether Datalayer or the provider was slow.
+
+The alerts, as the OTEL service's rules express them. Each names the
+question it answers, because an alert whose reader has to work out what it
+means is one that gets silenced.
+
+| Alert | Rule | What it means |
+| --- | --- | --- |
+| `DurableQueueWaiting` | `histogram_quantile(0.95, durable.queue.wait{queue})` over 60 s for 10 m | Work is arriving faster than the workers of that queue take it: scale the queue's Deployment, not the others — one Deployment per queue exists so this can be answered per kind of work |
+| `DurableStepSlow` | `histogram_quantile(0.95, durable.step.duration{workflow,step})` over 5× its 7-day median for 15 m | One step of one workflow has slowed; the step name says which service it talks to |
+| `DurableRecovering` | `increase(durable.recoveries[15m]) > 3` for any workflow | Workers are being lost and replaced — a rollout, or workers being killed; a run resumed is a run that did not lose its work, so this is a warning and not a page |
+| `DurableRunsFailing` | `increase(durable.runs{status="failed"}[1h]) / increase(durable.runs[1h]) > 0.2` | More than a fifth of runs are ending failed; `durable.steps{outcome}` says at which step |
+| `DurableNoRuns` | `increase(durable.runs[6h]) == 0` while `mcp.tasks` grew | Tasks are being created and no workflow is finishing: the workers are not picking work up — check `application_version` on `/api/mcp/v1/operations/workflows` against the chart's, since a worker takes only workflows of a version it can run |
+| `SandboxLaunchSlow` | `histogram_quantile(0.95, sandbox.launch_seconds{provider})` > 120 s for 10 m | Launches on one provider are slow; the `sandbox.<provider>` span under `runtimes.launch` says whether the provider or the platform is |
+
+The recent runs are on `GET /api/mcp/v1/operations/workflows` on the
+gateway, for platform administrators — the twenty most recently updated,
+with status and outcome. That route is the operator's listing; the DBOS
+admin port is a container port and never a Service port, because its
+endpoints cancel, resume and fork workflows without passing the API's
+authentication.
+
 ## The admin endpoints
 
 DBOS exposes list, cancel, resume and fork on port **4407**. That port is on
