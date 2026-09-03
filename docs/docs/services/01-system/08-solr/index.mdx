@@ -373,6 +373,52 @@ Bounded grants and attachment status details may use nested documents.
 Unbounded revisions, objects, operations and audit events are independent root
 documents linked by exact `*_uid` fields.
 
+### The MCP mapping
+
+`datalayer_solr/mcp_mappings.json` is the same kind of record for the
+[Jupyter MCP Server](/services/jupyter-mcp-server/): every document family
+the gateway's three collections hold, its `type_s`, the fields it writes,
+the sorts it pages by and the fields carrying an expiry. It is generated
+from the DAO codecs by `scripts/generate_mcp_mappings.py` and a test
+regenerates it and fails when the checked-in copy disagrees with the code.
+
+Eight DAO modules write three collections. `mcp-tasks` and `mcp-audit` hold
+one family each; `mcp-gateway` holds the rest — bindings, the worker
+directory, rate windows, fired alerts, leases, policies, alert rules, audit
+settings, service agents and task grants — each a `type_s` in the one
+collection, so a new family there is **not** a new collection.
+
+Regenerate in the same change that adds a field, a sort or a family:
+
+```bash
+cd services/solr && python3 scripts/generate_mcp_mappings.py
+python3 -m pytest datalayer_solr/tests/test_mcp_solr.py -q
+```
+
+The mapping carries a version. `datalayer_solr/mcp_schema.py` records
+`MCP_MAPPING_VERSION` and the fingerprint of the generated mapping at every
+version, and the test holds the two together: a codec change that forgets to
+bump the version fails the build. So a change that alters what the mapping
+*means* is three edits — the codec, the version, and the new fingerprint the
+failing test prints, read from the regenerated file's `fingerprint` key —
+with a line saying what changed and whether it is additive. Every version so
+far has been additive: a document written under an older version reads back
+with the new field absent, which is what it meant.
+
+Two rules the generator enforces, because Solr does. A cursor query must
+sort on the uniqueKey as a tie breaker, so every paging sort ends in
+`id asc` or `id desc` — `created_at_dt desc,id desc` for task grants. And a
+domain field has one suffix: a field written as `task_uid` in one family
+cannot be `task_uid_s` in another.
+
+**Nothing is pushed to Solr for a mapping change.** The collections use the
+shared managed configset and its typed dynamic fields, so a new field is
+writable the moment a service writes it; the JSON is a record and a test,
+not a schema. What does need the cluster is a **new collection**: add it to
+the `SOLR_COLLECTIONS_AI` and `SOLR_COLLECTIONS_MCP` arrays below, to the
+table above, and run `plane solr-init` for the AI set — creating a collection
+that exists is skipped, so the set is safe to re-run.
+
 ### Source of Truth
 
 The collection arrays are defined in `solr-collections.sh`:
