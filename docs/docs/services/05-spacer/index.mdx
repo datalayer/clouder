@@ -124,11 +124,13 @@ access check — the same one a read of the item passes: the owner, a grantee
 at any level, a member for a public item. Until 2026-09-04 it asked for no
 user at all, and the room asked for nothing but the id it handed out.
 
-A token carried to the notebook room beside the session id is verified and
-must admit, or the room closes with `4003`. The lexical room takes no
-session id and so *requires* a token that admits; the reference
-middleware's authentication had been commented out and an invalid token was
-logged and let through.
+A token carried to either room is verified and must admit, or the room
+closes with `4003`; the reference middleware's authentication had been
+commented out and an invalid token was logged and let through. The lexical
+room takes no session id, and the platform's own editors do not send it a
+token yet, so a token-less lexical client is still admitted by document id
+alone — logged on every such join. Closing that door is a UI change: the
+editor's `websocketUrl` carrying `?token=`.
 
 ## Tear Down Datalayer Spacer
 
