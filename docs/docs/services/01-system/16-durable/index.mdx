@@ -462,6 +462,14 @@ something the deployment will not start on.
 make test-local-stack   # the scenarios a fake cannot cover
 ```
 
+Against a real DBOS on that database: the runtime launched and reporting its
+version and queues, every catalog workflow on its own queue, a run walking
+its steps once and in order read back from what DBOS recorded, an approval
+that waits and resumes on a signal, a cancel, a returned refusal read as a
+failure with its reason — and a **killed worker**: a run is stopped in the
+middle of a step, a new worker starts, DBOS hands it what was left in flight,
+and the step that had already finished does not run again.
+
 Those skip loudly without the stack, naming the variable that would unlock
 them.
 
@@ -502,6 +510,17 @@ the unit tests could not.
 Three parts, reported apart: this frontend, the database behind the engine,
 and the workers that take from the queues. One unhealthy service with no
 detail has an operator restarting the wrong thing.
+
+**"Workers" means launched, not registered.** Until 2026-09-04 the DBOS
+engine imported the runtime, decorated the catalog onto it and returned —
+and never created or launched it. Every `start` answered *"No DBOS was
+created yet"*, and `readyz` said `ready`, because the module had imported and
+the database URL was set. The failure was a sentence inside `detail` beside a
+green light. A cluster that asked for durability and got nothing at all
+looked healthy doing it. The engine now creates its runtime, registers the
+catalog on it, launches it — which is also what recovers whatever was pending
+when this worker last stopped — and does not call itself durable until it
+has. A launch that fails leaves nothing behind that could report ready.
 
 ```bash
 curl -s https://r1.datalayer.run/api/durable/readyz | jq '.parts'
