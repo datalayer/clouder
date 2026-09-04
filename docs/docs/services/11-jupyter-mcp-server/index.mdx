@@ -438,6 +438,65 @@ in. That sandbox **is** the session, and it is an `sb_…` handle in
 included — a session whose sandbox is gone is exactly what an operator and a
 user want to see, with why.
 
+## Toolsets and Contents
+
+Two families of tools reach data, and both call the Contents service with
+the caller's own exchanged token. Contents decides; the gateway owns none
+of it.
+
+**Toolsets** are a source's own tools, borrowed. `list_toolsets` shows
+which sources lend any; `enable_toolset` mints a Contents MCP session —
+which is what scopes what may be called and where results may be written —
+and registers the source's tools as `<source>__<tool>` with the source's
+own schema, then says the tool list changed. A call goes to
+`/mcp-sessions/{uid}/calls` with an idempotency key derived from what the
+call *is*, so a retry after a timeout is answered the first result rather
+than run again. `pending-approval` comes back as `input_required` naming
+the approval a person has to decide.
+
+**Contents tools** are the catalogue, attachments, queries and revisions.
+Three rules worth knowing:
+
+- **No tool returns bulk bytes.** A query answers its uid, its state and
+  `datalayer://queries/{uid}/results`. The rows are an Arrow stream a
+  client fetches when it wants them.
+- **An attachment belongs to the session's sandbox**, keyed on the
+  sandbox's uid. A session with no sandbox is told to launch one; a
+  Contents tool never launches one itself, because attaching is not
+  executing and a sandbox nobody asked for is a sandbox somebody is billed
+  for.
+- **Secrets are named, never read.** `list_secrets` answers names, and no
+  tool here accepts or returns a value.
+
+Cancelling the task that is waiting for a query cancels the query too: the
+tool registers the Contents cancel as the task's interrupt. Without it the
+Datasource keeps executing while the task says cancelled.
+
+| Scope | What it buys |
+|---|---|
+| `data:read` | The catalogue, a source, a query's state, a secret's name, and a borrowed tool's call |
+| `data:write` | Attaching, detaching, saving a revision — and `enable_toolset`, which is where writing artifacts into your storage is consented to, once |
+| `tools:use` | Borrowing a source's tools at all |
+
+## A sandbox has two names
+
+A sandbox is identified by a **ULID** — that is its `sandbox_uid`, and it
+is what Contents validates and keys attachments on. Its **Pod name** is a
+deployment detail: the Operator names a runtime `runtime-<ulid>`, and this
+gateway derives `sb-<ulid>` from a session handle (`sb_<ULID>`) because a
+Pod name has to be a DNS label. An external sandbox is
+`external-<provider>-sb-<ulid>`.
+
+Until 2026-09-04 the gateway stored the Pod name in a field called
+`sandbox_uid` and handed it on — to `_meta`, to the task projection, to
+the durable engine and through Runtimes to Contents, which refused it. The
+binding stores `runtime_name` now and derives the uid from its own handle,
+so there is one stored fact and no second copy to disagree with it. Every
+Runtimes call takes the name; `_meta` carries both.
+`datalayer_common.runtime_names.sandbox_uid_of` is the one converter that
+knows every name the platform mints, and answers `""` rather than a name
+it cannot convert.
+
 ### The first execution binds the session
 
 A session's first `execute_code`, `execute_cell` or `insert_execute_code_cell`

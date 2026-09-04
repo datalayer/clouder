@@ -419,6 +419,21 @@ the `SOLR_COLLECTIONS_AI` and `SOLR_COLLECTIONS_MCP` arrays below, to the
 table above, and run `plane solr-init` for the AI set — creating a collection
 that exists is skipped, so the set is safe to re-run.
 
+#### Mapping 15: a Pod name is not a uid
+
+Version 15 renames a sandbox binding's misnamed field. It stored the Pod
+name Runtimes knows the sandbox by, under the name `sandbox_uid` — and a
+sandbox's uid is a ULID, which that field never held. The binding stores
+`runtime_name_s` now, and the uid is derived from the binding's own handle
+rather than stored at all, because it is a function of it.
+
+**Not additive.** A binding written under version 14 has no
+`runtime_name_s`, so the gateway cannot reach that sandbox through
+Runtimes. Bindings are short-lived — they carry `BINDING_TTL_SECONDS` — so
+the old ones age out within the hour rather than being migrated. What a
+deployment loses is the sessions in flight at the rollout, which a gateway
+restart ends anyway.
+
 ### Source of Truth
 
 The collection arrays are defined in `solr-collections.sh`:

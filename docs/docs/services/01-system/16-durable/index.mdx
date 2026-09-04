@@ -152,6 +152,34 @@ Every step acts with **this service's** identity, never a credential
 belonging to the person the work is for. A user token in a workflow history
 is a token that outlives its reasons.
 
+## Mirroring Contents
+
+A Contents operation — a transfer, a query, a materialization — is
+mirrored as a task so it can be watched and cancelled like any other.
+Contents does the work; this service does not re-implement it, and
+mirroring is exactly two calls per family and no third: read the state,
+cancel the work.
+
+| Family | Read | Cancel |
+|---|---|---|
+| `operation_uid` | `GET /operations/{uid}` | `POST /operations/{uid}/cancel` |
+| `query_uid` | `GET /queries/{uid}` | `POST /queries/{uid}/cancel` |
+| `attachment_uid` | `GET /attachments/{uid}` | none — an attachment is detached, not cancelled |
+
+`mirror_state` carries what Contents reported, in Contents' vocabulary; a
+state Contents does not use would be a state nothing sets. When nobody
+signalled — a workflow resumed by a timer, or one whose signal was lost
+with the process waiting for it — it asks Contents rather than mirroring
+`unknown` onto work Contents could describe exactly.
+
+**Cancelling the task cancels the work.** `POST /workflows/{uid}/cancel`
+tells Contents before it answers, and reports what happened. Until
+2026-09-04 it cancelled only the mirror: the transfer ran on while the
+task said cancelled. `DATALAYER_CONTENTS_URL` and
+`DATALAYER_CONTENTS_API_KEY` are what make this possible; empty, the
+workflow still blocks on the signal and says in the log that it can
+neither read nor cancel the work itself.
+
 ## The internal API
 
 Every caller uses it, the gateway included. There is no second path into the
