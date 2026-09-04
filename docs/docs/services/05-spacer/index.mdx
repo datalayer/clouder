@@ -115,6 +115,21 @@ empty for a person's own edit, so a page says "edited by <agent>" only when
 there was one. The room-open event posted to the activity feed names its
 actor the same way — person or agent, with the agent uid and the client.
 
+## Who may join a document's room
+
+A notebook's collaboration room is opened with a **session id** that
+`GET /api/spacer/v1/documents/{id}/ws` hands out, and the websocket admits
+whoever carries it. That endpoint is the door, and it asks the item's own
+access check — the same one a read of the item passes: the owner, a grantee
+at any level, a member for a public item. Until 2026-09-04 it asked for no
+user at all, and the room asked for nothing but the id it handed out.
+
+A token carried to the notebook room beside the session id is verified and
+must admit, or the room closes with `4003`. The lexical room takes no
+session id and so *requires* a token that admits; the reference
+middleware's authentication had been commented out and an invalid token was
+logged and let through.
+
 ## Tear Down Datalayer Spacer
 
 If needed, tear down.
