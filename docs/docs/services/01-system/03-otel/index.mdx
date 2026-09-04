@@ -139,6 +139,19 @@ here gets. That is what "agents by organization" means: the same panels,
 read as one organization by passing its `account_uid`. A panel whose query
 fails answers with its `error` and the other panels still answer.
 
+Whose account a point is under decides who sees it. The gateway exports
+with a service credential, so its platform-level points — workers,
+dependencies, jobs — are filed under the gateway's own account, and a
+platform administrator asking for a built-in dashboard **with no
+`account_uid`** reads that account rather than their personal one, where the
+gateway has never written a point. The account is found in the store, from
+the instruments only the gateway writes about itself, not configured. A call
+made in an organization carries `usage_account_uid` as a label, and the
+consumer files that point under the organization instead: that is what
+"agents by organization" reads when an owner passes their organization's
+`account_uid`, or opens it from the console. Naming an account always means
+that account, and a custom dashboard is never redirected.
+
 People's own dashboards are JSON files under the data directory, one per
 dashboard per account (`{data_dir}/dashboards/{account}/{id}.json`);
 dashboards are few, small and edited by hand, so there is no table to
