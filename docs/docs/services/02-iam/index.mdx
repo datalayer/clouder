@@ -264,6 +264,37 @@ session. IAM validates the choice against membership before stamping it: a
 person cannot act for an organization they do not belong to, and a team is
 refused if it is not that organization's.
 
+### The administrator routes require the role
+
+`PUT /users/{id}/roles/{role}`, `DELETE /users/{id}`, `POST /api-keys/temporary`,
+`PUT /credits/users/{user_id}` and the platform usage reads require
+`platform_admin` (two of them accept `platform_growth_manager` as well), and
+that is enforced by a dependency FastAPI resolves on each route.
+
+It was not, until 2026-09-04. The routes were marked with a
+`@require_auth(PLATFORM_ADMIN_AUTH)` decorator that sets two attributes on
+the function and calls straight through — its own docstring says it is
+"mainly for compatibility and marking functions as requiring auth". The
+enforcement was meant to happen in `AuthnMiddleware`, which reads those
+attributes; a `POST /api/iam/v1/api-keys/temporary` sent to prod1 with
+nothing but an ordinary bearer token reached FastAPI's own body validation
+and answered `422`, which is what a request that was never role-checked
+looks like. The middleware also calls an `authz()` of a different signature
+entirely, so where it does reach the check it raises, is caught, and would
+refuse everyone; `AuthzMiddleware` is commented out. `DATALAYER_AUTHZ_ENGINE`
+is `none`, which grants every tuple it is asked about.
+
+So those routes were guarded by authentication alone — any account that
+could log in could grant itself `platform_admin`, delete a user, or mint a
+ten-minute key carrying another person's roles.
+
+The decorator is left in place as documentation of intent, and is not the
+guard. `require_auth(PLATFORM_MEMBER_AUTH)` — 120 of the 144 uses — is
+deliberately still not enforced: it means "authenticated", and a service
+authenticating with an API key has **no roles at all**, so requiring
+membership there would refuse every service-to-service call in the platform.
+Giving service identities a role is what that would need first.
+
 ### Deprovisioning revokes the agents that came with the membership
 
 Removing somebody from an organization or a team revokes the OAuth grants
