@@ -368,8 +368,11 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    deploy: `plane up datalayer-contents`. The chart then runs the
    `datalayer-contents-bridge` pods, publishes them on the API's host at
    `wss://<runHost>/bridges`, and tells the API and the worker
-   (`DATALAYER_CONTENTS_BRIDGE_ENABLED`, `DATALAYER_CONTENTS_BRIDGE_URL`).
-3. **Check the relay is there.** `curl -s https://<runHost>/api/contents/v1/capabilities | jq '.entry_points[] | select(.kind=="local-mount")'`
+   (`DATALAYER_CONTENTS_BRIDGE_ENABLED`, and `DATALAYER_CONTENTS_BRIDGE_URL`
+   set to the **host**, `wss://<runHost>` — the API appends `/bridges/<uid>`
+   itself for both ends; a value that already ends in `/bridges` sends every
+   client to `/bridges/bridges/<uid>`, which the relay refuses).
+3. **Check the relay is there.** `curl -s https://<runHost>/api/contents/v1/capabilities | jq '.operations[] | select(.name=="local-mount")'`
    must say `available: true`; the Mounts card on the Contents page says the
    same thing in words. Until this is true, `datalayer contents mount`
    refuses with the reason.

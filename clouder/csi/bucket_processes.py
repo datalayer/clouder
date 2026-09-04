@@ -155,6 +155,11 @@ def _aws_payload(credential: dict[str, bytes]) -> dict[str, str]:
     return payload
 
 
+def is_static_credential(credential: dict[str, bytes]) -> bool:
+    """A key pair with no session token and no expiration: nothing to refresh."""
+    return not _text(credential.get(SECRET_SESSION_TOKEN)) and not _text(credential.get(SECRET_EXPIRATION))
+
+
 class BucketProcesses:
     """The gateway's runner for `cloud-storage` grants, over Mountpoint for S3."""
 
@@ -194,8 +199,6 @@ class BucketProcesses:
         if not bucket:
             raise NodeMountGatewayError(ERROR_PROCESS_UNSUPPORTED, f"'{source}' names no bucket")
 
-        self._endpoint.start()
-        token = self._endpoint.issue(credential)
         os.makedirs(target, exist_ok=True)
         command = [self._binary, bucket, target, "--allow-other", "--foreground"]
         if prefix:
@@ -210,11 +213,37 @@ class BucketProcesses:
             command += ["--endpoint-url", endpoint_url]
 
         env = dict(os.environ)
-        # The SDK re-fetches from here as the session nears expiry, so
-        # refreshing the mount is refreshing what this serves — no unmount,
-        # no remount, no open file handle broken mid-read.
-        env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] = self._endpoint.url
-        env["AWS_CONTAINER_AUTHORIZATION_TOKEN"] = token
+        # The SDK inside Mountpoint asks the EC2 instance metadata service
+        # for what it was not told — and on a node that is not an EC2
+        # instance that is a probe that times out, 2.3 s per mount, three
+        # mounts per launch. Everything it needs is in the environment or
+        # the argv; there is nothing to ask.
+        env["AWS_EC2_METADATA_DISABLED"] = "true"
+        token = ""
+        if is_static_credential(credential):
+            # A static key is not a session: nothing expires, nothing is
+            # refreshed — and the container-credentials provider Mountpoint
+            # reads a session through wants a token and an expiration, so a
+            # bare key handed to it mounts, then answers nothing. The key
+            # travels in the process's own environment instead, which no
+            # other process on the node reads, and never in the argv.
+            env["AWS_ACCESS_KEY_ID"] = _text(credential.get(SECRET_ACCESS_KEY_ID))
+            env["AWS_SECRET_ACCESS_KEY"] = _text(credential.get(SECRET_SECRET_ACCESS_KEY))
+            env.pop("AWS_CONTAINER_CREDENTIALS_FULL_URI", None)
+            env.pop("AWS_CONTAINER_AUTHORIZATION_TOKEN", None)
+        else:
+            # The SDK re-fetches from here as the session nears expiry, so
+            # refreshing the mount is refreshing what this serves — no
+            # unmount, no remount, no open file handle broken mid-read.
+            self._endpoint.start()
+            token = self._endpoint.issue(credential)
+            # The SDK reads a key from the environment before it asks the
+            # endpoint: a key the agent's own process happened to carry
+            # would win over the session. None does.
+            for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+                env.pop(name, None)
+            env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] = self._endpoint.url
+            env["AWS_CONTAINER_AUTHORIZATION_TOKEN"] = token
         proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             command,
             env=env,
@@ -224,7 +253,8 @@ class BucketProcesses:
             start_new_session=True,
         )
         self._procs[proc.pid] = proc
-        self._tokens[proc.pid] = token
+        if token:
+            self._tokens[proc.pid] = token
         return proc.pid
 
     def alive(self, pid: int) -> bool:

@@ -1029,3 +1029,44 @@ def test_an_agent_that_cannot_check_out_says_so_rather_than_reporting_a_mount(ga
 
     assert report.failed == {"repo": ERROR_MOUNT_FAILED}
     assert report.mounted == []
+
+
+class TestAProcessMountIsGivenAMoment:
+    """Mountpoint mounts a tenth of a second after it starts; a check made in
+    the same millisecond found nothing and reported a readable bucket failed."""
+
+    class _Mounter:
+        def __init__(self, after):
+            self.after, self.calls = after, 0
+
+        def is_mount_point(self, path):
+            self.calls += 1
+            return self.calls > self.after
+
+    def test_a_mount_that_appears_shortly_is_ready(self, monkeypatch):
+        from clouder.csi import node_mount_gateway as gw
+
+        monkeypatch.setattr(gw.time, "sleep", lambda s: None)
+        mounter = self._Mounter(after=3)
+
+        assert gw._wait_for_mount_point(mounter, "/p", alive=lambda: True, timeout=5) is True
+        assert mounter.calls == 4
+
+    def test_a_process_that_dies_first_is_failed_at_once(self, monkeypatch):
+        from clouder.csi import node_mount_gateway as gw
+
+        monkeypatch.setattr(gw.time, "sleep", lambda s: None)
+        mounter = self._Mounter(after=10**6)
+
+        assert gw._wait_for_mount_point(mounter, "/p", alive=lambda: False, timeout=5) is False
+        assert mounter.calls == 2, "checked, seen dead, checked once more"
+
+    def test_patience_runs_out(self, monkeypatch):
+        from clouder.csi import node_mount_gateway as gw
+
+        clock = iter([0.0, 0.0, 10.0, 10.0, 10.0])
+        monkeypatch.setattr(gw.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(gw.time, "sleep", lambda s: None)
+        mounter = self._Mounter(after=10**6)
+
+        assert gw._wait_for_mount_point(mounter, "/p", alive=lambda: True, timeout=5) is False

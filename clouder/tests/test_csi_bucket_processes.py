@@ -288,3 +288,49 @@ def test_a_process_it_did_not_start_is_still_alive(runner):
 
     assert processes.alive(os.getpid()) is True
     assert processes.alive(2**22) is False
+
+
+def test_a_static_key_travels_in_the_environment_not_the_endpoint(runner, target):
+    # An Environment's bucket names a static key: no session token, no
+    # expiration. The container-credentials provider wants a session and,
+    # handed a bare key, Mountpoint mounted and then answered nothing.
+    from clouder.csi.bucket_processes import is_static_credential
+
+    processes, recorder, _mounter = runner
+    credential = {"access-key-id": b"AKIA", "secret-access-key": b"s3cr3t", "region": b"us-east-1"}
+    assert is_static_credential(credential) is True
+
+    processes.start(kind="cloud-storage", source="genome-browser", target=target, read_only=True, credential=credential)
+
+    command, env = recorder.calls[0]
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIA" and env["AWS_SECRET_ACCESS_KEY"] == "s3cr3t"
+    assert "AWS_CONTAINER_CREDENTIALS_FULL_URI" not in env and "AWS_CONTAINER_AUTHORIZATION_TOKEN" not in env
+    assert "AKIA" not in " ".join(command) and "s3cr3t" not in " ".join(command), "never in the argv"
+    assert "--region" in command and command[command.index("--region") + 1] == "us-east-1"
+
+
+def test_a_session_still_goes_through_the_endpoint(runner, target):
+    from clouder.csi.bucket_processes import is_static_credential
+
+    processes, recorder, _mounter = runner
+    credential = {"access-key-id": b"ASIA", "secret-access-key": b"s3cr3t", "session-token": b"tok",
+                  "expiration": b"2030-01-01T00:00:00Z", "region": b"us-east-1"}
+    assert is_static_credential(credential) is False
+
+    processes.start(kind="cloud-storage", source="genome-browser", target=target, read_only=True, credential=credential)
+
+    _command, env = recorder.calls[0]
+    assert env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] and env["AWS_CONTAINER_AUTHORIZATION_TOKEN"]
+    assert "AWS_ACCESS_KEY_ID" not in env
+
+
+
+def test_mountpoint_is_told_there_is_no_instance_metadata_to_ask(runner, target):
+    # On a node that is not an EC2 instance the SDK's metadata probe times
+    # out: 2.3 s per mount measured, 0.18 s without. Nothing it needs is there.
+    processes, recorder, _mounter = runner
+    credential = {"access-key-id": b"AKIA", "secret-access-key": b"s3cr3t", "region": b"us-east-1"}
+    processes.start(kind="cloud-storage", source="genome-browser", target=target, read_only=True, credential=credential)
+
+    _command, env = recorder.calls[0]
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"

@@ -322,6 +322,7 @@ ready annotation rather than only a node log:
 | --- | --- |
 | `NODE_MOUNT_GATEWAY_UNSUPPORTED_KIND` | A kind this deployment does not serve — or one nothing serves anywhere |
 | `NODE_MOUNT_GATEWAY_INVALID_SOURCE` | A source that is not the shape its kind requires, or a path that walks outside the shared claim |
+| `GATEWAY_KIND_OFF` | Refused by the **Operator**, not the agent: a grant of a kind whose switch is off on this deployment. The Operator reads the same four switches (`DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS`, `_BUCKETS`, `_LOCAL_BRIDGES`, `_REPOSITORIES`) so it never writes what the agent would answer `SECRET_REFUSED`; for an Environment's content it means the pool is declined and the launch spawns with the content. |
 | `NODE_MOUNT_GATEWAY_INVALID_TARGET` | A target that is not a relative path of clean segments — one for a Home Folder or a share, `datasets/<name>` for an Environment's contents, three at most; never absolute, never walking |
 | `NODE_MOUNT_GATEWAY_SECRET_REFUSED` | A Secret the Pod does not own, or one the agent may not read |
 | `NODE_MOUNT_GATEWAY_MOUNT_FAILED` | The mount was attempted and did not happen — including a checkout that failed or timed out |
@@ -512,6 +513,27 @@ refresh path are tested; that `mount-s3` accepts this credential URI on a real
 S3 bucket is part of the cluster run, and a mount that starts without mounting
 anything is reported as a failure rather than as a mount.
 
+### A static key, and a session
+
+Two shapes of credential reach Mountpoint two ways. A **session** — what
+the Operator mints for an attached bucket, refreshed in place before it
+expires — is served to Mountpoint from the agent's loopback credential
+endpoint (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, one token per mount), so a
+refresh is a new answer from the endpoint and never a remount. A **static
+key** — what an Environment's bucket content names, copied by the Operator
+into a Secret the pod owns, with the bucket's own region — is not a session:
+it has no token and no expiration, and the container-credentials provider
+handed one mounts and then answers nothing. So a static key travels in the
+Mountpoint process's own environment, which no other process on the node
+reads, and never in the argv. On the session path the agent strips any
+`AWS_ACCESS_KEY_ID` its own process happened to carry before starting
+Mountpoint, because the SDK reads the environment before it asks the
+endpoint and a stray key would win over the session. Either way the agent
+starts Mountpoint with `AWS_EC2_METADATA_DISABLED=true`: the SDK inside it
+asks the EC2 instance-metadata service for whatever it was not told, and on
+a node that is not an EC2 instance that is a probe that times out — 2.3 s
+per mount, measured, against 0.18 s without — for an answer nothing needs.
+
 ## When a mount needs a credential
 
 A Home Folder needs none: it is a sub-path of a claim the agent mounts once
@@ -586,6 +608,29 @@ The Operator must have `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED=true` as well, or i
 never writes a grant and every mounting launch keeps spawning its own Pod.
 Turning it on in the Operator without the agent is the worse order: Pods would
 carry the volume and wait for mounts nobody makes.
+
+### Rolling a new agent image
+
+The agent is a DaemonSet with `maxUnavailable: 1`, so a new image goes one
+node at a time, and an agent that restarts converges on the mounts it finds
+in its pods' annotations rather than remaking them — a runtime on that node
+keeps its folders through the roll. Bump the tag in the chart's
+`driver.image` (and the image Makefile), push, then:
+
+~~~bash
+helm upgrade datalayer-node-mounts \
+  $PLANE_HOME/etc/helm-private/charts/datalayer-node-mounts \
+  -n datalayer-runtimes --reuse-values \
+  --set driver.image=$DATALAYER_DOCKER_REGISTRY/node-mounts:<tag>
+kubectl rollout status daemonset/datalayer-node-mounts -n datalayer-runtimes
+clouder node-mounts verify
+~~~
+
+`--reuse-values` keeps the release's switches (the gateway, the claim, each
+mount kind) and takes only the tag; `verify` should still answer `0 mount(s)
+would not unmount` on every node once the roll is through. Never re-push a
+tag the DaemonSet already runs: `imagePullPolicy: Always` would pull it on
+the next restart, and nothing would say which agent a node is running.
 
 ## Turning it on, and proving it works
 

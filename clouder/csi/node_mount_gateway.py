@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import re
 import shutil
 import stat
@@ -781,7 +782,18 @@ class NodeMountGateway:
                 read_only=grant.read_only,
                 credential=credential,
             )
-            if not self.mounter.is_mount_point(path):
+            # A filesystem process mounts a moment after it starts —
+            # Mountpoint in about a tenth of a second — and a check made in
+            # the same millisecond found nothing, stopped it, and reported a
+            # bucket the sandbox could read as `MOUNT_FAILED`. Wait for the
+            # mount point, briefly; a process that dies first is failed at
+            # once.
+            if not _wait_for_mount_point(
+                self.mounter,
+                path,
+                alive=lambda: self.processes.alive(pid),
+                timeout=PROCESS_MOUNT_PATIENCE_SECONDS,
+            ):
                 # Started and mounted nothing: a directory reported as a mount
                 # is the failure that lets somebody read an empty bucket and
                 # believe it.
@@ -937,6 +949,23 @@ def _pod_uid(value: str) -> str:
     if not _POD_UID_RE.match(raw):
         raise NodeMountGatewayError(ERROR_INVALID_TARGET, f"'{value}' is not a pod uid")
     return raw
+
+
+#: How long a filesystem process is given to bring its mount up. Mountpoint
+#: takes a tenth of a second; a bridge over a relay a little more; anything
+#: past this is a process that is not going to mount.
+PROCESS_MOUNT_PATIENCE_SECONDS = 15.0
+
+
+def _wait_for_mount_point(mounter: Any, path: str, *, alive: Any, timeout: float, poll: float = 0.05) -> bool:
+    """True once `path` is a mount point; False if the process dies or time runs out."""
+    deadline = time.monotonic() + max(float(timeout), 0.0)
+    while True:
+        if mounter.is_mount_point(path):
+            return True
+        if not alive() or time.monotonic() >= deadline:
+            return mounter.is_mount_point(path)
+        time.sleep(poll)
 
 
 def _stray_mounts(tree: str, applied: set[str], mounter: Any) -> set[str]:
