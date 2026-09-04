@@ -98,13 +98,45 @@ task row appears, and the run never happens. A worker that cannot start is
 logged and reported through `/operations` rather than crash-looping the
 service, because a service that crash-loops cannot say what is wrong.
 
-**Versioning is a build id.** Every worker reports the build it runs
-(`DATALAYER_DURABLE_APPLICATION_VERSION`, the chart's `appVersion`) and
-Temporal keeps a run on a compatible worker. A worker that reported nothing
-would take a run started by code it does not have. A change to a workflow's
-*shape* — steps added, reordered, removed — needs `workflow.patched()` as
-well, so a run started before the change finishes the way it started; there
-is no shape change yet to guard, and the first one must add it.
+**Versioning is a build id, and the server has to allow it.** Every worker
+reports the build it runs (`DATALAYER_DURABLE_APPLICATION_VERSION`, the
+chart's `appVersion`), and declares it as the new default for each queue it
+serves, so new runs go to this build while runs already in flight stay with
+the build that started them.
+
+That declaration is not optional and it is not free: a *versioned* worker is
+only given tasks for a build id the queue knows, so a worker reporting a
+build nobody registered polls a queue that will never give it anything. The
+runs are accepted, nothing happens, and nothing says so. It is what this
+engine did the first time it met a real server, and worker versioning is
+**disabled by default** on a Temporal namespace, so this is the ordinary
+case rather than an exotic one.
+
+So the engine asks. If the namespace refuses the declaration, the workers run
+**unversioned** and `/operations` reports `versioned: false` — the pinning is
+lost, which is a real loss and worth seeing before an upgrade rather than
+during one, but the alternative is running nothing at all, which is worse and
+much harder to see. Enabling it is a namespace setting on the server side
+(`frontend.workerVersioningDataAPIs` and `frontend.workerVersioningWorkflowAPIs`
+in Temporal's dynamic config), and belongs with the chart branch.
+
+A change to a workflow's *shape* — steps added, reordered, removed — needs
+`workflow.patched()` as well, so a run started before the change finishes the
+way it started. There is no shape change yet to guard, and the first one must
+add it.
+
+**The namespace has to exist.** A worker polling one that does not logs a
+warning and carries on, so the service looks healthy while nothing it accepts
+can ever run. `/operations` asks the server directly and reports
+`durable: false` naming the namespace, rather than reporting a healthy engine
+with an empty list of runs.
+
+**No call waits for ever.** Temporal's client retries a failing call
+indefinitely by design, which is right for a worker and wrong for a request:
+against a missing namespace, `start` waited for ever and the gateway waited
+with it. Every call is bounded by `DATALAYER_DURABLE_CALL_TIMEOUT`, and a
+timeout is reported as the engine being unavailable rather than as the work
+having failed — nothing is known about whether it happened.
 
 **Each engine is an extra.** `pip install datalayer-durable[temporal]`
 installs `temporalio`; a process told `engine: temporal` without it refuses
@@ -331,7 +363,7 @@ already has one.
 | `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
 | `DATALAYER_IAM_URL`, `DATALAYER_IAM_API_KEY` | Where IAM is, at its public URL, and this service's key for it — what a task's grant is issued and released against, and what mints the temporary key an agent run works with. Empty means "not configured": the run goes on with the service key and says so in the log. The key comes from `datalayer-durable-secret` |
 | `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret |
-| `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call to a Datalayer API may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever |
+| `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever — and, on `engine: temporal`, so a client that would retry a failing call indefinitely cannot make `start` wait for ever with the gateway waiting on it |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
 
 `check_configuration()` runs at startup and refuses rather than failing later
@@ -438,7 +470,7 @@ profile, off by default, so the second engine can be exercised here before it
 is deployed anywhere:
 
 ```bash
-docker compose -f docker-compose.local.yml --profile temporal up -d
+make local-stack-temporal   # server, UI, and the `datalayer` namespace
 export DATALAYER_DURABLE_ENGINE=temporal
 export DATALAYER_TEMPORAL_ADDRESS=localhost:7233
 make start
@@ -446,7 +478,19 @@ make start
 
 The server shares the local PostgreSQL and creates its own two databases; the
 UI is on **8233**. The workers start with the process, one per queue in
-`DATALAYER_DURABLE_QUEUES`.
+`DATALAYER_DURABLE_QUEUES`. The target creates the namespace because a worker
+polling one that does not exist carries on as if nothing were wrong.
+
+```bash
+DATALAYER_TEMPORAL_ADDRESS=localhost:7233 make test-local-stack
+```
+
+Those are the scenarios against a real server rather than a fake client:
+every catalog workflow on its own queue, a run walking its steps once and in
+order read back from its own history, an approval that waits and resumes on a
+signal, a cancel, a returned refusal read as a failure with its reason, and a
+non-idempotent step attempted exactly once. Every one of them found something
+the unit tests could not.
 
 ## Health and readiness
 
@@ -527,11 +571,19 @@ kubectl -n datalayer-durable exec deploy/datalayer-durable-notebook -- \
 
 ## Upgrades
 
-`DBOS_APPLICATION_VERSION` comes from the chart's `appVersion`. A worker only
-takes workflows of a version it can run, so a workflow started before an
-upgrade finishes on a worker that still matches its history rather than being
-replayed by code that no longer does. Roll workers freely; let the old
-version's workers drain rather than deleting them.
+`DATALAYER_DURABLE_APPLICATION_VERSION` comes from the chart's `appVersion`
+(a DBOS deployment sets `DBOS_APPLICATION_VERSION`, which the `dbos` library
+reads under that name). A worker only takes workflows of a version it can run,
+so a workflow started before an upgrade finishes on a worker that still
+matches its history rather than being replayed by code that no longer does.
+Roll workers freely; let the old version's workers drain rather than deleting
+them.
+
+On `engine: temporal` the same value is the worker's build id, declared as the
+new default for each queue at startup. Check `/operations` for
+`versioned: true` before relying on any of this: a namespace with worker
+versioning disabled refuses the declaration, the workers run unversioned, and
+an upgrade then replays in-flight runs on whichever worker takes them.
 
 That mechanism rests on a workflow being identifiable, which is worth stating
 because it was not. DBOS resolves a run — resumed after a restart, or picked
