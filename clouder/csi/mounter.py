@@ -521,6 +521,7 @@ class FakeMounter(Mounter):
     fail_start: str | None = None
     fail_bind_dir: str | None = None
     fail_unmount_once: str | None = None
+    fail_unmount: str | None = None
     processes: dict[str, FakeProcess] = field(default_factory=dict)
     mounts: set[str] = field(default_factory=set)
     binds: dict[str, tuple[str, bool]] = field(default_factory=dict)
@@ -617,6 +618,10 @@ class FakeMounter(Mounter):
 
     def unmount(self, path: str) -> None:
         self.calls.append(("unmount", path))
+        # A mount that will not come down is the case the gateway's leak
+        # reporting is about, and a fake that always succeeds cannot pose it.
+        if self.fail_unmount:
+            raise MountError(self.fail_unmount)
         self.mounts.discard(path)
         self.binds.pop(path, None)
         self.shared.discard(path)

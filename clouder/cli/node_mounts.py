@@ -507,15 +507,37 @@ def collect_gateway_checks(
     ))
 
     # 8. Anything left behind. A leaked mount is a pod that will not terminate.
+    #
+    # `stuck` is what is mounted and should not be, right now; `counters.leaked`
+    # counts releases that hit any error since the agent started. Reporting the
+    # counter as though it were the state made one unmount racing kubelet's
+    # teardown fail a healthy node for the life of the process, with nothing an
+    # operator could do to clear it. An agent too old to report `stuck` falls
+    # back to the counter, and says which number it is showing.
+    stuck: list[str] = []
     leaked = 0
+    history_only = False
     try:
-        leaked = int((json.loads(gateway) if gateway_on else {}).get("counters", {}).get("leaked", 0) or 0)
+        snapshot = json.loads(gateway) if gateway_on else {}
+        leaked = int((snapshot.get("counters") or {}).get("leaked", 0) or 0)
+        if "stuck" in snapshot:
+            stuck = list(snapshot.get("stuck") or [])
+        else:
+            history_only = True
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
         leaked = 0
+    count = leaked if history_only else len(stuck)
+    detail = (
+        f"{count} mount(s) would not unmount, ever, on this agent (no current state reported)"
+        if history_only
+        else f"{count} mount(s) would not unmount"
+        + (f": {', '.join(stuck[:3])}" if stuck else "")
+        + (f" (and {leaked} failed release(s) since this agent started)" if leaked else "")
+    )
     checks.append(_check(
         "No leaked mounts",
-        leaked == 0 if gateway_on else None,
-        f"{leaked} mount(s) would not unmount",
+        count == 0 if gateway_on else None,
+        detail,
         "Each one is a Pod that will stick in Terminating; unmount by hand on the node "
         "and never rm -rf the pod's gateway directory",
     ))

@@ -865,6 +865,16 @@ snapshot carries the number that shows it either way —
 clouder node-mounts status   # seconds_since_resync, failed_passes, reconciling
 ~~~
 
+The leak check reads the same way. `clouder node-mounts verify` reports
+**`stuck`** — paths that are mount points and should not be, re-checked
+against the kernel each time it is asked, so the number clears itself when a
+mount finally comes down — and mentions `counters.leaked` beside it, which
+counts releases that hit any error since the agent started. They are
+different questions: one unmount racing kubelet's teardown of the same
+`emptyDir`, which comes down a moment later, moves the counter and not the
+state. Reporting the counter as the state failed healthy nodes for the life
+of a process, with nothing an operator could do to clear it.
+
 `seconds_since_resync` climbing without bound is an agent that has stopped
 working, whatever else says it is healthy. Nothing else here distinguishes
 that from an agent with nothing to do.

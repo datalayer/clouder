@@ -1110,3 +1110,39 @@ class TestTheAgentSurvivesItsOwnPasses:
         agent.run()
 
         assert agent.passes == 3, "the agent gave up after the first bad pass"
+
+
+class TestWhatIsStuckVersusWhatOnceFailed:
+    """Audit 61: `verify` reported a counter as though it were a state.
+
+    `counters["leaked"]` counts releases that hit any error since the agent
+    started. One unmount racing kubelet's teardown of the same emptyDir —
+    which then came down a moment later — left a healthy node failing its
+    own leak check for the life of the process, with nothing an operator
+    could do to clear it.
+    """
+
+    def test_a_mount_that_comes_down_later_stops_being_stuck(self, gateway, mounter):
+        gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric"))))
+        path = os.path.join(gateway.pod_tree(POD), "eric")
+
+        mounter.fail_unmount = "device or resource busy"
+        gateway.reconcile(pod(annotation()))
+
+        assert gateway.stuck_mounts() == [path]
+        assert gateway.counters["leaked"] >= 1
+
+        # It came down; the state clears itself and the history does not.
+        mounter.fail_unmount = None
+        mounter.unmount(path)
+
+        assert gateway.stuck_mounts() == []
+        assert gateway.counters["leaked"] >= 1, "history is not rewritten"
+
+    def test_the_snapshot_carries_both_numbers(self, gateway):
+        gateway.reconcile(pod(annotation(mount("home/users/01H-eric", "eric"))))
+
+        snapshot = gateway.snapshot()
+
+        assert snapshot["stuck"] == []
+        assert "leaked" in snapshot["counters"]

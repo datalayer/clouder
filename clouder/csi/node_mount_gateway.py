@@ -411,6 +411,10 @@ class NodeMountGateway:
             "released": 0,
             "leaked": 0,
         }
+        # Paths that would not unmount and have not since. `leaked` counts
+        # events for the life of the process; this is the state, and it
+        # empties itself when a mount finally comes down.
+        self._stuck: set[str] = set()
 
     # -- where things live -------------------------------------------------
 
@@ -570,8 +574,10 @@ class NodeMountGateway:
             try:
                 self.mounter.unmount(path)
                 self.counters["revoked"] += 1
+                self._stuck.discard(path)
             except MountError as exc:
                 errors.append(f"{path}: {exc}")
+                self._stuck.add(path)
 
         if self._is_published(pod_uid):
             # Exactly ours, and exactly one: the tree is stacked ON kubelet's
@@ -833,8 +839,10 @@ class NodeMountGateway:
         try:
             self.mounter.unmount(path)
             self.counters["revoked"] += 1
+            self._stuck.discard(path)
         except MountError as exc:
             self.counters["leaked"] += 1
+            self._stuck.add(path)
             log.error("pod %s: '%s' would not unmount: %s", pod_uid, target, exc)
             return
         # The leaf, then any parent `makedirs` made for a nested target, as
@@ -888,6 +896,21 @@ class NodeMountGateway:
     def mounted_count(self) -> int:
         return sum(len(self._read_state(entry)) for entry in _entries(self.pods_dir()))
 
+    def stuck_mounts(self) -> list[str]:
+        """The mounts that would not come down and are still there, right now.
+
+        `counters["leaked"]` is a different question and has been answered as
+        if it were this one: it counts releases that hit *any* error since
+        this agent started, so one unmount that raced kubelet's teardown and
+        came down a moment later leaves a healthy node reporting a leak for
+        the life of the process, with nothing an operator can do about it.
+        This is the number to act on — a path that is a mount point and
+        should not be — and it clears itself when the mount finally goes.
+        """
+        still = [path for path in sorted(self._stuck) if self.mounter.is_mount_point(path)]
+        self._stuck = set(still)
+        return still
+
     def snapshot(self) -> dict[str, Any]:
         pods = {}
         for entry in sorted(_entries(self.pods_dir())):
@@ -907,6 +930,9 @@ class NodeMountGateway:
             "gateway_root": self.gateway_root,
             "shared_root": self.shared_root,
             "counters": dict(self.counters),
+            # What is stuck now, beside how often something once was. An
+            # operator acts on the first; the second is history.
+            "stuck": self.stuck_mounts(),
             "pods": pods,
         }
 
