@@ -438,6 +438,24 @@ in. That sandbox **is** the session, and it is an `sb_…` handle in
 included — a session whose sandbox is gone is exactly what an operator and a
 user want to see, with why.
 
+### The first execution binds the session
+
+A session's first `execute_code`, `execute_cell` or `insert_execute_code_cell`
+with no sandbox bound gets the deployment's default, launched by the gateway
+itself — reserved under the session's identity, counted against the budget,
+created through Runtimes and bound with what the runtime said it can do —
+exactly as `launch_sandbox` with no arguments would. A quota refusal there
+is answered as `BUDGET_EXCEEDED`, not as a failed call. `use_sandbox` and
+`restart_notebook` launch nothing: one selects a sandbox, the other has
+nothing to restart.
+
+Every execution the gateway forwards names the session's sandbox in the
+request's `_meta` under `io.datalayer/sandbox`. The worker's before-call
+hook makes that sandbox its active one, attaching by name when this worker
+never launched it — so execution lands on the session's sandbox on
+whichever replica serves the call, and a shared sandbox is reached the same
+way by its grantee's worker.
+
 ### Sharing a sandbox
 
 A sandbox can be shared with other people, teams, organizations and
