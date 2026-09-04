@@ -324,7 +324,7 @@ Volumes:
 | `ray` | Ray service records |
 | `runtime-registrations` | Runtime registrations |
 | `runtime-checkpoints` | Runtime checkpoint records (CRIU snapshots metadata) |
-| `sandbox-snapshots` | Runtime snapshot records |
+| `sandbox-snapshots` | Runtime snapshot records, and the sharing record of each shared runtime (`type_s: runtime_sharing`, keyed on the runtime name, never carrying `account_uid` or `uid`) |
 | `contents` | Content sources, grants, revisions and attachments |
 | `content-objects` | Contents object/version and materialization metadata |
 | `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |

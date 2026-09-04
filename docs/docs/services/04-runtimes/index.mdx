@@ -227,6 +227,36 @@ asks whether this sandbox takes a mount while it runs.
 | `DATALAYER_RUNTIMES_API_KEY` | Runtimes' identity to Contents (`attachments:prepare`, `attachments:status`, and registering the `environment` source). Required as soon as a launch names an attachment: `503` without it. |
 | `DATALAYER_OPERATOR_API_KEY` | The key Runtimes uses towards the Operator, unchanged. |
 
+## Sharing a runtime
+
+A runtime can be shared with other people, teams, organizations and service
+agents, at one of three nested levels: `view` reads outputs, `update` may
+change files, `execute` may run code.
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/runtimes/v1/runtimes/{name}/sharing` | the owner | The grants, per level and kind of principal |
+| `PUT …/sharing` `{"access": {"view": {"userUids": […], "teamUids": […], "organizationUids": […], "agentUids": […]}, …}}` | the owner | Replace the grants at the levels named; levels not named are kept. Leaving no grant at all removes the record |
+| `GET …/permissions` | anybody | `view`, `update`, `execute` for the caller, `owner`, and whose it is |
+| `GET /api/runtimes/v1/runtimes/{name}` | a grantee | The runtime as its owner sees it, marked `shared_from` and `shared_access` |
+
+**Ownership is the operator's to say.** A runtime is listed for the account
+that launched it and for nobody else, so every question here starts by
+asking the operator *as the caller*: answered, the caller owns it; refused,
+the record decides, with the caller's memberships from IAM. An agent grant
+is matched on the token's own `agent_uid` and never on the person behind
+it. "Not shared with you" and "no such runtime" answer alike — three
+`false` — so asking is not a way to learn which runtimes exist.
+
+The record is one document per shared runtime in the `sandbox-snapshots`
+collection, beside the snapshots and never carrying the two fields their
+queries key on. It lives as long as its runtime: the cleanup loop purges
+records past the runtime's expiry. The
+[Jupyter MCP Server](/services/jupyter-mcp-server/) is the first caller:
+its `share_sandbox` and `unshare_sandbox` tools write here with the
+caller's own credential, and its gateway asks `permissions` on every call a
+grantee makes.
+
 ## Tear Down Datalayer Runtimes
 
 If needed, tear down.
