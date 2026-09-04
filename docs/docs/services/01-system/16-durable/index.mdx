@@ -217,6 +217,8 @@ already has one.
 | `DATALAYER_DURABLE_QUEUES` | Which queues this Deployment takes work from, comma-separated. One Deployment per queue is why a long run cannot starve a short one |
 | `DATALAYER_RUNTIMES_URL` | Where Runtimes is, at its **public** URL — the workers and Runtimes are not guaranteed to share a cluster, and an in-cluster name works right up until they do not |
 | `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
+| `DATALAYER_IAM_URL`, `DATALAYER_IAM_API_KEY` | Where IAM is, at its public URL, and this service's key for it — what a task's grant is issued and released against, and what mints the temporary key an agent run works with. Empty means "not configured": the run goes on with the service key and says so in the log. The key comes from `datalayer-durable-secret` |
+| `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret |
 | `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call to a Datalayer API may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
 
