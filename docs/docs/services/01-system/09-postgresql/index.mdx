@@ -109,9 +109,10 @@ It holds the state of the durable execution service and of `agent-runtimes`:
 | --- | --- | --- |
 | `dbos_durable` | `datalayer-durable` workers | Every workflow, every step's recorded result, every queue |
 | `dbos_agents` | `agent-runtimes` | Its own durable state, reached through `DBOS_DATABASE_URL` injected by the Operator |
+| `dbos_durable_dbos_sys` | DBOS itself | DBOS's **system** database, named for the application one. It creates this itself where the role may create databases; this role may not, so the cluster creates it at bootstrap. Without it the workers launch, fail on `database "dbos_durable_dbos_sys" does not exist`, and take no work at all |
 
 ```bash
-plane postgresql-dbos-create      # cluster, both databases, and the workers' secret
+plane postgresql-dbos-create      # cluster, its databases, and the workers' secret
 plane postgresql-dbos-status
 plane postgresql-dbos-terminate   # deletes every workflow in it; see Durable
 ```

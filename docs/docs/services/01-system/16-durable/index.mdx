@@ -398,6 +398,7 @@ databases:
 | --- | --- | --- |
 | `dbos_durable` | the durable workers | Every workflow, every step's recorded result, every queue |
 | `dbos_agents` | agent-runtimes | Its own durable state, through `DBOS_DATABASE_URL` injected by the Operator |
+| `dbos_durable_dbos_sys` | DBOS itself | Its **system** database, named for the application one. DBOS creates this itself where the role may create databases, and this role may not — an owner that could create databases could create any database — so the cluster creates it at bootstrap. Without it every worker launches, fails on `database "dbos_durable_dbos_sys" does not exist`, and takes no work at all. Locally the role is a superuser and it appears on its own, which is why this gap only ever existed in a cluster |
 
 Then the workers. There is nothing to export:
 
@@ -510,6 +511,13 @@ the unit tests could not.
 Three parts, reported apart: this frontend, the database behind the engine,
 and the workers that take from the queues. One unhealthy service with no
 detail has an operator restarting the wrong thing.
+
+**`database: ready` means the runs could be read.** The listing was a
+courtesy whose failure went into `detail` beside a green light — which is how
+a deployment whose system database did not exist reported itself ready. It is
+the only live check that the system database can be read, and one that cannot
+be read records no workflow: whatever is accepted is lost. It is now the
+answer rather than a note on it.
 
 **"Workers" means launched, not registered.** Until 2026-09-04 the DBOS
 engine imported the runtime, decorated the catalog onto it and returned —
@@ -674,7 +682,8 @@ plane postgresql-dbos-terminate          # asks for the cluster name to confirm
 plane postgresql-dbos-terminate --yes    # for a scripted teardown of a whole environment
 ```
 
-It removes `dbos_durable` and `dbos_agents` and everything in them: every
+It removes `dbos_durable`, its `_dbos_sys` system database and
+`dbos_agents`, and everything in them: every
 workflow that has not finished, every step result already recorded, every
 queued item. A durable engine's promise is that a worker dying loses no work,
 and this is the one way to lose it anyway — so it names what it is about to
