@@ -288,6 +288,23 @@ So those routes were guarded by authentication alone — any account that
 could log in could grant itself `platform_admin`, delete a user, or mint a
 ten-minute key carrying another person's roles.
 
+One route had lost its guard entirely: `DELETE /outbounds/users/{user_id}`
+had both its decorator and its user parameter commented out in an unexplained
+squash in October 2025, leaving anyone able to unsubscribe **any** user from
+outbound notifications by uid — including the alerts an organization relies
+on — while its own docstring still said `platform_admin` and the `POST`
+beside it required one. Nothing in the platform links to it; the mailer's
+campaigns ask people to reply with "unsubscribe". It requires the role again.
+
+That docstring was the only thing still telling the truth, so it is now read
+by a test: an endpoint whose docstring names a privileged role and nothing
+else must actually require it. Where a docstring names an *owner* as well —
+"this team's `team_owner`, its `organization_owner`, or `platform_admin`" —
+the decision is about a particular organization or team, no dependency could
+make it, and the enforcement is in the body against the object being managed.
+Six organization and team docstrings said `platform_admin` when the code
+correctly admitted owners too; they say what the code does now.
+
 The decorator is left in place as documentation of intent, and is not the
 guard. `require_auth(PLATFORM_MEMBER_AUTH)` — 120 of the 144 uses — is
 deliberately still not enforced: it means "authenticated", and a service
