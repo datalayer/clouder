@@ -1002,11 +1002,26 @@ share a session, and it is the one misconfiguration every other check here
 reports as healthy. See [Turning it off](#turning-it-off).
 
 Readiness is gated on what **every** request needs: IAM (to verify a token) and
-the store (to find a handle). Spacer, Runtimes, Contents, the audit ledger and
-the task projection are *reported* and never gate — an outage in Contents must
+the store (to find a handle). Spacer, Runtimes, Contents, the audit ledger, the
+task projection and the workflow backend are *reported* and never gate — an outage in Contents must
 read as "Contents unavailable" in the Contents tools, not as a gateway that
 stopped serving notebooks. OTEL is listed and **never probed**: telemetry is
 never a readiness dependency. A draining replica is not ready.
+
+The `workflows` line says where durable work goes, and whether it can be
+accepted. The gateway falls back to the in-process fake whenever
+`DATALAYER_DURABLE_URL` is unset — the rule the store and the ledger already
+follow — so a deployment in **platform** mode with that variable empty keeps
+every workflow in one process and loses them on restart, while `mode:
+platform` says the opposite. That reads as not-ready, because it is a
+misconfiguration rather than an intent; the same fake in standalone mode is
+what that deployment asked for, and reads as ready with a detail saying
+nothing survives a restart. A real `datalayer-durable` is ready when it says
+it can durably accept work — it answers that honestly, so a launched engine
+whose system database cannot be read says `durable: false`, and a gateway that
+called it ready anyway would repeat the failure one layer up. None of this
+gates: a durable outage costs the long-running calls and leaves everything
+else working, and gating readiness on it would turn that into a total outage.
 
 The `store`, `audit` and `tasks` lines each name **which implementation
 answered**, not only whether it did, and that is the point of them. Each lives
@@ -1223,7 +1238,7 @@ written yet" after it had a call site, and it named five of the
 scope and rate refusals, missed every policy, quota and capability refusal,
 and looked complete.
 
-`dependency` is one of (`audit`, `contents`, `iam`, `otel`, `runtimes`, `spacer`, `store`, `tasks`) everywhere it appears.
+`dependency` is one of (`audit`, `contents`, `iam`, `otel`, `runtimes`, `spacer`, `store`, `tasks`, `workflows`) everywhere it appears. `workflows` is where durable work goes — `datalayer-durable`, or the in-process fake — and it is the dependency that decides whether a long-running call survives anything at all.
 
 The gateway exports with its service credential, so the OTEL service files
 every point under the gateway's own account. Five instruments carry one more
