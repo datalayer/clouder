@@ -2238,6 +2238,12 @@ the fastest way to answer most of the questions on this page without curl.
 | `datalayer mcp tasks list` / `describe` / `cancel` / `input` | The runs the agents started, and answering one that is waiting on a person |
 | `datalayer mcp audit` | The rows: your own, or the organization's with the role for it |
 | `datalayer mcp policy` | The effective policy for your token, rule by rule, with the layer that decided each |
+| `datalayer mcp toolsets list` | The sources that lend tools, and which have a session open |
+| `datalayer mcp toolsets enable <source>` / `disable <session>` | Open or revoke a Contents MCP session, so an agent can call a source's tools |
+| `datalayer mcp sandboxes sharing <name>` | Who a sandbox of yours is shared with |
+| `datalayer mcp sandboxes share <name> --user/--team/--organization/--agent [--level]` | Share it; `--replace` makes the lists given the whole grant at that level |
+| `datalayer mcp sandboxes unshare <name> [--level]` | Take a share back; naming nobody revokes everybody at the level |
+| `datalayer mcp sandboxes permissions <name>` | What you may do with a sandbox, yours or somebody else's |
 | `datalayer mcp alerts list` / `ack` | The rules that fired. `ack` names **who** acknowledged rather than showing a tick — "who saw this" is the question |
 | `datalayer mcp activity` | What each connected client last did |
 | `datalayer mcp forwarding` | Whether the audit is reaching the organization's own system of record |
