@@ -461,8 +461,15 @@ An agent with no way to run one refuses such a grant with
 **already running**. The filesystem is the CSI driver's, unchanged — the same
 `clouder.csi.bridge_mount` process over the same relay — so this is one
 implementation of the bridge reached two ways, not a second one. The mount
-token and the relay URL both come from the Pod-owned Secret, so a deployment
-detail is never right in two places, and the relay URL is held to the same
+token, the relay URL and the **session key** all come from the Pod-owned
+Secret, so a deployment detail is never right in two places. The session key
+is what seals the frames end to end: the relay forwards what it cannot read,
+and it can only not read them because both ends hold the key Contents minted
+with the session. A mount started without one speaks plaintext at a client
+speaking sealed frames, which surfaces not as a refusal but as
+`frame header runs past the end of the frame` — neither end is told which the
+other speaks. Like the token, it reaches the filesystem process in its
+environment and never in the argv, and the relay URL is held to the same
 rules the CSI driver applies: `wss://`, the configured host, no credentials in
 the URL, and a path that names the bridge it is for. A URL naming another
 bridge is refused, or a grant could point a sandbox's mount at somebody
@@ -476,6 +483,23 @@ reporting them dead would take a working folder away from a sandbox because
 the agent was replaced. Stopping an inherited one signals it by pid and clears
 its mount point either way, because a bridge left mounted is a sandbox reading
 a folder nobody granted any more.
+
+**Whose mount it is.** A FUSE mount belongs to the user who made it. Inside a
+sandbox, where this filesystem was written to run, the mounter *is* the reader
+and that is right. Here root mounts and the sandbox's `jovyan` reads, in
+another namespace, so the agent passes `--allow-other` (which needs
+`user_allow_other` in `/etc/fuse.conf`, set in its image) and `--uid 1000
+--gid 100`, so the files are reported as the sandbox's own rather than as
+root's. Without the first the folder answers `Permission denied` to the person
+who asked for it; without the second it is read-only to them whatever the
+grant said.
+
+The filesystem itself is fusepy, from `code-sandboxes`' **`[bridge]` extra**.
+The image has to install `"./code-sandboxes[bridge]"`, not `./code-sandboxes`:
+without the extra the package is present, the module is not, and every local
+mount fails `FUSE_UNAVAILABLE: fusepy is not installed in the sandbox` — a
+message written for a sandbox, arriving from a node agent whose `/dev/fuse`,
+`SYS_ADMIN` and `fusermount` are all exactly as this page says they should be.
 
 The inline CSI volume stays the creation-time path. Retiring it belongs with
 proving this one, not with shipping it.
@@ -821,6 +845,29 @@ which failure modes. The part that comes with it is the CRD, the operator, the
 webhook and the provisioning path, which is the creation-time architecture the
 gateway exists to replace. Forking it would mean owning all of that in order
 to use none of it.
+
+### One thread, and how to tell it has stopped
+
+The agent reconciles every pod on its node from a single thread. Two things
+used to end that thread without ending the container: a pass that raised, and
+a mount command that never returned — `umount` on a filesystem whose process
+is gone waits for a server that will never answer. Either way the container
+stayed `Running` with zero restarts, its health endpoint answered, its CSI
+socket served, and every pod scheduled to that node from then on got no
+mounts at all, silently.
+
+Both are closed now: every mount command has a 20 s timeout and a timeout
+counts as a failure, which `unmount` answers with its lazy forms; a pass that
+raises is logged with its traceback and retried with backoff. And the agent's
+snapshot carries the number that shows it either way —
+
+~~~bash
+clouder node-mounts status   # seconds_since_resync, failed_passes, reconciling
+~~~
+
+`seconds_since_resync` climbing without bound is an agent that has stopped
+working, whatever else says it is healthy. Nothing else here distinguishes
+that from an agent with nothing to do.
 
 ## Watching it
 

@@ -32,7 +32,7 @@ import argparse
 import os
 import sys
 
-from .mounter import MOUNT_TOKEN_ENV
+from .mounter import MOUNT_TOKEN_ENV, SESSION_KEY_ENV
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -54,6 +54,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--relay-url", required=True, help="wss://.../bridges/<bridge-uid>")
     parser.add_argument("--mount-path", required=True, help="Where to mount the bridge filesystem.")
     parser.add_argument("--mode", required=True, choices=("ro", "rw"))
+    parser.add_argument("--bridge-uid", default=None, help="The bridge this mount is one end of.")
+    parser.add_argument(
+        "--allow-other",
+        action="store_true",
+        help="Let the sandbox's user reach the mount this agent makes as root.",
+    )
+    parser.add_argument("--uid", type=int, default=None, help="Report files as owned by this uid.")
+    parser.add_argument("--gid", type=int, default=None, help="Report files as owned by this gid.")
     args = parser.parse_args(argv)
 
     mount_token = os.environ.get(MOUNT_TOKEN_ENV, "")
@@ -68,7 +76,19 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_NO_PACKAGE
 
     try:
-        status = run_bridge_mount(args.relay_url, mount_token, args.mount_path, args.mode)
+        status = run_bridge_mount(
+            args.relay_url,
+            mount_token,
+            args.mount_path,
+            args.mode,
+            bridge_uid=args.bridge_uid,
+            # Sealed frames need both ends to hold the key. Empty means the
+            # session has none, which is what a client with none also sends.
+            session_key=os.environ.get(SESSION_KEY_ENV, "") or None,
+            allow_other=args.allow_other,
+            uid=args.uid,
+            gid=args.gid,
+        )
     except KeyboardInterrupt:
         return EXIT_OK
     except Exception as exc:  # noqa: BLE001 - the exit status is the report

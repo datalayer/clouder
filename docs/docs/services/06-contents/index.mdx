@@ -331,6 +331,20 @@ gateway: its claim is fixed at creation and stays until the runtime is
 deleted. An attachment at `/home/jovyan` itself is the Home Folder capability
 and is left alone.
 
+### Ending a local mount
+
+`datalayer contents unmount`, the Unmount button and `DELETE
+/api/contents/v1/bridges/{uid}` are one route, and it takes the folder out of
+the sandbox as well as ending the session: Contents asks Runtimes to detach
+the target, as the caller, and the Operator reports the attachment `revoked`
+once the node agent confirms the unmount. Ending the session alone would
+leave the sandbox holding a filesystem whose far end is gone — an
+`Input/output error` at the path until something noticed — and the attachment
+in `revoking`, which counts as attached and refuses the same folder to that
+sandbox again. `DELETE /attachments/{uid}` does the same thing from the other
+side. A creation-time bridge at an absolute path outside `/home/jovyan` is an
+inline volume and goes when the pod does.
+
 ### Local mounts: the relay and the Local CSI driver
 
 A local mount is a folder of a person's computer, served over an encrypted
@@ -341,6 +355,17 @@ mounts the far end into the pod. External sandboxes need no driver — the
 sandbox runs the mount itself when its environment lists the `fuse` feature.
 What a person does with it is the user manual:
 [datalayer.ai/docs/contents/local-mounts](https://datalayer.ai/docs/contents/local-mounts).
+
+**Who asks the sandbox.** A Datalayer runtime's end of the bridge is the node
+agent's filesystem, started from a grant the Operator writes when asked
+through Runtimes' `POST /runtimes/{name}/mounts`. Contents makes that call
+itself, as the caller, the moment it opens a bridge session for a Datalayer
+sandbox — the session is what the mount token comes from, so no earlier
+moment would do — and reads the answer for what it is: `404` is a sandbox not
+launched yet (the launch carries the attachment), `409` a pod without the
+gateway (rendered at creation instead), anything else a warning with the
+session left standing. An external sandbox is never asked; it runs the mount
+itself.
 
 **What has to be deployed for it — the runtimes plane only.** Nothing on the
 core plane takes part in a local mount: IAM, Spacer, the Library, OTel, the
@@ -371,7 +396,11 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    (`DATALAYER_CONTENTS_BRIDGE_ENABLED`, and `DATALAYER_CONTENTS_BRIDGE_URL`
    set to the **host**, `wss://<runHost>` — the API appends `/bridges/<uid>`
    itself for both ends; a value that already ends in `/bridges` sends every
-   client to `/bridges/bridges/<uid>`, which the relay refuses).
+   client to `/bridges/bridges/<uid>`, which the relay refuses). The relay's own pods also get
+   `DATALAYER_CONTENTS_URL`, the in-cluster API service: that is where they
+   report which ends are connected, and the code's fallback —
+   `http://localhost:<api port>` — is a single-process development setup, so
+   without it every state report fails and no session leaves `pending`.
 3. **Check the relay is there.** `curl -s https://<runHost>/api/contents/v1/capabilities | jq '.operations[] | select(.name=="local-mount")'`
    must say `available: true`; the Mounts card on the Contents page says the
    same thing in words. Until this is true, `datalayer contents mount`

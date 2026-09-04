@@ -75,6 +75,7 @@ class NodeMountGatewayAgent:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_resync = 0.0
+        self._failures = 0
 
     # -- one Pod -----------------------------------------------------------
 
@@ -148,7 +149,19 @@ class NodeMountGatewayAgent:
 
     def run(self) -> None:
         while not self._stop.is_set():
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception as exc:  # noqa: BLE001 - one bad pass is not the end of the agent
+                # `run_once` resyncs before it watches, and a resync that
+                # raises used to end this thread — leaving a container whose
+                # health endpoint answered, whose CSI socket served, and
+                # whose node quietly stopped getting mounts. A pass is
+                # allowed to fail; the agent is not allowed to stop.
+                self._failures += 1
+                log.exception("gateway pass failed (%d in a row): %s", self._failures, exc)
+                self._stop.wait(min(5.0 * self._failures, 60.0))
+                continue
+            self._failures = 0
             self._stop.wait(1.0)
 
     def start(self) -> None:
@@ -165,7 +178,20 @@ class NodeMountGatewayAgent:
             thread.join(timeout=5)
 
     def snapshot(self) -> dict[str, Any]:
-        return self.gateway.snapshot()
+        """What the gateway holds, and whether this agent is still passing over it.
+
+        `seconds_since_resync` is the one that says an agent has stopped
+        working while looking healthy: it climbs without bound when the
+        reconcile thread is blocked or gone, which no other signal here
+        shows.
+        """
+        since = time.monotonic() - self._last_resync if self._last_resync else None
+        return {
+            **self.gateway.snapshot(),
+            "seconds_since_resync": round(since, 1) if since is not None else None,
+            "failed_passes": self._failures,
+            "reconciling": self._thread is not None and self._thread.is_alive(),
+        }
 
 
 # ---------------------------------------------------------------------------

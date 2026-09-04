@@ -32,6 +32,9 @@ LOCAL_BRIDGE_KIND = "local-bridge"
 #: so a deployment detail never has to be right in two places.
 SECRET_TOKEN_KEY = "mount-token"
 SECRET_RELAY_KEY = "relay-url"
+#: What seals the frames. Both ends are given it with the session; a mount
+#: started without one speaks plaintext at a client that does not.
+SECRET_SESSION_KEY = "session-key"
 
 
 class BridgeProcesses:
@@ -80,6 +83,7 @@ class BridgeProcesses:
             mount_token=token,
             mount_path=target,
             mode="ro" if read_only else "rw",
+            session_key=_text(credential.get(SECRET_SESSION_KEY)),
         )
         pid = int(handle.pid or 0)
         if not pid:

@@ -168,3 +168,26 @@ def test_stopping_one_it_started_goes_through_the_mounter(runner):
     processes.stop(pid, "/gw/pods/x/local")
 
     assert ("stop", BRIDGE) in mounter.calls
+
+
+
+def test_the_session_key_travels_from_the_secret_to_the_mounter(runner):
+    """Audit 58: the key that seals the frames reaches the mount side.
+
+    Contents mints one per session for both ends. The Operator now carries
+    it in the pod-owned Secret; the runner hands it to the filesystem.
+    Without it the node's end speaks plaintext at a client that does not.
+    """
+    from clouder.csi.bridge_processes import SECRET_SESSION_KEY
+
+    processes, mounter = runner
+    start(processes, credential={**SECRET, SECRET_SESSION_KEY: b"ab" * 32})
+
+    assert mounter.session_keys[BRIDGE] == "ab" * 32
+
+
+def test_a_session_with_no_key_starts_a_mount_with_none(runner):
+    processes, mounter = runner
+    start(processes)
+
+    assert mounter.session_keys[BRIDGE] == ""

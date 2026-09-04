@@ -31,10 +31,85 @@ runs the `dbos` runtime against one PostgreSQL database, recovers whatever was
 pending when it starts, and takes work from a queue. One Deployment per queue
 and one database is the whole of it.
 
-`engine: temporal` is planned and is a *value* of the same chart rather than a
-second service — a Temporal server, two databases, a UI and mTLS, selected by
-changing one setting. The value exists before the second engine does so that
-adding it is a configuration change and not a fork.
+`engine: temporal` is **implemented in the service and not yet deployed**.
+The engine, its workflows and its workers are here and tested; what is not
+here is everything a Temporal server needs around it — the chart branch, the
+`datalayer-postgresql-temporal` cluster, the UI behind the admin ingress,
+mTLS, and the recovery drill repeated on it in staging. Setting
+`engine: temporal` in a cluster today reaches no server and says so through
+`/operations` rather than pretending. See [The Temporal engine](#the-temporal-engine).
+
+Both are *values* of the same chart rather than two services, and that is the
+point: the seam exists so a caller cannot tell which engine served it. Every
+answer above `datalayer_durable.engine` comes from six questions — start,
+describe, signal, cancel, list, operations — and the engine that answers them
+is a setting.
+
+## The Temporal engine
+
+The same catalog, walked the same way, with what Temporal demands of the
+walk.
+
+**The catalog is the workflow, here as there.** One Temporal workflow class
+per catalog entry, built from the catalog rather than written out five times,
+walking the same steps in the same order with the same meaning for
+`idempotent` and the same terminal projection. A step that is wrong about
+being replayed fails the same way on DBOS, on Temporal and on the fake —
+which is what makes one scenario suite worth running against all three.
+
+**Workflow code does no I/O.** It must be deterministic, so every step runs
+as an *activity* and the workflow only sequences them. One activity type for
+all steps (`datalayer.step`), because the step's own name is an argument and
+a type per step makes a run's history unreadable for no gain; three more for
+the things that have to be *said* — a task waiting, a task resumed, a task
+failed.
+
+The consequence worth knowing: the step `Context` crosses a process boundary
+between steps, so it travels as a dictionary and is rebuilt on the other
+side. A step is handed a `Context` either way, but it is a *copy* — a step
+that mutated it expecting the next step to see the mutation would be wrong
+here. The results dictionary is threaded by the workflow, which is where that
+state belongs. The one value that does travel back is a credential a step
+exchanged, so the next step does not exchange a second grant for one run.
+
+**A refusal is returned, not raised.** A step that fails in a way that must
+not be retried comes back as a value; raising it would have Temporal retry a
+refusal into a loop. That has a sharp edge, and it is the one that bit the
+DBOS engine first: the workflow then *succeeds*, and a status map turns that
+into `completed`, so a failed run reports that its work is done and the
+reconciler ends the task the same way. Both engines therefore read the
+workflow's own last word through one shared projection: where the returned
+value names a terminal status, that is the answer.
+
+**A step that must not run twice is attempted once.** `idempotent: false` in
+the catalog becomes `maximum_attempts=1` — the same rule DBOS applies, for
+the same reason: a second attempt is a second sandbox, a second transfer, a
+second charge.
+
+**Blocking is a signal.** A step that blocks is recorded as waiting, and the
+run then waits on a `resume` signal carrying the step's name — without
+holding a worker, so the process can be replaced while it waits.
+
+**One worker per queue.** Each worker polls one queue, so a ten-minute
+notebook run saturating its own workers cannot stop an approval being
+answered. The workers run in the same process that serves the API: an engine
+that only *accepts* work is a queue nothing polls, where the API answers, the
+task row appears, and the run never happens. A worker that cannot start is
+logged and reported through `/operations` rather than crash-looping the
+service, because a service that crash-loops cannot say what is wrong.
+
+**Versioning is a build id.** Every worker reports the build it runs
+(`DATALAYER_DURABLE_APPLICATION_VERSION`, the chart's `appVersion`) and
+Temporal keeps a run on a compatible worker. A worker that reported nothing
+would take a run started by code it does not have. A change to a workflow's
+*shape* — steps added, reordered, removed — needs `workflow.patched()` as
+well, so a run started before the change finishes the way it started; there
+is no shape change yet to guard, and the first one must add it.
+
+**Each engine is an extra.** `pip install datalayer-durable[temporal]`
+installs `temporalio`; a process told `engine: temporal` without it refuses
+by name and names the extra, rather than raising an `ImportError` three steps
+into a workflow.
 
 ## Where it runs, and what it talks to
 
@@ -241,13 +316,16 @@ already has one.
 
 | Setting | Meaning |
 | --- | --- |
-| `DATALAYER_DURABLE_ENGINE` | `dbos` (deployed) or `temporal` (planned). Any other value refuses to start |
+| `DATALAYER_DURABLE_ENGINE` | `dbos` (deployed) or `temporal` (implemented, not deployed). Any other value refuses to start, naming the ones that exist |
+| `DATALAYER_TEMPORAL_ADDRESS` | `engine: temporal` only: `host:7233` of the Temporal frontend. Empty refuses to start rather than pretending — the same rule DBOS applies to a missing system database |
+| `DATALAYER_TEMPORAL_NAMESPACE` | `engine: temporal` only; default `datalayer`. One namespace per environment. Its retention is orchestration history, not audit: `mcp-audit` keeps the record |
 | `DBOS_DATABASE_URL` | The DBOS system database. Read from `secret/datalayer-durable-dbos`, written by `plane postgresql-dbos-create` — not a value the chart is given. **Never the SQLite default in a cluster**: a worker whose state is on its own disk has no state at all the moment it moves |
 | `DATALAYER_JUPYTER_MCP_SERVER_API_KEY` | The gateway's key, for calls **in**. Empty refuses that caller |
 | `DATALAYER_CONTENTS_API_KEY` | Contents' key, for calls in. Not in the chart today |
 | `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for calls in. Not in the chart today |
 | `DATALAYER_SOLR_ZK_HOST` | Where `mcp-tasks` is. The `project_task` step writes the projection **directly**, so this is required and not optional |
-| `DBOS_APPLICATION_VERSION` | Set from the chart's `appVersion`. A worker only takes workflows of a version it can run — see [Upgrades](#upgrades) |
+| `DATALAYER_DURABLE_APPLICATION_VERSION` | What this worker runs, from the chart's `appVersion`. A worker only takes workflows of a version it can run — see [Upgrades](#upgrades) |
+| `DBOS_APPLICATION_VERSION` | The same value under the name the `dbos` library reads from the environment itself, which is why a DBOS deployment sets this one. Where both are set the service's own name wins |
 | `DATALAYER_DURABLE_QUEUES` | Which queues this Deployment takes work from, comma-separated. One Deployment per queue is why a long run cannot starve a short one |
 | `DATALAYER_RUNTIMES_URL` | Where Runtimes is, at its **public** URL — the workers and Runtimes are not guaranteed to share a cluster, and an in-cluster name works right up until they do not |
 | `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
@@ -353,9 +431,22 @@ make test-local-stack   # the scenarios a fake cannot cover
 ```
 
 Those skip loudly without the stack, naming the variable that would unlock
-them. The Temporal server and UI are in the same compose file behind a
-`temporal` profile, off by default — milestone 4's engine can be exercised as
-a value here before it is one in a cluster.
+them.
+
+The Temporal server and UI are in the same compose file behind a `temporal`
+profile, off by default, so the second engine can be exercised here before it
+is deployed anywhere:
+
+```bash
+docker compose -f docker-compose.local.yml --profile temporal up -d
+export DATALAYER_DURABLE_ENGINE=temporal
+export DATALAYER_TEMPORAL_ADDRESS=localhost:7233
+make start
+```
+
+The server shares the local PostgreSQL and creates its own two databases; the
+UI is on **8233**. The workers start with the process, one per queue in
+`DATALAYER_DURABLE_QUEUES`.
 
 ## Health and readiness
 

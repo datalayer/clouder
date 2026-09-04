@@ -1070,3 +1070,43 @@ class TestAProcessMountIsGivenAMoment:
         mounter = self._Mounter(after=10**6)
 
         assert gw._wait_for_mount_point(mounter, "/p", alive=lambda: True, timeout=5) is False
+
+
+class TestTheAgentSurvivesItsOwnPasses:
+    """Audit 59: `umount` on a dead FUSE mount waits forever, and the agent's
+    one reconcile thread waited with it — health green, node serving nothing."""
+
+    def test_a_mount_command_that_never_finishes_is_a_failed_command(self, monkeypatch):
+        import subprocess
+
+        from clouder.csi import mounter as m
+
+        def never(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
+
+        monkeypatch.setattr(m.subprocess, "run", never)
+        with pytest.raises(m.MountError, match="did not finish"):
+            m.ProcessMounter._run(["umount", "/gone"])
+
+    def test_a_pass_that_raises_does_not_end_the_agent(self, monkeypatch):
+        from clouder.csi import node_mount_gateway_agent as agent_module
+
+        class Agent(agent_module.NodeMountGatewayAgent):
+            def __init__(self):
+                self.passes = 0
+                self._stop = __import__("threading").Event()
+                self._thread = None
+                self._last_resync = 0.0
+                self._failures = 0
+
+            def run_once(self):
+                self.passes += 1
+                if self.passes < 3:
+                    raise RuntimeError("umount would not come back")
+                self._stop.set()
+
+        agent = Agent()
+        monkeypatch.setattr(agent._stop, "wait", lambda timeout=None: None)
+        agent.run()
+
+        assert agent.passes == 3, "the agent gave up after the first bad pass"

@@ -34,7 +34,25 @@ log = logging.getLogger("clouder.csi.mounter")
 #: Environment variable the bridge filesystem process reads its token from.
 #: The token travels in the environment, never on the command line, so it is
 #: not visible in ``ps`` output.
+#: How long any one mount command is given. A mount command that does not
+#: finish is not a slow one: it is `umount` waiting on a filesystem whose
+#: process is gone, and the wait has no end.
+MOUNT_COMMAND_TIMEOUT_SECONDS = 20.0
+
 MOUNT_TOKEN_ENV = "DATALAYER_BRIDGE_MOUNT_TOKEN"
+#: The session key, in the environment for the reason the token is: `ps`
+#: output is readable by anything on the node. Both ends seal their frames
+#: with it, and a mount started without one speaks plaintext at a client
+#: that does not.
+SESSION_KEY_ENV = "DATALAYER_BRIDGE_SESSION_KEY"
+
+
+#: Who a sandbox runs as. Every Datalayer sandbox is `jovyan`, 1000:100 — the
+#: same pair `datalayer_common.home_folders` writes home folders for. Said
+#: here rather than imported, because a node agent has no business installing
+#: a services package to learn it.
+SANDBOX_UID = 1000
+SANDBOX_GID = 100
 
 
 class MountError(RuntimeError):
@@ -54,7 +72,16 @@ class Mounter(abc.ABC):
     """The mount operations the driver needs, and nothing else."""
 
     @abc.abstractmethod
-    def start(self, *, bridge_uid: str, relay_url: str, mount_token: str, mount_path: str, mode: str) -> MountHandle:
+    def start(
+        self,
+        *,
+        bridge_uid: str,
+        relay_url: str,
+        mount_token: str,
+        mount_path: str,
+        mode: str,
+        session_key: str = "",
+    ) -> MountHandle:
         """Start the bridge filesystem for ``bridge_uid`` and wait for it to be mounted at ``mount_path``."""
 
     @abc.abstractmethod
@@ -235,21 +262,42 @@ class ProcessMounter(Mounter):
 
     # -- process -----------------------------------------------------------
 
-    def start(self, *, bridge_uid: str, relay_url: str, mount_token: str, mount_path: str, mode: str) -> MountHandle:
+    def start(
+        self,
+        *,
+        bridge_uid: str,
+        relay_url: str,
+        mount_token: str,
+        mount_path: str,
+        mode: str,
+        session_key: str = "",
+    ) -> MountHandle:
         os.makedirs(mount_path, exist_ok=True)
         log_path = os.path.join(os.path.dirname(mount_path), "mounter.log")
         env = dict(os.environ)
         env[MOUNT_TOKEN_ENV] = mount_token
+        env[SESSION_KEY_ENV] = session_key
         command = [
             self._python,
             "-m",
             "clouder.csi.bridge_mount",
             "--relay-url",
             relay_url,
+            "--bridge-uid",
+            bridge_uid,
             "--mount-path",
             mount_path,
             "--mode",
             mode,
+            # This agent mounts as root and the sandbox reads as its own
+            # user, in another namespace: without these the folder answers
+            # `Permission denied` to the person who asked for it, and every
+            # file in it comes back owned by root.
+            "--allow-other",
+            "--uid",
+            str(SANDBOX_UID),
+            "--gid",
+            str(SANDBOX_GID),
         ]
         with open(log_path, "ab") as log_file:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, token in env
@@ -423,11 +471,22 @@ class ProcessMounter(Mounter):
         return _mount_identity(os.path.normpath(path), self._mount_info)
 
     @staticmethod
-    def _run(command: list[str]) -> None:
+    def _run(command: list[str], timeout: float = MOUNT_COMMAND_TIMEOUT_SECONDS) -> None:
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
+            result = subprocess.run(  # noqa: S603
+                command, capture_output=True, text=True, check=False, timeout=timeout
+            )
         except FileNotFoundError as exc:
             raise MountError(f"{command[0]} is not available: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            # `umount` on a filesystem whose process is gone waits for a
+            # server that will never answer, and it waits forever. Without
+            # this the agent's one reconcile thread blocked there and every
+            # pod on the node stopped getting its mounts, while the health
+            # endpoint went on saying the agent was fine. A timeout makes it
+            # a failed command, which is what the caller already knows how
+            # to answer: the lazy forms it tries next do come down.
+            raise MountError(f"{' '.join(command)} did not finish in {timeout:.0f}s") from exc
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
             raise MountError(f"{' '.join(command)} failed ({result.returncode}): {detail}")
@@ -469,9 +528,20 @@ class FakeMounter(Mounter):
     attrs: dict[str, dict] = field(default_factory=dict)
     foreign: set[str] = field(default_factory=set)
     calls: list[tuple] = field(default_factory=list)
+    session_keys: dict[str, str] = field(default_factory=dict)
 
-    def start(self, *, bridge_uid: str, relay_url: str, mount_token: str, mount_path: str, mode: str) -> MountHandle:
+    def start(
+        self,
+        *,
+        bridge_uid: str,
+        relay_url: str,
+        mount_token: str,
+        mount_path: str,
+        mode: str,
+        session_key: str = "",
+    ) -> MountHandle:
         self.calls.append(("start", bridge_uid, relay_url, mount_token, mount_path, mode))
+        self.session_keys[bridge_uid] = session_key
         if self.fail_start:
             raise MountError(self.fail_start)
         self.processes[bridge_uid] = FakeProcess(
