@@ -478,6 +478,23 @@ Datasource keeps executing while the task says cancelled.
 | `data:write` | Attaching, detaching, saving a revision — and `enable_toolset`, which is where writing artifacts into your storage is consented to, once |
 | `tools:use` | Borrowing a source's tools at all |
 
+### Bulk data is named, never carried
+
+Three resources say where data is rather than handing it over, so a large
+result costs an agent's context nothing:
+
+| Resource | What it answers |
+|---|---|
+| `datalayer://queries/{uid}/results` | A Flight ticket where Contents mints one, and the HTTPS Arrow stream beside it — the same bytes for a client that cannot carry gRPC |
+| `datalayer://objects/{uid}` | What an object is, its versions, and the URL its bytes are at |
+| `datalayer://transfers/{uid}` | A transfer's progress |
+
+All three cost `data:read` and are cached **privately**: two callers get
+different answers, and a shared cache would hand somebody else's data to
+whoever asked next. The bytes themselves are fetched from Contents by the
+client, with its own credential, and are never proxied through the
+gateway.
+
 ## A sandbox has two names
 
 A sandbox is identified by a **ULID** — that is its `sandbox_uid`, and it
