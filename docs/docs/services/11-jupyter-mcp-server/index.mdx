@@ -484,6 +484,29 @@ and the next call is refused without asking again. Both name the owner and
 say `launch_sandbox` is the way to a sandbox of one's own. Counted as
 `access_revoked` in `mcp.refusals`.
 
+### External sandboxes
+
+A sandbox at Daytona, E2B or Modal is bound like any other: the same
+handle, the same `SANDBOX_LOST`, the same quota. Two things differ.
+
+**Transport.** Runtimes reaches an external sandbox either through the
+provider's HTTPS and WebSocket ingress to a real Jupyter server
+(`provider-ingress`), or through the provider's own execution API
+(`direct`). A direct sandbox has no Jupyter server behind it, so every tool
+that reaches for one — files, kernels, notebook cells — has nothing to
+reach. The gateway keeps the runtime's latest word on a live binding, the
+transport among it, and refuses those tools with `transport_direct`, naming
+`execute_code` as what works and `launch_sandbox` as the way to a sandbox
+with a Jupyter server. Counted in `mcp.refusals`.
+
+**Cancelling a running cell.** A task's `execute` step runs the code in a
+thread, which nothing outside that thread can stop. While it runs, the
+durable worker asks the engine every two seconds whether the run was
+cancelled — from any replica, since the engine's record is shared — and
+interrupts the kernel through the runtime's sandbox client the moment it
+was. A ten-minute cell a person had already given up on used to keep
+computing until it finished on its own.
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The

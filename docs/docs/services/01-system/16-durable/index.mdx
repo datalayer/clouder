@@ -113,6 +113,12 @@ is one place that stops a sandbox and one record of why. The credential the
 run works with is a temporary key IAM issues for the person the run is for,
 never the scheduler's.
 
+**A cancelled run interrupts its kernel.** `execute` runs the code in a
+thread and polls the engine every two seconds for a cancellation — from any
+replica, the engine's record being shared — and interrupts the runtime's
+kernel the moment there is one, failing the step as `CANCELLED`. Without
+this a cancel only stopped the *next* step; the cell kept computing.
+
 **Every workflow ends in `project_task`.** A run whose engine finished but
 whose task still says `working` is a run nobody can see the end of, and the
 projection is the only thing a client reads.
