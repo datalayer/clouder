@@ -68,6 +68,17 @@ open https://${DATALAYER_RUN_HOST}/api/spacer/version
 open https://${DATALAYER_RUN_HOST}/api/spacer/v1/ping
 ```
 
+`/version` is liveness — the process is up — and is what the Kubernetes
+readiness probe reads. `/ping` asks **Solr**, and answers `503` when it
+cannot be reached: a Spacer that cannot reach Solr serves nothing at all, and
+until 2026-09-04 this route said `success: true` for the process being up and
+nothing else. Three things read it as a health check — the MCP gateway
+reports it as a dependency, the scheduler gates its self-check on it, and
+`plane local` waits for it — so all three were told a broken Spacer was
+fine. The probe stays on `/version` deliberately, so a Solr outage is
+reported rather than turned into a crash-loop that takes Spacer down with
+it.
+
 ## Notebook versions
 
 A version is a notebook's bytes at a moment, kept on purpose — by a person
