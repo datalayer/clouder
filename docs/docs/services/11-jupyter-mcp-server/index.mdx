@@ -1370,6 +1370,23 @@ worker's spans hang under too, since the call to the worker carries its
 context. A malformed header is no header, and outside any span — telemetry
 off, a test process — the row names nothing rather than inventing an id.
 
+**And the span is filed where the person can read it.** The OTEL service
+scopes every query to an account and files a span under its
+`usage_account_uid` attribute, else under the exporter's — this gateway's
+service account. So a person querying the trace their audit row names got
+`404` for spans that existed. `mcp.request` and `mcp.policy` now carry the
+organization the call was made in, else the person: a per-person value is
+fine on a span, which is one access-controlled record, where it is forbidden
+on a metric (see `account_labels` against `span_account_labels`). The ASGI
+root span, the `http send`/`receive` spans and the worker's stay under the
+gateway's account — the person sees the gateway and policy spans of their
+call, a platform administrator (`?account_uid=`) sees the whole trace.
+Measured on prod1: the row has its trace id within 4 s of the call, and the
+span is queryable under the person's account after 19–40 s, which is the
+collector's and the consumer's batching. The route is `/api/otel/v1/traces/{id}`
+**without a trailing slash** — with one it is a 404 for a trace the listing
+route just returned, which `datalayer-core`'s client sent until 2026-09-05.
+
 The table below is generated from `telemetry.CATALOGUE`, which a test holds
 against the instruments actually created — in both directions — and against
 the label values actually passed. It was hand-copied once and drifted three
@@ -1631,12 +1648,20 @@ revoked agent hidden from the listing is invisible to whoever is deciding
 whether it is still needed while its audit rows still name it.
 
 **What an agent may be granted** is a subset of the OAuth scopes:
-`runtimes:read`, `runtimes:write`, `data:read`, `sandboxes:manage`. The
-scopes about a *person* — reading their profile, acting as them — mean
-nothing for a principal that is not one, and accepting them would grant
-something that silently does nothing. An agent with no scopes is refused
-outright: it is a key that fails at its first call, issued as though it
-worked.
+`code:execute`, `notebooks:read`, `notebooks:write`, `runtimes:read`,
+`runtimes:write`, `data:read`, `sandboxes:manage`. The scopes about a
+*person* — reading their profile, acting as them — mean nothing for a
+principal that is not one, and accepting them would grant something that
+silently does nothing. An agent with no scopes is refused outright: it is a
+key that fails at its first call, issued as though it worked.
+
+The first three were missing until 2026-09-05. A service agent could be
+handed a sandbox — `sandboxes:manage` — and could not run a line on it,
+because `execute_code` is the one tool that costs `code:execute` and the
+gateway takes an agent's scopes as they are; a pipeline that runs a
+notebook with its own key, which is what a service agent is for, needs all
+three. Found by walking the shared-sandbox scenario on prod1 with a real
+service agent.
 
 #### How a key is checked, and what that costs
 
