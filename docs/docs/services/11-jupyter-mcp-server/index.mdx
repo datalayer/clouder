@@ -652,6 +652,40 @@ and the next call is refused without asking again. Both name the owner and
 say `launch_sandbox` is the way to a sandbox of one's own. Counted as
 `access_revoked` in `mcp.refusals`.
 
+### A subscriber is told, or nobody is
+
+An agent that has opened a notebook can ask to hear when it changes —
+`resources/subscribe` on `notebook://<handle>` at 2025-11-25, a
+`subscriptions/listen` filter at 2026-07-28 — and the worker holds a
+persistent connection to the collaborative document so that a *person's* edit
+in JupyterLab is announced too, not only the agent's own.
+
+**None of it was delivered until 2026-09-05, and the server reported that it
+had been.** The registry of subscribed sessions was weak-keyed so that a
+session going away would take its subscriptions with it; nothing else holds
+an SDK `ServerSession`, so every subscription was collected between the
+request that made it and the next call. `publish` then returned `True`
+anyway, because the 2026-07-28 bus had accepted the event — and that bus
+knows nothing of the 2025-11-25 client waiting on its stream. Measured
+against prod1 first (subscribe accepted, listen stream open, nothing ever
+arriving), then reproduced in one process against a raw client, where the
+verdict is on the wire rather than in a client library.
+
+Three things were wrong, and all three are fixed in the open source server:
+the registry holds its sessions **strongly**, with removal said out loud — on
+unsubscribe, on a send that fails, and past a ceiling of 256 sessions, oldest
+first; the legacy half runs whether or not a modern bus exists, where before
+an early `return` skipped it entirely on any SDK without
+`subscriptions/listen`; and a subscriber that cannot be told is logged rather
+than dropped in silence. The test that holds it (`tests/test_a_subscriber_
+really_hears.py`) runs a real server over real TCP, reads the wire, and
+deliberately keeps **no reference of its own** to the session — a test that
+keeps one passes against the broken code, which is how this stayed broken
+while its unit tests were green.
+
+What is still open is which *cell* changed: the notification names the
+notebook, and an agent is told to refetch rather than told what moved.
+
 ### A disconnected agent stops within seconds, not within the hour
 
 Disconnecting an agent revokes its grant, and the refresh token stops working
@@ -2410,15 +2444,23 @@ three kinds:
 | Kind | Why |
 |---|---|
 | Fixtures (12) | The scenario asks for `test_simple_prompt` or `test://static-text` by name — things only the suite's reference server has. Adding them would put a test fixture in a product |
-| Unimplemented (5) | `completion/complete`, `logging/setLevel`, `resources/subscribe` and `unsubscribe`, and the log notifications that follow |
+| Unimplemented (3) | `completion/complete` and the log notifications that follow `logging/setLevel` |
 | Client capabilities (4) | Elicitation and sampling are the server asking the *client* for something. A tool that stops to ask a question is one an agent cannot run unattended |
 
 :::note None of the twenty-one is this gateway claiming something it cannot do
 
-`initialize` advertises no `logging` and no `completions` capability, and
-`resources.subscribe: false`. The suite runs those scenarios anyway, without
-gating on what the server said it supports — so a `-32601 Method not found`
-there is the honest answer to a request the client was told not to make.
+`initialize` advertises no `completions` capability. The suite runs those
+scenarios anyway, without gating on what the server said it supports — so a
+`-32601 Method not found` there is the honest answer to a request the client
+was told not to make.
+
+**`resources/subscribe` is no longer in that list.** Read against prod1 on
+2026-09-05, `initialize` answers `resources: {subscribe: true, listChanged:
+false}` and `logging: {}` — the baseline said the opposite of both, and a
+capability advertised as true is a promise the `-32601` defence does not
+cover. Subscribe and unsubscribe are implemented and, since the same day,
+actually deliver: see [A subscriber is told, or nobody
+is](#a-subscriber-is-told-or-nobody-is).
 
 Read the baseline before reading twenty-one failures as twenty-one bugs. Each
 entry names what it is waiting for; an entry is a debt with a name, not a
