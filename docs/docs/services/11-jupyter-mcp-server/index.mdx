@@ -736,6 +736,11 @@ findable was comparing the failures against the same suite at `HEAD` — a
 suite with twenty pre-existing failures tells you nothing until you know
 which twenty.
 
+Each URI of a burst is published as its own attempt. Inside one `try`, a
+frame that failed took the rest of the burst with it and made a publish that
+had reached somebody answer that nobody was told — and the caller counts
+that answer, reading `False` as "nothing is listening".
+
 **A debounce must not decide anything by reading a clock.** Two Windows CI
 jobs failed on a suite green everywhere else, and the cause is not really
 Windows: asyncio runs a timer once the loop's time is within one *clock
