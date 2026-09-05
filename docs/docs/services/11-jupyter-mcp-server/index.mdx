@@ -1090,6 +1090,17 @@ number found the four defects listed under *The first execution binds the
 session* and *No affinity at the edge*, none of which a one-process test
 could see.
 
+The two disruption runs, same day and shape (25 agents, two replicas, the
+disruption twenty seconds in): **losing one pod** cost 2 × 502 and 5
+in-flight timeouts out of 393 calls — that pod's requests in flight and
+little else; the survivor forgot the dead pod's directory entries on the
+first refused forward, and the agents' handle kept working. **A rolling
+restart** cost 23 × 502 and two timeouts out of 385: the pod being replaced
+kept serving requests forwarded *to* it while its worker children were
+already dying. A drain that stops accepting forwards before anything else,
+and re-registers nothing, is what closes that gap; the grace period alone
+does not.
+
 ### No affinity at the edge
 
 The ingress round-robins. There is **no cookie affinity** and there are no
