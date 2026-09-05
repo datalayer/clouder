@@ -636,6 +636,21 @@ sandbox kept the uuid it drew at construction as its id after the runtime
 existed; it takes the runtime's uid at launch now, which reaches a worker
 with the next `code-sandboxes` release.
 
+**From the console, as well as from an agent.** The bound-sandboxes panel of
+the MCP dashboard has a *Share* action beside *Terminate*, and the sandbox
+details dialog a *Manage sharing* button; both open the same access dialog
+that content uses, against `GET|PUT /runtimes/{name}/sharing` directly.
+Runtimes answers an `access` document in exactly the shape the dialog reads,
+so there is no translation between them and nothing to keep in step.
+
+The name is the runtime's here too, and `sandboxSharingUrl` is where that is
+written down for both surfaces. It answers nothing for a sandbox with no
+runtime behind it — a browser or local kernel, or a binding still reserving —
+so those are offered no button rather than a button that always fails. A
+person who is not the owner gets Runtimes' `403`, and the dialog says so
+rather than drawing an empty list of grants, which would read as a sandbox
+shared with nobody.
+
 A grantee calls `use_sandbox` with the sandbox's runtime name, or with the
 owner's handle. The gateway asks Runtimes what the caller may do, and a
 `view` is the least that makes a binding — one of the grantee's own, naming
