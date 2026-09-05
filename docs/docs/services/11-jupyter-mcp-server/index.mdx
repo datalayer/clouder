@@ -881,27 +881,44 @@ interrupts the kernel through the runtime's sandbox client the moment it
 was. A ten-minute cell a person had already given up on used to keep
 computing until it finished on its own.
 
-:::danger The default sandbox runs code nowhere, on prod1 today
+### The follower, and why it never ran
 
-Measured on 2026-09-05 against 2.1.7, with every sandbox binding of the
-account cleared first.
+Every execution the gateway forwards names the session's sandbox in the
+request's `_meta`, and a hook in the worker makes that sandbox the active one
+— attaching by name when this worker never launched it, which is what lets an
+execution land on whichever replica serves it.
 
-A session-less `execute_code` **does** get a sandbox: the gateway launches
-the deployment's default itself and the binding comes back `active`. And the
-code runs nowhere. `print(6*7)` answers `content: []`, `count: 0`,
-`isError: false` — no output, no error, nothing to tell an agent that its
-question went unanswered.
+**It asked for an attribute that does not exist.** The hook read `manager` off
+the sandboxes extension; the extension publishes its registry as `sandboxes`,
+a property it exposes precisely so nothing downstream reaches for `_manager`.
+So `getattr` answered `None` and the hook returned without doing anything, on
+every execution, on every deployment.
 
-`list_sandboxes` on that same session answers `[]`, because it lists the
-*worker's* in-memory manager and the worker never launched this sandbox,
-while `launch_sandbox` on the same session answers "this session already has
-a live sandbox". `use_sandbox` with the runtime's name attaches, and the next
-execution answers `SandboxExecutionError: Kernel client is not started`.
+What that looked like on prod1 on 2026-09-05: the gateway launched a
+session's default sandbox and the binding came back `active`, and
+`print(6*7)` answered **no output and no error**. A tool that fails silently
+cannot be told apart from a program that printed nothing.
 
-So the before-call hook attaches by name and starts no client, and the
-execution path reads an unstarted client as an execution with no output.
-The second half is the worse one: a tool that fails silently cannot be told
-apart from a program that printed nothing.
+Neither package's tests could see it. The extension's do not know this
+gateway exists; this gateway's faked the manager and never asked where a real
+one comes from. The test that holds it now reads the attribute name off the
+real extension class, so a rename on either side fails rather than returning
+quietly. Re-walked after the fix, `print(6*7)` answers **42**.
+
+A second defect sat behind it, in `code-sandboxes`: `DatalayerSandbox._adopt`
+marked a sandbox started because the sandbox *is* running, and left
+`agent_runtimes` with no kernel client, so the first execution answered
+`Kernel client is not started`. `from_id` connects now; `list_all` does not,
+because listing thirty runtimes must not open thirty kernel connections, and
+`run_code` connects on demand. That half reaches the image with the next
+`code-sandboxes` release.
+
+:::caution Still open: `list_sandboxes` answers for the worker, not the session
+
+A session whose sandbox the *gateway* launched is told by `list_sandboxes`
+that it has none, while `launch_sandbox` on the same session answers that it
+already has one. The tool lists the worker's own registry; the binding store
+is what the session actually holds.
 
 :::
 
