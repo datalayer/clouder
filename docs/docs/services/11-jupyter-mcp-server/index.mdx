@@ -758,6 +758,26 @@ fast enough typist: every keystroke pushes the timer back and a subscriber
 hears nothing until the typing stops, which in a notebook two agents are
 working in may be never.
 
+**Measured on prod1 with 2.1.7, 2026-09-05.** A 2025-11-25 client subscribes
+to the Welcome notebook and to two of its cells by id, and overwrites one:
+off the raw wire, `notebook://welcome` and `notebook://welcome/cells/<id>`,
+one frame each, nothing for the other subscribed cell. Then a person edits
+that same cell through the Spacer collaboration socket, and the subscriber
+hears the notebook and that cell in **0.35 s** — a frame naming the cell
+somebody typed in, from a change this server did not make.
+
+The image **asserts** `watchers.fold` at build time, beside the assertions
+for the extensions and the sandbox client. A wheel too old to fold now fails
+the build rather than deploying into a silence nobody would look for.
+
+:::note Where the cell ids come from
+
+Not from `read_notebook`, which answers a text summary. A client is handed a
+cell id on `read_cell`'s own `_meta`, under `io.jupyter-mcp/cell_id`, put
+there by the resolver that turned an index into a cell.
+
+:::
+
 :::caution An open source fix is not deployed by deploying
 
 The image builds **this** service from source — the build context is
