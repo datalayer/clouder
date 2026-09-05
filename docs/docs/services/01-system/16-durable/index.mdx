@@ -435,6 +435,39 @@ chart, passed by `up.sh`. Left empty the gateway falls back to an in-process
 fake that reports `durable: false`. That is correct for a cluster which has
 not deployed this service, and the thing not to mistake for one that has.
 
+### Reaching it from the API plane
+
+The gateway runs on the API plane (`prod1`) and this service on the runtimes
+plane (`r1`), so the call between them leaves a cluster. Three things, and
+none of them is optional:
+
+1. **An ingress on the runtimes plane.** Set `DATALAYER_DURABLE_HOST` in the
+   r1 rc — the API host, `r1.datalayer.run` — and `plane reup
+   datalayer-durable`. The chart renders an Ingress for `/api/durable` alone,
+   in the plane's shape: the `datalayer-traefik` class, a certificate from
+   the `letsencrypt` cluster issuer, TLS only. A workload key travels on
+   every request here, and a route that took it in the clear would publish
+   it. Nothing else of this service is reachable through it — not the admin
+   port, not the queues.
+2. **A workload key for the gateway.** This service authenticates callers by
+   identity and key (`auth.py`): the gateway is `jupyter-mcp-server` and
+   presents `DATALAYER_JUPYTER_MCP_SERVER_API_KEY`. The same value goes into
+   `secret/datalayer-durable-secret` in `datalayer-durable` on r1 under that
+   name — the chart reads it from there — and into the prod1 rc, from which
+   `up.sh` passes it to the gateway. Generate it once, keep it in the rc, and
+   never paste it into a shell that echoes. On 2026-09-05 the secret held the
+   runtimes, IAM and ai-agents keys and not this one, which is why the
+   gateway still runs the in-process fake.
+3. **The URL on the gateway.** `DATALAYER_DURABLE_URL=https://r1.datalayer.run`
+   in the prod1 rc and `plane reup datalayer-jupyter-mcp-server`. `readyz`
+   then reports `workflows` from the durable service's own `/readyz` rather
+   than `fake: platform mode with no DATALAYER_DURABLE_URL`.
+
+Order matters only in that the key must be on both sides before the URL is
+set: a gateway pointed at a service that refuses its key reports `workflows`
+not ready and starts nothing durable, which is the honest answer and not the
+one you want.
+
 ## Local development
 
 ```bash

@@ -173,7 +173,10 @@ curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records, replica}'
 ```
 
 `records` must read `solr` and two consecutive `healthz` answers should name
-two replicas. The `mcp-*` collections must already exist (`plane solr-init`,
+two replicas. prod1 made this change on 2026-09-05: two replicas, records in
+Solr, the acceptance run's cross-replica checks passing — and the audit
+ledger, which had been in the process and gone with every restart, in
+`mcp-audit` from that day. The `mcp-*` collections must already exist (`plane solr-init`,
 choice **4) AI**); the durable service is a separate matter — with
 `DATALAYER_DURABLE_URL` empty the platform gateway keeps the in-process fake
 and `readyz` says so under `workflows`, which is not a readiness failure but
