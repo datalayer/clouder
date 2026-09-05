@@ -1075,11 +1075,23 @@ cookie: every worker is written into `mcp-gateway` keyed by user *and* by
 sandbox session, naming its replica and an address. A replica that is asked for
 a worker another replica holds forwards the request there over the cluster
 network, carrying `x-datalayer-mcp-hop`; a replica that sees that header serves
-the request itself, so two stale entries can never bounce a request forever. An
-unreachable target answers `502 replica_unreachable` and says to retry. A
-replica that is gone stops refreshing its entries, they expire after
-`DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` (default 180 s), and the caller gets a
-fresh worker with its handles intact.
+the request itself, so two stale entries can never bounce a request forever.
+
+**A replica that is not there is forgotten on the first refused connection.**
+Until 2026-09-05 an unreachable target answered `502 replica_unreachable` and
+said to retry — and kept saying it: a pod that went with a rollout stopped
+refreshing its entries, but they lived on for
+`DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` (default 180 s), and every session
+that pod held was a 502 for three minutes. That is not "losing that pod's
+in-flight requests and nothing else", which is the property the scale-out
+measurement exists to prove; prod1's first `initialize` after leaving
+standalone mode met exactly it. Now the replica that could not reach the
+target drops the directory entries that named it — the session's and the
+user's — and serves the request itself, which is what the entry expiring
+would have meant, three minutes later. The connection fails before any of the
+body is sent, so the fallback has the whole request. Expiry remains the
+backstop for an entry nobody asks about; `502 worker_unreachable` remains the
+answer when the local worker cannot be reached either.
 
 The ingress keeps `proxy-read-timeout` and `proxy-send-timeout` at `900` to
 match the pod's drain, and `proxy-buffering: off` so a streamed response is not
@@ -1087,15 +1099,18 @@ collected at the edge. These are `nginx.ingress.kubernetes.io/*` annotations,
 as on the other Datalayer charts; under the default `datalayer-traefik` class
 they are inert and the equivalent limits are Traefik entrypoint settings.
 
-:::warning Set `POD_IP` for forwarding to leave the pod
+:::info `POD_IP` is what lets a forward leave the pod
 
 A replica registers itself at `DATALAYER_MCP_REPLICA_ADDRESS`, or at
 `http://$POD_IP:4404` when `POD_IP` is set, and at `http://127.0.0.1:4404`
-otherwise. The chart sets neither today, so every replica registers the
-loopback address and a forward lands back on the pod that sent it — which then
-serves the request itself, correctly but on the wrong worker, so a session
-mid-execution can be answered by a second sandbox connection. Give the
-Deployment the downward API before relying on session affinity across replicas:
+otherwise. The chart's Deployment sets `POD_IP` and `POD_NAME` from the
+downward API, which is what the cross-replica acceptance check on prod1
+(2026-09-05, two replicas, a handle issued by one and read six times through
+the other) relied on. Without it every replica registers the loopback address
+and a forward lands back on the pod that sent it — which then serves the
+request itself, correctly but on the wrong worker, so a session mid-execution
+can be answered by a second sandbox connection. A chart of your own needs the
+same:
 
 ```yaml
 # values.yaml of the datalayer-jupyter-mcp-server chart
