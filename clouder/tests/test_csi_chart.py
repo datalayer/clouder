@@ -98,8 +98,51 @@ def with_gateway() -> dict[tuple[str, str], dict]:
     return {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents}
 
 
-def test_csidriver(rendered):
-    csidriver = rendered[("CSIDriver", "local.csi.datalayer.io")]
+@pytest.fixture(scope="module")
+def csi_mode() -> dict[tuple[str, str], dict]:
+    """The legacy render with the inline CSI driver still on (gatewayOnly=false).
+
+    The default is gateway-only now — the inline CSI path for Local Mounts is
+    retired (audit 82) — but the driver stays behind a toggle, and this pins
+    that it still renders when asked for.
+    """
+    if not CHART.is_dir():
+        pytest.skip(f"chart not found at {CHART}")
+    result = subprocess.run(
+        [
+            "helm", "template", "datalayer-node-mounts", str(CHART),
+            "--namespace", "datalayer-runtimes",
+            "--set", "relay.host=r1.datalayer.run",
+            "--set", "relay.cidr=203.0.113.0/24",
+            "--set", "driver.gatewayOnly=false",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    return {(doc["kind"], doc["metadata"]["name"]): doc for doc in documents}
+
+
+def test_the_default_render_is_gateway_only(rendered):
+    """The retirement (audit 82): by default the DaemonSet runs only the
+    gateway — one container, no registrar, no CSIDriver object, and the
+    `--node-mount-gateway-only` flag — so nothing can mount an inline CSI
+    volume of `local.csi.datalayer.io` any more."""
+    assert ("CSIDriver", "local.csi.datalayer.io") not in rendered
+    pod = rendered[("DaemonSet", "datalayer-node-mounts")]["spec"]["template"]["spec"]
+    assert {c["name"] for c in pod["containers"]} == {"driver"}
+    driver = pod["containers"][0]
+    args = " ".join(driver["args"])
+    assert "--node-mount-gateway-only" in args
+    assert "--endpoint" not in args
+    volumes = {v["name"] for v in pod["volumes"]}
+    assert "plugin-dir" not in volumes and "registration-dir" not in volumes
+    # The gateway still has everything it needs.
+    assert "pods-dir" in volumes and "fuse" in volumes
+
+
+def test_csidriver(csi_mode):
+    csidriver = csi_mode[("CSIDriver", "local.csi.datalayer.io")]
     spec = csidriver["spec"]
     assert spec["volumeLifecycleModes"] == ["Ephemeral"]
     assert spec["podInfoOnMount"] is True
@@ -107,8 +150,8 @@ def test_csidriver(rendered):
     assert spec["fsGroupPolicy"] == "None"
 
 
-def test_daemonset_mounts_and_sidecar(rendered):
-    daemonset = rendered[("DaemonSet", "datalayer-node-mounts")]
+def test_daemonset_mounts_and_sidecar(csi_mode):
+    daemonset = csi_mode[("DaemonSet", "datalayer-node-mounts")]
     assert daemonset["metadata"]["namespace"] == "datalayer-runtimes"
     pod = daemonset["spec"]["template"]["spec"]
     containers = {c["name"]: c for c in pod["containers"]}
@@ -232,9 +275,9 @@ def test_the_gateway_may_reach_the_api_server(with_gateway):
 
 def test_the_gateway_runs_in_the_driver_that_already_has_the_privilege(with_gateway):
     containers = with_gateway[("DaemonSet", "datalayer-node-mounts")]["spec"]["template"]["spec"]["containers"]
-    # One node component, not two: a node has one mount table, and two things
-    # pretending to own it is how a leak goes unnoticed.
-    assert {c["name"] for c in containers} == {"driver", "registrar"}
+    # One node component: the gateway runs in the driver container, and with
+    # the CSI path retired (audit 82) there is no registrar sidecar beside it.
+    assert {c["name"] for c in containers} == {"driver"}
 
 
 def test_the_metrics_are_scraped_and_the_leak_is_alerted(tmp_path):

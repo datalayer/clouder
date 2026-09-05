@@ -156,16 +156,29 @@ def serve(
     version: str,
     health_port: int | None = 9808,
     gateway_agent=None,
+    gateway_only: bool = False,
 ) -> None:
     """Run the plugin until SIGTERM/SIGINT.
 
     ``gateway_agent``, when given, is the Node Mount Gateway: the same node, the
     same privilege and the same process, because a node has one mount table
     and two components pretending to own it is how a leak goes unnoticed.
+
+    ``gateway_only`` runs *only* the gateway agent — no CSI gRPC server, no
+    kubelet-facing endpoint. It is how the inline CSI driver was retired
+    (audit 82): a Local Mount is a gateway grant now, so the node agent has
+    no CSI volumes to publish, and serving an endpoint kubelet is no longer
+    told about would be a socket nobody dials. The driver object is still
+    built — the health page reads its node id — but it is never started.
     """
-    address = _prepare_endpoint(endpoint)
-    server = build_server(driver, version)
-    server.add_insecure_port(address)
+    if gateway_only and gateway_agent is None:
+        raise ValueError("gateway_only needs a gateway agent to run")
+
+    server = None
+    if not gateway_only:
+        address = _prepare_endpoint(endpoint)
+        server = build_server(driver, version)
+        server.add_insecure_port(address)
 
     health = (
         HealthServer(driver, port=health_port, gateway=gateway_agent) if health_port else None
@@ -173,13 +186,18 @@ def serve(
     if health is not None:
         health.start()
 
-    driver.start()
+    if not gateway_only:
+        driver.start()
     if gateway_agent is not None:
         gateway_agent.start()
-    server.start()
+    if server is not None:
+        server.start()
     if health is not None:
         health.serving = True
-    log.info("%s %s serving on %s (node %s)", DRIVER_NAME, version, endpoint, driver.node_id)
+    if gateway_only:
+        log.info("%s %s serving the gateway only (node %s)", DRIVER_NAME, version, driver.node_id)
+    else:
+        log.info("%s %s serving on %s (node %s)", DRIVER_NAME, version, endpoint, driver.node_id)
 
     stop = threading.Event()
 
@@ -198,9 +216,11 @@ def serve(
         while not stop.wait(1.0):
             pass
     finally:
-        server.stop(grace=5).wait()
+        if server is not None:
+            server.stop(grace=5).wait()
         if gateway_agent is not None:
             gateway_agent.close()
-        driver.close()
+        if not gateway_only:
+            driver.close()
         if health is not None:
             health.stop()

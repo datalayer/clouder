@@ -65,6 +65,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Accept ws:// relay URLs (development only).",
     )
     parser.add_argument(
+        "--node-mount-gateway-only",
+        action="store_true",
+        default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_ONLY", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Run only the Node Mount Gateway, without the CSI driver: no gRPC endpoint, "
+            "nothing registered with kubelet. The inline CSI path for Local Mounts is "
+            "retired (audit 82), so there are no CSI volumes to publish. Implies "
+            "--node-mount-gateway. Env: DATALAYER_NODE_MOUNT_GATEWAY_ONLY."
+        ),
+    )
+    parser.add_argument(
         "--node-mount-gateway",
         action="store_true",
         default=os.environ.get("DATALAYER_NODE_MOUNT_GATEWAY_ENABLED", "").lower() in ("1", "true", "yes"),
@@ -186,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         allow_insecure_relay=args.allow_insecure_relay,
         watch_interval=args.watch_interval,
     )
+    if args.node_mount_gateway_only:
+        args.node_mount_gateway = True
     gateway_agent = None
     if args.node_mount_gateway:
         from .node_mount_gateway_agent import build_agent
@@ -214,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         version=__version__,
         health_port=args.health_port or None,
         gateway_agent=gateway_agent,
+        gateway_only=args.node_mount_gateway_only,
     )
     return 0
 

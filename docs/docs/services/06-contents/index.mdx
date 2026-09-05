@@ -669,7 +669,7 @@ kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-re
 Contents stores its documents in four Solr collections, in a **mapping** —
 which document families exist, which fields each writes, with which Solr
 suffix — that is generated from the DAO codecs into `contents_mappings.json`
-and carries a **version** (`CONTENTS_MAPPING_VERSION`, today `6`) and a
+and carries a **version** (`CONTENTS_MAPPING_VERSION`, today `8`) and a
 fingerprint. The mapping says what the code means *now*. The cluster holds
 documents written by whatever the code meant *then*: an attachment recorded
 under version 1 has no `access_mode_s`, because version 1 had no such field.

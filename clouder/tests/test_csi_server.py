@@ -184,3 +184,61 @@ def test_health_endpoint(driver):
         assert payload["bridges"] == {}
     finally:
         health.stop()
+
+
+def test_gateway_only_serve_runs_the_gateway_and_no_csi_server(driver, monkeypatch):
+    """The inline CSI path is retired (audit 82): `gateway_only` runs only the
+    Node Mount Gateway — no gRPC server is built, no endpoint is prepared, the
+    CSI driver is never started, but the gateway agent is. A local unix socket
+    kubelet is no longer told about would be a socket nobody dials."""
+    from ..csi import server as server_module
+
+    events: list[str] = []
+
+    class _Agent:
+        def start(self):
+            events.append("gateway-start")
+
+        def close(self):
+            events.append("gateway-close")
+
+    monkeypatch.setattr(server_module, "build_server", lambda *a, **k: pytest.fail("built a CSI server"))
+    monkeypatch.setattr(server_module, "_prepare_endpoint", lambda *a, **k: pytest.fail("prepared an endpoint"))
+    monkeypatch.setattr(driver, "start", lambda: events.append("driver-start"))
+    # Health off (no port), and stop the run loop immediately.
+    import threading
+
+    real_event = threading.Event
+    started = threading.Event()
+
+    class _ImmediateEvent:
+        def __init__(self):
+            self._e = real_event()
+            started.set()
+
+        def wait(self, timeout=None):
+            return True  # stop at once
+
+        def set(self):
+            self._e.set()
+
+    monkeypatch.setattr(server_module.threading, "Event", _ImmediateEvent)
+
+    server_module.serve(
+        driver=driver,
+        endpoint="unix:///should/not/be/used.sock",
+        version="0.0.0",
+        health_port=None,
+        gateway_agent=_Agent(),
+        gateway_only=True,
+    )
+    assert "gateway-start" in events
+    assert "gateway-close" in events
+    assert "driver-start" not in events
+
+
+def test_gateway_only_needs_a_gateway_agent(driver):
+    from ..csi.server import serve
+
+    with pytest.raises(ValueError, match="gateway"):
+        serve(driver=driver, endpoint="unix:///x.sock", version="0", health_port=None, gateway_only=True)

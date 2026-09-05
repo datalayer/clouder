@@ -309,9 +309,17 @@ claim is `Bound`, `DELETE /volumes/{uid}` as the compensation when every
 attempt is spent. The calls carry the owner in `x-forwarded-user` and the
 Operator's own key (`DATALAYER_OPERATOR_API_KEY`); the Volume's uid is the
 source's uid, so a claim is always traceable to its catalog entry. A source
-is trusted — `ready`, mountable — only once the claim is bound. When a pod
-mounts a Volume the Operator records the assignment on the PVC and clears it
-when the runtime is deleted, so a Volume in use is never re-attached elsewhere.
+is trusted — `ready`, mountable — once the claim is bound **or** its storage
+class binds only on first mount. That last case is the common one: the
+Operator reports each claim's `binding_mode_s`, and on a
+`WaitForFirstConsumer` class — the EKS default `gp3` among them — the claim
+stays `Pending` by design until a pod mounts it, so the Volume is marked
+ready the moment the claim exists rather than waiting for a `Bound` that only
+an attach could produce (audit 80). The class is the cluster default unless
+`DATALAYER_VOLUMES_STORAGE_CLASS` names one; it must be `ReadWriteOnce`-capable
+(EBS `gp3`, not EFS). When a pod mounts a Volume the Operator records the
+assignment on the PVC and clears it when the runtime is deleted, so a Volume
+in use is never re-attached elsewhere.
 
 ```bash
 kubectl get pvc -n datalayer-runtimes
