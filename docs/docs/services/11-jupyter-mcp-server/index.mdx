@@ -913,14 +913,40 @@ because listing thirty runtimes must not open thirty kernel connections, and
 `run_code` connects on demand. That half reaches the image with the next
 `code-sandboxes` release.
 
-:::caution Still open: `list_sandboxes` answers for the worker, not the session
+`code-sandboxes` 1.4.3 carries that half, and the image asserts it at build
+time beside the other floors: a wheel too old to connect to a runtime it
+adopted fails the build rather than deploying into silence.
 
-A session whose sandbox the *gateway* launched is told by `list_sandboxes`
-that it has none, while `launch_sandbox` on the same session answers that it
-already has one. The tool lists the worker's own registry; the binding store
-is what the session actually holds.
+### The listing agrees with the session
+
+`list_sandboxes` answers about the *worker's* registry — what that process
+launched. The session's sandbox is the gateway's record, and the two differ
+whenever the gateway launched it or another replica did. So a session whose
+`execute_code` had just run was told by `list_sandboxes` that it had no
+sandbox, while `launch_sandbox` said it already had one.
+
+The gateway completes the answer now: the session's sandbox is **added** to
+what the worker knew, never substituted for it, because the worker's entries
+carry which notebooks are attached and dropping those would trade one wrong
+answer for another.
+
+:::note Three places, and the first two looked right
+
+The same fact had to be wired through the decoration, the lookup, and
+`_wanted` — the gate deciding whether this layer looks at an answer at all,
+where a `False` forwards the body byte for byte. The lookup reached for
+`self.sessions` on the *rewriter* rather than on the layer it was handed, and
+the `except` beneath it swallowed the `AttributeError`. Each of the first two
+passed its unit tests and answered an unchanged listing on prod1. All three
+are held by tests that run the thing rather than read its source.
 
 :::
+
+**Walked on prod1 on 2026-09-05**, with every binding cleared first. A
+session that has never had a sandbox: `list_sandboxes` answers `[]`,
+`print(6*7)` answers **42**, `list_sandboxes` then names the session's
+sandbox as `active` and `running`, and `launch_sandbox` says the session
+already has one. Three tools, one answer, and state kept across calls.
 
 ### Who writes the outputs
 
