@@ -1537,6 +1537,28 @@ and looked complete.
 
 `dependency` is one of (`audit`, `contents`, `iam`, `otel`, `runtimes`, `spacer`, `store`, `tasks`, `workflows`) everywhere it appears. `workflows` is where durable work goes — `datalayer-durable`, or the in-process fake — and it is the dependency that decides whether a long-running call survives anything at all.
 
+**The worker exports too, since 2026-09-05, and under the caller.** It
+exported nothing before: `jupyter-mcp-worker` was absent from
+`traces/services/list` under every account, so a trace showed the gateway's
+request and policy spans and stopped at the boundary where the work happens.
+The open source server already emits a span per tool call and per kernel
+execution through a hook handler — into a *file*, which is right for its own
+tests and useless here — so `worker_main` installs OTLP providers as
+`jupyter-mcp-worker` and registers that handler against them. The export
+credential is the platform's, so the supervisor names the account:
+`DATALAYER_USAGE_ACCOUNT_UID` on the worker's environment becomes the
+`datalayer.usage_account_uid` resource attribute the OTEL consumer files by.
+Without it every worker span lands under the gateway's service account,
+where the person whose call it was cannot read it.
+
+Two things that follow are **not** done, and both are visible from the
+outside. The worker's spans start their own trace: the gateway injects
+`traceparent` into every forward, and the worker's ASGI app is not
+instrumented, so nothing extracts it. And a worker is per *user*, so its
+spans are filed under the person even when the gateway files that call under
+an organization — for a personal call the two agree, for an organization's
+they do not.
+
 The gateway exports with its service credential, so the OTEL service files
 every point under the gateway's own account. Five instruments carry one more
 label when the call was made **in an organization**: `usage_account_uid`,
