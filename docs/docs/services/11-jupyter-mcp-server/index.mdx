@@ -2106,6 +2106,34 @@ a threshold and a window. The gateway evaluates every enabled rule on the
 platform once a minute, records a firing in `mcp_alert_event` and delivers it
 as an ai-agents notification.
 
+:::caution None of it worked on a deployment until 2026-09-05
+
+Driven end to end on prod1 for the first time, and it took three fixes —
+each of which left every test green:
+
+- **IAM could not store a rule at all.** It validated one by importing the
+  gateway's own `datalayer_jupyter_mcp_server.alerts.Rule`, and that package
+  is not in IAM's image: `POST /mcp-alert-rules/{org}` answered `500
+  ModuleNotFoundError`. The vocabulary lives in
+  `datalayer_common.mcp_alerts` now — both services read the same closed sets,
+  and IAM's suite fails if it imports any other service's package.
+- **`POST /api/mcp/v1/alerts/test` refused the caller's own organization.**
+  It used the token's organization and never the one asked about, so every
+  personal access token — an administrator's included — was told "this token
+  names none", while the listing route beside it accepted `?org=` from the
+  same caller.
+- **Every `sli.latency` rule read as unreadable.** The reading called a
+  window incomplete whenever the ledger answered a cursor, and Solr answers a
+  fresh `cursorMark` for any page that returned rows: eighteen rows were read
+  as "more than two thousand". The tick logged *could not evaluate 1 rules*
+  once a minute and nothing fired.
+
+With those three, the walk is: a service agent makes calls (its token carries
+`org_uid`; a personal one does not, and an alert is an organization's),
+`alerts/test` answers `readable, value 848 ms, would_fire`, and the tick
+raises the alert **within 42 s**.
+:::
+
 ```bash
 # What this organization watches
 curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
@@ -2129,10 +2157,28 @@ curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
 | `scope_kind` / `scope_uid` | `organization`, or `team` / `user` / `agent` with the uid of the thing. A scoped rule without a uid is refused: it would be measured over the whole organization under a name saying otherwise |
 | `enabled` | a rule switched off is kept, not deleted — silencing an alert for a migration should not lose the threshold somebody tuned |
 
-IAM refuses a rule the **evaluator** could not evaluate, by asking the
-evaluator rather than restating its rules. A rule that cannot be evaluated is
-a condition nobody is watching, and that looks exactly like a condition that
-never happens.
+IAM refuses a rule the **evaluator** could not evaluate — through the closed
+sets both services read from `datalayer_common.mcp_alerts`, rather than by
+importing the evaluator (which it cannot: that package is not in its image)
+or by restating its rules (which would drift). A rule that cannot be
+evaluated is a condition nobody is watching, and that looks exactly like a
+condition that never happens.
+
+Before writing a rule, ask what it would see:
+
+```bash
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"org":"'$ORG_UID'","condition":"sli.latency","operator":"gt",
+       "threshold":500,"window_seconds":3600}' \
+  https://mcp.datalayer.run/api/mcp/v1/alerts/test
+# {"readable":true,"value":848.0,"would_fire":true,"detail":""}
+```
+
+`readable` is the answer worth having: a rule on something nothing can read
+never fires, and never firing is exactly what a correctly quiet rule looks
+like. The organization is the one named in the body — an owner or security
+auditor may name their own, a platform administrator any, and nobody else.
 
 :::note Every condition has a reader
 There is no longer a condition that validates and then reads `unreadable` on
