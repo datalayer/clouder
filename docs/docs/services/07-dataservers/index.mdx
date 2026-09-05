@@ -160,7 +160,9 @@ round, because Datalayer cannot reach in to change anything.
 
 | State | What the Dataserver does | Who sets it |
 | --- | --- | --- |
+| `registering` | Declared, waiting for the server to connect and heartbeat | The owner (`register`); expired if it never connects (see below) |
 | `ready` | Polls for jobs and runs them | Registration, and every heartbeat |
+| `degraded` | Still runs, but a lease was missed | Contents, one missed lease |
 | `draining` | Stops taking work; running jobs finish | The owner (`drain`), or SIGTERM on the host |
 | `unavailable` | The lease lapsed. Registers again with the same identity | Contents, when heartbeats stop |
 | `revoked` | Stops. The identity is finished | The owner (`revoke`) |
@@ -168,6 +170,17 @@ round, because Datalayer cannot reach in to change anything.
 A 404 on the registration means the same as `unavailable`: register again.
 SIGTERM drains rather than killing — no new work, then
 `DATALAYER_DATASERVER_DRAIN_SECONDS` for what is running, then cancellation.
+
+A registration that **never** connects does not sit `registering` for ever. Only
+a heartbeat leaves `registering`, so one that is declared and never deployed
+would linger `pending` in the catalog — so past a grace window
+(`DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS`, default 24 h) Contents
+archives it: the source leaves every listing (kept for the audit as
+`dataserver.expired`) and the registration reads `unavailable`. The window is
+generous, so a slow deploy still connects in time — a heartbeat at any point up
+to it makes the server `ready` and the expiry never fires. A server that was
+ever live is `degraded`/`unavailable`, not `registering`, and stays recoverable
+as before: only a registration that never became anything is archived.
 
 ## Identity
 
@@ -198,6 +211,7 @@ a Contents setting is the usual way to lose an hour, so:
 | What | Where | Why it is there |
 | --- | --- | --- |
 | The **lease** — how long a heartbeat holds `ready`, and how many misses make it `degraded` then `unavailable` | `DATALAYER_CONTENTS_DATASERVER_LEASE_SECONDS` on [Contents](/services/contents/#configuration) | Contents decides a Dataserver is gone; a Dataserver cannot report its own absence |
+| The **registration grace** — how long a registration may stay `registering` before it is archived as never-connected | `DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS` (default 24 h) on [Contents](/services/contents/#configuration) | Contents holds the registration and runs the sweep that expires an abandoned one |
 | The **CA** that signs its certificate, and how long an issued one lasts | `DATALAYER_CONTENTS_DATASERVER_CA_CERT` / `_CA_KEY` / `_IDENTITY_DAYS` | The issuer is Contents. A Data Server holds a key, never the authority |
 | The **service key** it authenticates with | `DATALAYER_CONTENTS_DATASERVER_API_KEY` | It is Contents' key, given to a Dataserver |
 | The **metrics and the alert** on it | `contents_dataserver_lease_sweeps_total`, `contents_dataserver_refusals_total`, `ContentsDataserverUnavailable` | The sweep that degrades a lease runs in Contents' worker |
