@@ -881,6 +881,30 @@ interrupts the kernel through the runtime's sandbox client the moment it
 was. A ten-minute cell a person had already given up on used to keep
 computing until it finished on its own.
 
+:::danger The default sandbox runs code nowhere, on prod1 today
+
+Measured on 2026-09-05 against 2.1.7, with every sandbox binding of the
+account cleared first.
+
+A session-less `execute_code` **does** get a sandbox: the gateway launches
+the deployment's default itself and the binding comes back `active`. And the
+code runs nowhere. `print(6*7)` answers `content: []`, `count: 0`,
+`isError: false` — no output, no error, nothing to tell an agent that its
+question went unanswered.
+
+`list_sandboxes` on that same session answers `[]`, because it lists the
+*worker's* in-memory manager and the worker never launched this sandbox,
+while `launch_sandbox` on the same session answers "this session already has
+a live sandbox". `use_sandbox` with the runtime's name attaches, and the next
+execution answers `SandboxExecutionError: Kernel client is not started`.
+
+So the before-call hook attaches by name and starts no client, and the
+execution path reads an unstarted client as an execution with no output.
+The second half is the worse one: a tool that fails silently cannot be told
+apart from a program that printed nothing.
+
+:::
+
 ### Who writes the outputs
 
 The runtime image carries `jupyter-server-nbmodel`, enabled, and its
