@@ -1071,6 +1071,25 @@ The HPA scales on CPU only. The plan's request-rate and running-worker
 comment and are not wired: they need an external-metrics adapter over the OTEL
 service, which is not deployed.
 
+**What the first measurement showed (prod1, 2026-09-05).** The load harness
+(`tests/load/`) at 25 agents for 90 s against 1, 2 and 4 replicas gave 3.99,
+4.22 and 3.91 calls/s at a p95 of 11.8, 11.6 and 12.7 s — flat, and for a
+reason that is not the gateway's. Every agent in a run carries one
+credential, one credential is one user, and a user is **one worker process**:
+the ceiling is that worker's kernel, wherever the gateway puts it, and no
+number of replicas moves it. What the run does prove is that the session
+path holds *through* the gateway — the p95 did not degrade when every call
+to the one worker was forwarded across four pods. A measurement of capacity
+growing needs a credential per agent, which is a fixture the platform does
+not hand out yet. The run also counted 5% HTTP 500s, all one defect: a
+session's `last_used_at` touch is a compare-and-set, it was retried once,
+and under twenty-five agents on one session the retry lost too. It re-reads
+up to five times now, and a touch that keeps losing answers what was written
+last rather than failing the call. And getting the harness as far as a
+number found the four defects listed under *The first execution binds the
+session* and *No affinity at the edge*, none of which a one-process test
+could see.
+
 ### No affinity at the edge
 
 The ingress round-robins. There is **no cookie affinity** and there are no
