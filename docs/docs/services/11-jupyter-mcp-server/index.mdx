@@ -688,12 +688,59 @@ notebook through the gateway, subscribes to `notebook://<handle>` and holds
 its standalone `GET` stream; a person editing the same document through the
 Spacer collaboration socket reaches it in **0.97 s**, and the agent's own
 edit in 1.83 s. Read both off the raw wire and through an SDK client, and
-against a pod that was asked what it was running first. One edit currently
-arrives as two notifications — the publishing wrapper and the watcher seeing
-the same change — which costs a subscriber one extra refetch.
+against a pod that was asked what it was running first.
 
-What is still open is which *cell* changed: the notification names the
-notebook, and an agent is told to refetch rather than told what moved.
+### The notification names the cell
+
+`resources/updated` carries `notebook://<handle>/cells/<id>` as well as
+`notebook://<handle>`, so an agent watching one cell of a hundred-cell
+notebook refetches one cell.
+
+**As well as, never instead of.** A client subscribed to the notebook asked
+about the notebook, and a *deleted* cell names nobody — its id went with it,
+and there is nothing left to read. The notebook frame is what every
+subscriber can rely on; the cell frames are an addition on top of it.
+
+Both halves say which cell. A writing tool already resolves an index to a
+cell id and attaches it to its result, for the agent's benefit; the publisher
+reads it back off that result rather than off the tool's arguments, because
+an argument may be an index and an index is not something anybody can
+subscribe to. The watcher reads it off the pycrdt events: a change inside a
+cell arrives with the cell's index at the head of its path, and an inserted
+cell — which is how a *moved* cell appears — carries its own id in the delta.
+Inserting a cell names no cell, deliberately: nobody was subscribed to a cell
+that did not exist.
+
+**One edit is one notification again.** It used to be two: the tool published
+on its way out, and the same edit then arrived back over the watcher's
+persistent connection carrying no origin, looking like somebody else's, and
+was announced again. Naming the cell would have made that two identical cell
+frames. So a watched notebook's tools hand their news to the watcher's own
+debounce instead of publishing it, and the tool's edit and the watcher's
+sight of it collapse into one frame — which picks up a person's *concurrent*
+edit in the same window for free. An unwatched notebook is unaffected: its
+tools publish immediately, because nothing else is going to.
+
+**The news never takes the edit with it.** The watchers are one object for
+the process and outlive the loop they were started on; folding onto a closed
+loop raises, and until it was caught it raised *inside the result wrapper* —
+every writing tool answering `Event loop is closed` after doing its work
+perfectly well. An agent told its edit failed when it had not makes the edit
+again. So `fold` refuses a watch whose loop is closed or is not the one
+running now, and the announcement is wrapped besides: the edit is done and
+the answer is in hand by the time any of it runs.
+
+Worth saying because the unit tests were green through all of it. What found
+it was the integration suite against a real Jupyter server, and what made it
+findable was comparing the failures against the same suite at `HEAD` — a
+suite with twenty pre-existing failures tells you nothing until you know
+which twenty.
+
+The debounce has a ceiling (`MAX_WAIT_SECONDS`, 2 s) now that the server's
+own edits feed it. A debounce with no ceiling is starvation waiting for a
+fast enough typist: every keystroke pushes the timer back and a subscriber
+hears nothing until the typing stops, which in a notebook two agents are
+working in may be never.
 
 :::caution An open source fix is not deployed by deploying
 
