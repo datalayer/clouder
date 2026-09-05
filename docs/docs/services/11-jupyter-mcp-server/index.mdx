@@ -866,6 +866,28 @@ interrupts the kernel through the runtime's sandbox client the moment it
 was. A ten-minute cell a person had already given up on used to keep
 computing until it finished on its own.
 
+### Who writes the outputs
+
+The runtime image carries `jupyter-server-nbmodel`, enabled, and its
+`/api/kernels/<id>/execute` route is served: read from inside a deployed
+runtime on 2026-09-05, `POST` there answers **202 Accepted**.
+
+Nothing goes through it yet. The worker drives the kernel itself over a
+websocket and writes the outputs into the document, so the outputs stop when
+the worker stops. Executing through the runtime's own route would put the
+writing on the far side of that loss, which is what "a task survives the
+process driving it, with the outputs the runtime already wrote still in the
+notebook" asks for.
+
+:::caution Probing that route
+
+The kernel id in the path must match Jupyter's own uuid pattern. With a
+made-up id Tornado never reaches the route and answers **404**, which reads
+exactly like an extension that was never loaded. Ask `/api/kernels` for a
+real id first.
+
+:::
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The
