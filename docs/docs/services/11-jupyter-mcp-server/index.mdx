@@ -1561,11 +1561,17 @@ instrumentor and the open source `serve()` builds its own app. A single
 list_notebooks` from `jupyter-mcp-worker`. Before this the view showed the
 gateway's two and then an orphan.
 
-One thing that follows is **not** done: a worker is per *user*, so its spans
-are filed under the person even when the gateway files that call under an
-organization. For a personal call the two agree; for an organization's they
-do not, and making them agree needs the account per request rather than per
-worker.
+**An organization reads its agents' work, not only its gateway's.** A worker
+is one process per *user*, so its exporter can only ever name the person —
+and a call made in an organization belongs to the organization, which is
+where the gateway files its own spans. The two disagreed, so the same trace
+had its halves under two accounts. The account now travels on the request,
+the only place it is known (`x-datalayer-usage-account-uid`), and a span
+processor stamps every span the worker makes: the OTEL service files each
+span on its own attributes, so stamping only the request would leave the work
+itself under the wrong account. Walked on prod1 with a service agent, whose
+token carries `org_uid`: one call, nine spans, all readable under the
+organization.
 
 The gateway exports with its service credential, so the OTEL service files
 every point under the gateway's own account. Five instruments carry one more
