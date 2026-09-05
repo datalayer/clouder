@@ -438,6 +438,42 @@ in. That sandbox **is** the session, and it is an `sb_…` handle in
 included — a session whose sandbox is gone is exactly what an operator and a
 user want to see, with why.
 
+## What a tool says about itself
+
+A client reads a tool's annotations before it calls it, and decides two
+things from them: whether to ask the person first — a **destructive** tool
+usually earns a prompt — and whether a call that timed out is safe to send
+again, which only an **idempotent** one is. Left unset, the cautious defaults
+answer: not idempotent, open world. Those are the wrong answers for a
+listing, and until 2026-09-05 they were the answers for every tool this
+service adds to the worker: twenty-two tools with a title and at most one
+hint, so a client retried none of the reads and asked before `list_notebooks`.
+
+Every tool of this service now answers all four — `readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint` — and a test holds the
+rule over the tool list as it is actually served, not as the open source
+project ships it (`tests/test_every_tool_says_what_it_is.py`). The reads say
+read-only, idempotent, closed world; what keeps a version
+(`snapshot_notebook`, `save_query_as_revision`) says *not* idempotent,
+because a retry keeps one more; `query_source` says destructive and not
+idempotent, because a statement is whatever the caller wrote; and nothing
+this service adds says open world, since every one of them talks to one
+known deployment.
+
+Two tools replace an open source one under its own name — `use_notebook`, so
+a notebook can be named as well as identified, and `launch_sandbox`, so an
+agent is not offered a dozen providers it does not choose between. They are
+held to a different rule: they say exactly what the original said, its
+annotations and its **output schema** both, taken from the original at the
+moment it is replaced (`replacing.py`). Written `-> Any`, the two had been
+the only tools on a worker that advertised no output at all, which the open
+source contract that every tool says what it returns caught the moment a
+checkout carried this service.
+
+Borrowed toolset tools (below) are the exception nobody can fix here: a
+source's manifest carries a description and an input schema and no hints,
+so the cautious defaults answer for them until Contents lets a source say.
+
 ## Toolsets and Contents
 
 Two families of tools reach data, and both call the Contents service with
