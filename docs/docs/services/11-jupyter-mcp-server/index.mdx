@@ -582,7 +582,19 @@ with no sandbox bound gets the deployment's default, launched by the gateway
 itself — reserved under the session's identity, counted against the budget,
 created through Runtimes and bound with what the runtime said it can do —
 exactly as `launch_sandbox` with no arguments would. A quota refusal there
-is answered as `BUDGET_EXCEEDED`, not as a failed call. `use_sandbox` and
+is answered as `BUDGET_EXCEEDED`, not as a failed call.
+
+**On prod1 it did not launch anything until 2026-09-05, and half of it still
+does not.** The gateway's own Runtimes client sent `environment_name`; the
+operator's `CreateRuntimeRequest` takes `environment: {name}` and requires a
+`credits_limit`, so every first execution was refused `422` — a
+`runtimes_unavailable` to the agent, which reads as an outage. The
+environment is sent as the operator takes it now; the credits limit is not
+sent yet. The worker's own launcher computes it as the environment's
+`burning_rate × 60 × minutes`, and the gateway's launch has to do the same
+before `execute_code` on a fresh session works on a deployment. Until then
+`launch_sandbox` with an explicit environment — the worker's path — is what
+works, and what the walks use. `use_sandbox` and
 `restart_notebook` launch nothing: one selects a sandbox, the other has
 nothing to restart.
 
@@ -604,6 +616,18 @@ credential to `PUT /runtimes/{name}/sharing`, and Runtimes settles who owns
 a runtime by asking the operator *as the caller*. Both cost
 `sandboxes:manage`: who else may use a sandbox is its owner's decision, and
 an agent granted "run this" may not hand it around.
+
+**Two names, and the route takes the second.** A sandbox has the name it
+was launched under — what every tool takes — and the runtime's own uid,
+which is what Runtimes' routes take. Until 2026-09-05 `share_sandbox` sent
+the first to a route that wanted the second: Runtimes asked the operator for
+a runtime called `shared-drill`, found none, and the owner was told only the
+owner may share their own sandbox. The worker translates the alias through
+its manager now, and a name it does not know is passed through, so an owner
+may name the runtime directly. Underneath, `code-sandboxes`' Datalayer
+sandbox kept the uuid it drew at construction as its id after the runtime
+existed; it takes the runtime's uid at launch now, which reaches a worker
+with the next `code-sandboxes` release.
 
 A grantee calls `use_sandbox` with the sandbox's runtime name, or with the
 owner's handle. The gateway asks Runtimes what the caller may do, and a
