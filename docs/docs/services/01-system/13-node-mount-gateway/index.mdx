@@ -797,14 +797,18 @@ leave the pool unusable for any Environment carrying the other two — so all
 three are grants, and the `Dataset` is the only one of the three that also
 takes a dependency with it when it goes.
 
-**A pooled Pod is the only one that gets them this way.** A spawned Pod already
-carries the Environment's `git` and shared-filesystem contents in its spec, so
-granting those again would mount each one twice. A pooled Pod was built before
-anyone knew which Environment it would serve, which is why the grant is the only
-route it has. Its buckets are the one exception: a spawned Pod no longer renders
-an `s3` content at all (Datashim retired, audit 83), but no Environment both
-carries a bucket and forces a spawn, so in practice a bucket is always a
-pooled-Pod `cloud-storage` grant.
+**A pooled Pod is the only one that gets them this way.** A spawned (cold) Pod
+carries the Environment's `git` and NFS contents in its spec — a checkout by an
+init container, a `subPath` on the shared claim — because no gateway is serving
+it; granting those again would mount each one twice. A pooled Pod renders
+**none** of them and takes every content as a grant (audit 83). It defers on
+purpose: a creation-time `subPath` would leave `/home/jovyan/<dir>` root-owned,
+and the companion's link — made inside the sandbox as the runtime user — could
+not add a sibling into it, so the bucket would reach `/mnt/datalayer` and never
+the home path a user was promised. With nothing rendered, the link snippet owns
+`/home/jovyan` and joins every content — the checkout, the share, the bucket —
+to its promised path. (No Environment both carries a bucket and forces a cold
+spawn, so a bucket is only ever a pooled-Pod `cloud-storage` grant.)
 
 Two rules decide what a pooled Pod is given, and they are separate on purpose:
 
