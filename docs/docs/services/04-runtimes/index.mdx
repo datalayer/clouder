@@ -227,6 +227,33 @@ asks whether this sandbox takes a mount while it runs.
 | `DATALAYER_RUNTIMES_API_KEY` | Runtimes' identity to Contents (`attachments:prepare`, `attachments:status`, and registering the `environment` source). Required as soon as a launch names an attachment: `503` without it. |
 | `DATALAYER_OPERATOR_API_KEY` | The key Runtimes uses towards the Operator, unchanged. |
 
+## An external sandbox answers its own account
+
+The `/api/runtimes/v1/external/{runtime_name}/api/...` surface is a Jupyter
+Server as far as a client is concerned, standing in front of a sandbox at
+Daytona or E2B. Opening one is scoped to the caller — the record is fetched
+from the Operator *as that user*, so one account cannot open another's
+sandbox by knowing its name.
+
+Until 2026-09-05 the routes that only **looked at** a sandbox already open,
+or **closed** it, took no caller at all. Against `r1` with no `Authorization`
+header, `GET …/api/status` and `GET …/api/kernels` both answered `200`, and
+`DELETE …/api/kernels/{id}` closed the sandbox for anybody who knew the
+runtime name — which travels in an agent's `_meta`, in task records and in
+logs. The `POST …/restart` immediately below the delete required a caller;
+the delete did not.
+
+They all require one now, and answer only the account whose sandbox it is.
+A caller who is not the owner gets exactly what an address with nothing open
+gets — an empty kernel list, `kernels: 0`, a `404` for a named kernel, and a
+`204` from a close that closed nothing — so a reply never says which runtime
+names are real.
+
+Six routes still take no caller, deliberately: the version handshake, the
+kernel spec, the empty terminal list, the two checkpoint stubs and the
+interrupt that always answers `501`. Each returns the same thing for every
+name and touches nothing, so none of them can say whether a sandbox exists.
+
 ## Sharing a runtime
 
 A runtime can be shared with other people, teams, organizations and service
