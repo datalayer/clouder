@@ -353,6 +353,14 @@ is routinely a second or two behind the gateway. The Operator asks for the
 links again, with backoff, for up to `90` seconds, and gives up at once only
 on a companion that *answers* with a refusal.
 
+The companion's start hooks (`run-start-hooks`, when `RUNTIMES_RUN_HOOKS` is
+on) are asked in the same breath and had no such patience until audit 73: on
+a spawned pod the call was refused at the socket once and the runtime started
+with its hooks silently skipped. They are retried the same way now. A timeout
+is not retried — the companion took the request and runs the hooks on its own
+clock — and neither is a `404`, which is a pool pod built before the route
+existed: recreate the pool or bump the companion image.
+
 The rendered list is written on the pod as the
 `contents.datalayer.io/attachments` annotation. It is the record: a pod spec
 rebuilt from it renders the same mounts, the Operator's cache is rebuilt from

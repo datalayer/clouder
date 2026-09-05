@@ -432,8 +432,13 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    `DATALAYER_CONTENTS_BRIDGE_SECRET` (at least 32 random bytes; it signs the
    tokens both ends present) and `DATALAYER_CONTENTS_BRIDGE_API_KEY` (the
    relay's own key to Contents, the `bridge` identity).
-2. **Switch the relay on** — `contents.processes.bridge.enabled: true` — and
-   deploy: `plane up datalayer-contents`. The chart then runs the
+2. **Deploy**: `plane up datalayer-contents`. The Secret *is* the switch —
+   `up.sh` sets `contents.processes.bridge.enabled: true` and wires both keys
+   when `datalayer-contents-bridge` exists in the namespace, and says so; with
+   no Secret it says how to make one and deploys without the relay. It used to
+   be a value to set by hand, and a reinstall put the release back to the
+   chart's default with nothing said — every Local Mount then failed at the
+   relay (audit 74). The chart then runs the
    `datalayer-contents-bridge` pods, publishes them on the API's host at
    `wss://<runHost>/bridges`, and tells the API and the worker
    (`DATALAYER_CONTENTS_BRIDGE_ENABLED`, and `DATALAYER_CONTENTS_BRIDGE_URL`
@@ -502,6 +507,27 @@ so Flight is an optimization, not a requirement.
    and, from a client, `datalayer contents datasources query <source> "select 1" --wait`
    followed by the query's `ticket` — the SDK's `Query.to_arrow()` uses the
    gateway when the ticket names it and falls back to HTTPS otherwise.
+
+### A runtime pod that stays after its deletion
+
+`clouder node-mounts verify` reporting no leaked mounts while deleted runtime
+pods pile up as `Failed` with a `deletionTimestamp` is not the gateway. Look
+at what the kubelet still holds for one of them, from the node agent:
+
+~~~bash
+kubectl exec -n datalayer-runtimes <node-mounts pod on that node> -c driver -- \
+  ls /var/lib/kubelet/pods/<pod uid>/volumes/
+~~~
+
+Only `kubernetes.io~csi` left means the pod is waiting on a CSI driver's
+`NodeUnpublishVolume` — on r1 the datasets' `csi-s3` (`goofys`), whose
+unmount signals the FUSE daemon, waits, and then runs `umount` on a path the
+daemon has already released: `umount: ... Invalid argument`, an error, and
+the kubelet retrying forever while the `goofys` process stays alive (audit
+75; the plugin pods on r1 held 861–1680 of them each). The gateway's own
+binds are gone by then; nothing of Contents is holding the pod. Force-remove
+the object (`kubectl delete pod <pod> --grace-period=0 --force`) to stop the
+retries; the lasting fix is in the datashim release, not here.
 
 ### An MCP source that cannot be reached
 
