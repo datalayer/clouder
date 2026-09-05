@@ -900,6 +900,29 @@ line to connect a client to it. It runs on the in-memory store.
 
 ## Verify
 
+### The acceptance run
+
+`tests/test_acceptance.py` drives a deployed gateway the way an agent does —
+both protocol versions, a handle across replicas, the audit export, the
+activity panel, a disconnection, a trace — and skips loudly rather than
+passing vacuously: every skip names the variable that would unlock it, and
+asking for the file with nothing configured is a failure, not a green run.
+
+```bash
+export DATALAYER_MCP_ACCEPTANCE_URL=https://mcp.datalayer.run
+export DATALAYER_MCP_E2E_TOKEN=…            # the run's own credential; a PAT will do
+export DATALAYER_MCP_E2E_SECOND_TOKEN=…     # an OAuth token of the same person's, from a real
+                                            # consent — it is the agent that gets disconnected
+export DATALAYER_MCP_ACCEPTANCE_REPLICAS=2  # say so only when the deployment has two
+pytest tests/test_acceptance.py -v
+```
+
+The second token has to be a *grant* — a personal access token names none
+and cannot be disconnected — and it is spent by the run: the disconnection
+revokes it. Mint another for the next run. A client that still performs the
+handshake (2025-11-25) opens a session first; without one the SDK answers
+`400 Missing session ID`, which is the gateway being right.
+
 ```bash
 kubectl get pods,service,ingress -n datalayer-api -l app=jupyter-mcp-server
 kubectl logs -n datalayer-api -l app=jupyter-mcp-server
