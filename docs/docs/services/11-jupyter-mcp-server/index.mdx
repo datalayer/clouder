@@ -686,6 +686,26 @@ while its unit tests were green.
 What is still open is which *cell* changed: the notification names the
 notebook, and an agent is told to refetch rather than told what moved.
 
+:::caution An open source fix is not deployed by deploying
+
+The image builds **this** service from source — the build context is
+`k8s/services`, so `pip install ./jupyter-mcp-server` is the gateway package
+— and takes the open source `jupyter_mcp_server` the worker runs from
+**PyPI**, through the dependency `jupyter-mcp-server>=2.1.5`. So a fix in the
+open source repository is invisible here until that wheel is released, and a
+redeploy will look exactly like a fix that did not work. It cost half an hour
+on 2026-09-05: the subscription fix passed in process, the walk against prod1
+failed identically afterwards, and the ingress and the proxy were both
+exonerated before the pod was asked what it was actually running.
+
+```bash
+kubectl exec -n datalayer-api deploy/datalayer-jupyter-mcp-server -- \
+  python -c "import importlib.metadata as m; print(m.version('jupyter-mcp-server'))"
+```
+
+Ask the pod that before believing an open source change is live.
+:::
+
 ### A disconnected agent stops within seconds, not within the hour
 
 Disconnecting an agent revokes its grant, and the refresh token stops working
