@@ -460,6 +460,35 @@ so Flight is an optimization, not a requirement.
    followed by the query's `ticket` — the SDK's `Query.to_arrow()` uses the
    gateway when the ticket names it and falls back to HTTPS otherwise.
 
+### An MCP source that cannot be reached
+
+`GET /sources/{uid}/mcp/tools` answers `502 MCP_SERVER_UNAVAILABLE` with the
+transport's own words — `could not connect to the MCP server: [Errno -2] Name
+or service not known`, a refused connection, a TLS failure. The message is the
+diagnosis; the usual cause is an `endpoint` naming a Service in a namespace or
+cluster this deployment cannot resolve.
+
+Contents dials the server **itself**, from the API Pod, so in-cluster
+addresses must resolve there and not merely from a workstation. Check it the
+way Contents does:
+
+~~~bash
+kubectl exec -n datalayer-api deploy/datalayer-contents -- python3 -c \
+  "import httpx; print(httpx.post('http://<host>:<port>/mcp', \
+   json={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'p','version':'0'}}}, \
+   headers={'Accept':'application/json, text/event-stream'}, timeout=10).status_code)"
+~~~
+
+A `500 INTERNAL_ERROR` here is not a wrong endpoint, and should be treated as
+a bug in this service: reaching an MCP server is refused with a code and a
+reason, always. It answered 500 until audit 68, because a streamable-HTTP
+connect that fails does not raise its failure — the transport cancels the
+caller instead, and the reason only appears when the connection is torn down.
+
+`datalayer contents mcp test <source>` is the same check with the source's own
+configuration and credential, and answers `reachable over streamable-http: N
+tools`.
+
 ### A Dataserver
 
 A Dataserver is a governed gateway that runs close to data and answers queries

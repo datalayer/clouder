@@ -444,6 +444,14 @@ separately:
   directory from the root it was configured with, so a connector arriving over
   the wire cannot be pointed at another table's files.
 
+The one thing to tell a user who is confused: inside the SQL the relation is
+`t`, whatever the table was published as. The connector opens an in-memory
+DuckDB with a single view over the Parquet parts, and that view is named `t`;
+the published name selects the *Datasource*, not a table within it. `SELECT *
+FROM sales` on a table published as `sales` is answered `Table with name sales
+does not exist!`, which reads like a missing table rather than a naming
+convention.
+
 ### How a published table reaches its Dataserver
 
 On the heartbeat, and **derived from the catalog** rather than stored.
