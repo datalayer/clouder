@@ -470,9 +470,14 @@ the only tools on a worker that advertised no output at all, which the open
 source contract that every tool says what it returns caught the moment a
 checkout carried this service.
 
-Borrowed toolset tools (below) are the exception nobody can fix here: a
-source's manifest carries a description and an input schema and no hints,
-so the cautious defaults answer for them until Contents lets a source say.
+Borrowed toolset tools (below) say what their *source* said. Contents reads
+the annotations off each upstream tool into its manifest, in the wire
+names, and the gateway hands the four hints on under its own title — a
+borrowed tool is named for its source, so a title in the manifest is
+dropped, and so is anything that is not one of the four booleans. A source
+that says nothing leaves the cautious defaults to answer for its tool,
+which is the honest outcome: the gateway knows nothing the source did not
+say.
 
 ## Toolsets and Contents
 
