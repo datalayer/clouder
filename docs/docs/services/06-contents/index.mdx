@@ -126,8 +126,8 @@ would mean if the claim were the client id.
   gates, external sandboxes) and the
   [Operator](/services/operator/#contents-attachments) (Volumes, the mounts,
   the status reports) for Code Sandbox attachments;
-- the [Local CSI driver](/services/system/local-csi/) for local mounts on
-  Datalayer runtimes (off by default); and
+- the [Node Mount Gateway](/services/system/node-mounts/) node agent for
+  local mounts (and every other mount) on Datalayer runtimes; and
 - Library for publication of selected immutable Dataset revisions.
 
 Initialize and protect the Solr collections before enabling production writes.
@@ -175,9 +175,9 @@ The public REST ingress is `/api/contents`. The Flight Gateway gets its own
 Service and a Traefik `IngressRouteTCP` with TLS passthrough on `flightHost`
 (a host of its own — a passthrough router on the API's host would swallow the
 API's TLS); the relay is reached at `DATALAYER_CONTENTS_BRIDGE_URL`. Two
-things deploy beside Contents when their workflows are wanted: the Local CSI
-node driver for local mounts on Datalayer runtimes
-([Local CSI](/services/system/local-csi/), off by default), and the
+things deploy beside Contents when their workflows are wanted: the Node Mount
+Gateway node agent for local mounts on Datalayer runtimes
+([Node Mounts](/services/system/node-mounts/)), and the
 Dataserver for Datasources, managed on the runtimes plane
 (`plane/etc/helm-private/charts/datalayer-data-server`, outbound only, its README
 covers the identity bootstrap).
@@ -364,17 +364,22 @@ leave the sandbox holding a filesystem whose far end is gone — an
 `Input/output error` at the path until something noticed — and the attachment
 in `revoking`, which counts as attached and refuses the same folder to that
 sandbox again. `DELETE /attachments/{uid}` does the same thing from the other
-side. A creation-time bridge at an absolute path outside `/home/jovyan` is an
-inline volume and goes when the pod does.
+side. A Local Mount lands at `/home/jovyan/<name>`, and only there: a path outside
+the home folder is refused at creation (`LOCAL_MOUNT_PATH_UNSUPPORTED`). The
+inline CSI volume that once served an arbitrary absolute path is retired
+(audit 82); the Node Mount Gateway is the sole path now.
 
-### Local mounts: the relay and the Local CSI driver
+### Local mounts: the relay and the Node Mount Gateway
 
 A local mount is a folder of a person's computer, served over an encrypted
 channel into a sandbox. Two pieces make it: the **relay** (a Contents
 process that pairs the two ends and forwards frames it cannot read) and, for
-Datalayer runtimes, the **Local CSI driver** on the runtime nodes, which
-mounts the far end into the pod. External sandboxes need no driver — the
-sandbox runs the mount itself when its environment lists the `fuse` feature.
+Datalayer runtimes, the **Node Mount Gateway** agent on the runtime nodes,
+which runs the bridge filesystem as a grant and binds it under
+`/home/jovyan`. (The inline `local.csi.datalayer.io` CSI volume that used to
+do this at pod creation is retired — audit 82.) External sandboxes need no
+node agent — the sandbox runs the mount itself when its environment lists the
+`fuse` feature.
 What a person does with it is the user manual:
 [datalayer.ai/docs/contents/local-mounts](https://datalayer.ai/docs/contents/local-mounts).
 
@@ -418,9 +423,9 @@ manager need no rebuild for this. On the runtimes plane (`datalayerrc-r1`):
 | Image | Why | How |
 | --- | --- | --- |
 | `datalayer-contents` | the relay process, the bridge sessions and tokens, the `local-mount` capability | `make build-dev push && plane reup datalayer-contents` after publishing `datalayer-core` (the pin) |
-| `datalayer-operator` | renders a `local-bridge` attachment as the inline `csi:` volume and its token Secret | `make build-dev push && plane reup datalayer-operator`, then re-apply the Runtime Contents and Environments — see [After the upgrade](/services/operator/#after-the-upgrade-re-apply-the-runtime-contents-and-the-environments): an Environment left in the by-name shape spawns no pool pod |
+| `datalayer-operator` | renders a `local-bridge` attachment as a Node Mount Gateway grant and its token Secret (no inline CSI volume — audit 82) | `make build-dev push && plane reup datalayer-operator`, then re-apply the Runtime Contents and Environments — see [After the upgrade](/services/operator/#after-the-upgrade-re-apply-the-runtime-contents-and-the-environments): an Environment left in the by-name shape spawns no pool pod |
 | `datalayer-runtimes` | refuses a local mount before launch on an environment that cannot carry it; hands the manifest to external sandboxes | `make build-dev push && plane reup datalayer-runtimes` |
-| `datalayer-node-mounts` (new) | the node driver on the runtime nodes | `make build-dev push`, then step 5 |
+| `datalayer-node-mounts` | the Node Mount Gateway agent on the runtime nodes (gateway-only; the CSI driver is retired — audit 82) | `make build-dev push`, then step 5 |
 | `agent-runtimes` (runtime image) and the environment images of external sandboxes | the sandbox side: `code-sandboxes` with `fusepy` runs the FUSE mount where there is no CSI — an external sandbox's environment must install them, have `/dev/fuse`, and list the `fuse` feature | rebuild the runtime image (`plane/etc/dockerfiles/agent-runtimes`) and any Daytona/E2B/Modal environment that should mount |
 
 And two things that are not images: the landing application (the Mounts
@@ -469,16 +474,18 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    the driver reach nothing but the relay; or during cluster setup with
    `clouder kubeadm setup --node-mounts --local-csi-relay-host <runHost>`
    (step 7b, after the storage provider). Nothing is run on the nodes by
-   hand: the chart is a DaemonSet with the upstream node-driver-registrar,
-   the kubelet finds the driver through the registrar's socket, and the
-   `CSIDriver` object registers the name `local.csi.datalayer.io`. The nodes
-   need `/dev/fuse` (the stock `fuse` kernel module) and are selected with
+   hand: the chart is a DaemonSet running the node agent `--node-mount-gateway-only`
+   (`driver.gatewayOnly: true`, the default). The inline CSI driver is retired
+   (audit 82), so there is no registrar sidecar and no `CSIDriver` object; the
+   agent watches runtime pods and binds each grant it finds. The nodes need
+   `/dev/fuse` (the stock `fuse` kernel module) and are selected with
    `role.datalayer.io/runtime: "true"`.
-6. **Check the driver is registered.**
+6. **Check the agent is running.**
    ```bash
-   kubectl get csidriver local.csi.datalayer.io
    kubectl get daemonset -n datalayer-runtimes datalayer-node-mounts
    clouder node-mounts status
+   # No CSIDriver any more — this is expected to be NotFound:
+   kubectl get csidriver local.csi.datalayer.io || true
    ```
 7. **Mount something.** From a computer with the `datalayer` CLI:
    `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/jovyan/local`,
