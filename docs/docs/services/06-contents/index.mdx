@@ -93,6 +93,28 @@ they do not forward a reusable end-user token to a sandbox. Keep Flight and
 bridge listeners private until their protocol implementations and network
 policies are enabled.
 
+## Sharing a source with an agent
+
+A content source is shared with a `principal_kind` of `user`, `team`,
+`organization` — or, since 2026-09-05, **`agent`**. Spacer has shared items
+with agents since the day before, and Contents did not: an organization could
+let one service agent read a *notebook* and had no way to let it read the
+*source* that notebook queries.
+
+The rule is the same on both, deliberately. A grant naming an agent is
+matched on the token's own `agent_uid` and never on the person behind it, so
+sharing with one service agent does not share with that owner's other agents,
+or with the owner. An empty `agent_uid` — a browser session — matches no
+grant, which is why the emptiness is checked rather than compared away: a
+grant stored with an empty uid would otherwise admit every session.
+
+IAM stamps `agent_uid` only on a token that *is* an agent principal:
+`client_credentials` for a service agent, `jwt-bearer` for a registered
+client with no person behind it. An ordinary OAuth client acting for somebody
+carries `client_id` instead and matches no agent grant — so sharing with an
+agent cannot widen into "everyone who uses that client", which is what it
+would mean if the claim were the client id.
+
 ## Dependencies
 
 - SolrCloud with `contents`, `content-objects`, `content-operations` and
@@ -366,6 +388,27 @@ launched yet (the launch carries the attachment), `409` a pod without the
 gateway (rendered at creation instead), anything else a warning with the
 session left standing. An external sandbox is never asked; it runs the mount
 itself.
+
+**When a mount never becomes readable.** The client's log is the place to
+look, and one line has a specific meaning: `Relay connection lost (the peer's
+hello is not an X25519 public key)`, followed by connecting and disconnecting
+in a loop, is the two ends failing to exchange keys rather than anything about
+the folder or the pod. The relay forwards a binary frame only to a peer that
+is **already connected** — one sent before the pairing is dropped — so both
+ends wait for the relay's `paired` event before sending their hello. An end
+that sends early has its hello dropped, and the other waits for one that never
+comes again.
+
+That was live until node agent image `0.2.1` (audit 70), and it depended on
+which end dialled first, so it appeared as a mount that had worked yesterday
+failing today — most often right after a restart of the relay, which makes the
+node agent's end reconnect in a loop and win the race. If you see it, check
+the agent's image before anything else:
+
+~~~bash
+kubectl get daemonset datalayer-node-mounts -n datalayer-runtimes \
+  -o jsonpath='{.spec.template.spec.containers[*].image}'
+~~~
 
 **What has to be deployed for it — the runtimes plane only.** Nothing on the
 core plane takes part in a local mount: IAM, Spacer, the Library, OTel, the

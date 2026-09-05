@@ -312,6 +312,43 @@ authenticating with an API key has **no roles at all**, so requiring
 membership there would refuse every service-to-service call in the platform.
 Giving service identities a role is what that would need first.
 
+### A disconnected agent stops within seconds
+
+Revoking a grant stops the refresh at once. The **access token already in the
+agent's hands** was another matter: the gateway verifies the signature, the
+issuer, the expiry and the audience, and asked nobody whether the consent
+behind the token still stood, so an agent went on working for up to an hour
+after it was disconnected.
+
+IAM stamps `grant_uid` on the tokens it mints from a grant, and
+`GET /oauth/grants/{uid}/live` answers whether that grant still stands —
+closed to everyone but a platform service, like the task-grant routes, since
+an agent that could ask it could enumerate which grant uids exist. Unknown is
+answered as **not** live, so a uid that is gone and one that was invented both
+stop a call.
+
+The gateway asks before it judges a call and remembers the answer for ten
+seconds, so the honest claim is *within seconds*, not "on the very next
+request" — the alternative buys a fraction of a second and spends a round
+trip on every call in the platform. It refuses as `grant_revoked`.
+
+### A client the organization does not admit is refused at consent
+
+`allowedClients` is enforced by the gateway on every call, and was asked by
+nobody at consent — so a person could connect a client their organization
+does not admit, watch it succeed, and then have every call refused with a
+reason its owner could not act on. IAM asks the same question at the moment
+the organization is settled, which is when the person presses *Approve*, and
+answers `access_denied` naming what to do: ask an owner to add the client, or
+connect without acting for the organization.
+
+The matcher lives in `datalayer_common` and both services import it. A copy in
+each would drift, and a client admitted at consent and refused at every call
+reads as a broken agent rather than as two lists disagreeing. A list may name
+the exact client document or the host that publishes it; an empty list is not
+an allowlist; and nothing is refused for a personal-scope authorization, an
+organization with no list, or a policy that could not be read.
+
 ### Session controls
 
 Three things an organization can do about how long its agents stay connected,

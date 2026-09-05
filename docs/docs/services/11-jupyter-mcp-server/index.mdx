@@ -560,6 +560,38 @@ and the next call is refused without asking again. Both name the owner and
 say `launch_sandbox` is the way to a sandbox of one's own. Counted as
 `access_revoked` in `mcp.refusals`.
 
+### A disconnected agent stops within seconds, not within the hour
+
+Disconnecting an agent revokes its grant, and the refresh token stops working
+at once. The **access token it already holds** was another matter: this
+gateway verifies the signature, the issuer, the expiry and the audience, and
+asked nobody whether the consent behind the token still stood — so every call
+that token made went through until it expired, up to an hour. The disconnect
+route says as much in its own docstring, so the trade was deliberate; it is
+not what a person means by *disconnect*.
+
+IAM now stamps `grant_uid` on the tokens it mints from a grant and answers,
+to platform services only, whether that grant is live. The gateway asks
+before it judges a call and remembers the answer for ten seconds
+(`LIVENESS_TTL_SECONDS`), so the question costs a round trip occasionally
+rather than on every call. The honest claim is **within seconds**, not "on
+the very next request": the alternative buys a fraction of a second and
+spends a round trip on every call in the platform.
+
+A refusal is `grant_revoked` in `mcp.refusals`, and the agent is told the
+connection was disconnected and to authenticate again.
+
+Two things it deliberately does not do:
+
+- **A token that names no grant is never asked about.** A personal access
+  token and a service-agent key are not grants and were never in question.
+- **An IAM that cannot be reached does not refuse.** A token good in every
+  other way is stopped only when IAM *says* the grant is gone. An outage that
+  logged every agent out would be a worse failure than the hour this
+  shortens, and it is the behaviour that was in place before the question
+  existed. A failure is not remembered as an answer either, so one blip
+  cannot let a revoked agent run for the whole window.
+
 ### External sandboxes
 
 A sandbox at Daytona, E2B or Modal is bound like any other: the same
@@ -1259,7 +1291,7 @@ conventions forbid.
 | `mcp.task.duration` | histogram | `tool`; `usage_account_uid` when the call was made in an organization | How long a task ran before reaching a terminal state |
 | `sandbox.launch_seconds` | histogram | `provider`, `environment` | How long a sandbox took to become usable |
 | `mcp.dependency.ready` | gauge | `dependency` | 1 or 0 per dependency, so an alert need not wait for a readiness scrape |
-| `mcp.refusals` | counter | `reason` — `access_check_failed`, `access_revoked`, `attribution_failed`, `capability_missing`, `environment_capability`, `header_body_mismatch`, `item`, `policy_unavailable`, `relaunch_from_snapshot`, `runtimes_unavailable`, `sandbox_lost`, `scope`, `transport_direct`, `unknown_handle`, `policy:…`, `rate_limited:…`, `quota:…`; `usage_account_uid` when the call was made in an organization | Calls refused before they reached a worker |
+| `mcp.refusals` | counter | `reason` — `access_check_failed`, `access_revoked`, `attribution_failed`, `capability_missing`, `environment_capability`, `grant_revoked`, `header_body_mismatch`, `item`, `policy_unavailable`, `relaunch_from_snapshot`, `runtimes_unavailable`, `sandbox_lost`, `scope`, `transport_direct`, `unknown_handle`, `policy:…`, `rate_limited:…`, `quota:…`; `usage_account_uid` when the call was made in an organization | Calls refused before they reached a worker |
 | `mcp.limit.unenforced` | counter | `limit` — `allowedProviders`, `environmentCapabilities`, `maxConcurrentSandboxes`, `maxCreditsPerDay`; `reason` — `incomplete`, `unreadable` | A limit **not** applied because the figure it compares against could not be read |
 | `mcp.workers` | gauge | `state` | Worker processes on this replica, set on every directory heartbeat |
 | `mcp.worker_start_seconds` | histogram | `provider` | How long a worker took to answer after being started |
