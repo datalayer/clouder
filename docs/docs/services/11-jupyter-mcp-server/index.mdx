@@ -736,6 +736,17 @@ findable was comparing the failures against the same suite at `HEAD` — a
 suite with twenty pre-existing failures tells you nothing until you know
 which twenty.
 
+**A debounce must not decide anything by reading a clock.** Two Windows CI
+jobs failed on a suite green everywhere else, and the cause is not really
+Windows: asyncio runs a timer once the loop's time is within one *clock
+resolution* of its deadline, and on Windows that resolution is about 16 ms —
+so a 50 ms debounce fires with its own deadline still in the future. The
+check for "a later timer has taken over this burst" read that deadline,
+decided the firing was premature and declined, and the notification never
+arrived. It is a generation counter now: arming advances it, a firing
+carries the number it was armed with, and only the current one announces.
+The same race exists on Linux; a finer resolution merely makes it rare.
+
 The debounce has a ceiling (`MAX_WAIT_SECONDS`, 2 s) now that the server's
 own edits feed it. A debounce with no ceiling is starvation waiting for a
 fast enough typist: every keystroke pushes the timer back and a subscriber
