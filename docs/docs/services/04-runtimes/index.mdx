@@ -112,7 +112,7 @@ An Environment selects Runtime Contents by uid (see the [Operator](/services/ope
 | --- | --- | --- |
 | `git` | mount of the pinned checkout | materialized checkout |
 | `nfs` | mount of the shared filesystem subpath | refused (nothing can mount the platform filesystem) |
-| `s3` | mount (Datashim) | `python` access from code; not mounted |
+| `s3` | mount (Node Mount Gateway, Mountpoint for S3) | `python` access from code; not mounted |
 
 Any other provider has no delivery rules and delivers nothing.
 

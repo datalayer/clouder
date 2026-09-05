@@ -534,7 +534,9 @@ the kubelet retrying forever while the `goofys` process stays alive (audit
 75; the plugin pods on r1 held 861–1680 of them each). The gateway's own
 binds are gone by then; nothing of Contents is holding the pod. Force-remove
 the object (`kubectl delete pod <pod> --grace-period=0 --force`) to stop the
-retries; the lasting fix is in the datashim release, not here.
+retries; the lasting fix is retiring Datashim itself (audit 83) — the
+gateway's Mountpoint mount has no such leak, and removing `csi-s3` takes the
+failure mode with it.
 
 ### An MCP source that cannot be reached
 

@@ -770,12 +770,14 @@ it is created — which is why the gateway is not built on one.
 | When the credential ends | It does not — it is a long-lived key | It expires, and is refreshed in place without disturbing the mount |
 | Who maintains it | Upstream, quietly | Us |
 
-### What it is used for today
+### What it was used for
 
-Datashim upstream mounts several things — S3, NFS, H3. Here it mounts one:
-`content_operator.py` creates a `Dataset` for a `RuntimeContent` of `type: s3`
-and skips every other type, so no user Cloud Storage attachment goes through
-it either.
+Datashim upstream mounts several things — S3, NFS, H3. Here it mounted one:
+`content_operator.py` created a `Dataset` for a `RuntimeContent` of `type: s3`
+and skipped every other type, so no user Cloud Storage attachment went through
+it either. It creates none now (audit 83) — the handler only caches and
+validates the `RuntimeContent`, and the gateway mounts the bucket with
+Mountpoint for S3.
 
 That makes Datashim four of the eight `RuntimeContent` specs under
 `plane/etc/specs/runtime-contents`. The other four are not Datashim's, and
@@ -796,9 +798,13 @@ three are grants, and the `Dataset` is the only one of the three that also
 takes a dependency with it when it goes.
 
 **A pooled Pod is the only one that gets them this way.** A spawned Pod already
-carries the Environment's contents in its spec, so granting them again would
-mount each one twice. A pooled Pod was built before anyone knew which
-Environment it would serve, which is why the grant is the only route it has.
+carries the Environment's `git` and shared-filesystem contents in its spec, so
+granting those again would mount each one twice. A pooled Pod was built before
+anyone knew which Environment it would serve, which is why the grant is the only
+route it has. Its buckets are the one exception: a spawned Pod no longer renders
+an `s3` content at all (Datashim retired, audit 83), but no Environment both
+carries a bucket and forces a spawn, so in practice a bucket is always a
+pooled-Pod `cloud-storage` grant.
 
 Two rules decide what a pooled Pod is given, and they are separate on purpose:
 
@@ -814,13 +820,15 @@ Two rules decide what a pooled Pod is given, and they are separate on purpose:
   reached by a launch that asked for none: a runtime without the
   `home-folder` capability is not one to mount a home folder on.
 
-### Yes, it is meant to replace it
+### It replaces it now (audit 83)
 
-That is the plan, and it is **not done**: the gateway's bucket path has never
-met a real bucket. Until it has, Datashim stays exactly as it is and nothing
-here touches it.
+That was the plan, and it is **done**. The gateway's bucket path has been proven
+against a real bucket on r1 — a Runtime Pod mounted its S3 datasets through the
+gateway with Mountpoint for S3 — and the Operator no longer creates a `Dataset`
+for an `s3` content. What remains is taking Datashim out of the clusters that
+still run it (see the [Datashim page](/services/system/datashim/#teardown)).
 
-When it does, retiring Datashim removes three things at once:
+Retiring Datashim removes three things at once:
 
 - **an unmaintained dependency** with no community behind it;
 - **a CRD-upgrade workaround.** Helm only creates a chart's CRDs on first

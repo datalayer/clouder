@@ -9,27 +9,43 @@ import { Label, Stack } from '@primer/react-brand';
 # ☰ 🛜 Datalayer Datashim
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
-  <Label color="green">In use</Label>
-  <Label color="yellow">To be replaced</Label>
+  <Label color="red">Deprecated</Label>
 </Stack>
 
-:::info On its way out
+:::danger Deprecated (audit 83)
 
-Datashim serves exactly one thing here: the `RuntimeContent` specs of
-`type: s3`, which become a `Dataset`, then a PVC, then a mount on a Runtime
-Pod created with it. It is slated for replacement by the
-[Node Mount Gateway](/services/system/node-mount-gateway/), which binds a
-bucket into a Pod that is already running and hands the node an STS session
-that expires instead of writing a long-lived S3 key into a `Dataset` spec.
+Datashim no longer provisions anything. It served exactly one thing here — the
+`RuntimeContent` specs of `type: s3`, which it turned into a `Dataset`, then a
+PVC, then a mount on a Runtime Pod created with it. That is now the
+[Node Mount Gateway](/services/system/node-mount-gateway/)'s job: it binds the
+bucket into a Pod that is **already running** with Mountpoint for S3, reading
+the content's own `secret` at pod time and holding an STS session that expires,
+instead of writing a long-lived S3 key into a `Dataset` spec.
 
-Nothing has moved yet, and nothing will until the gateway's bucket path has
-been proven against a real bucket. Until then this page is current and
-Datashim stays exactly as it is. The comparison, and what retiring it buys, is
-on the [gateway's page](/services/system/node-mount-gateway/#datashim-and-what-replaces-it).
+The change is in the Operator: `content_operator.py` no longer creates a
+`Dataset` for an `s3` content (it only caches and validates the
+`RuntimeContent`), and the spawn path renders no `csi-s3` PVC. The
+`runtime-contents.datalayer.io` CRD stays applicable — only its Datashim
+delivery is gone.
+
+This page is kept for the record and for **removing** Datashim from a cluster
+that still runs it — see [TearDown](#teardown). The comparison, and what
+retiring it bought, is on the
+[gateway's page](/services/system/node-mount-gateway/#datashim-and-what-replaces-it).
 
 :::
 
 ## Deploy
+
+:::note Deprecated
+
+The Operator no longer provisions through Datashim (audit 83), so no runtime
+depends on it any more. The install steps below still describe the chart as the
+plane tooling ships it today — removing Datashim from that tooling is the
+remaining cleanup. To take it out of a cluster that still runs it, skip to
+[TearDown](#teardown).
+
+:::
 
 [Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Runtime Content` features.
 
