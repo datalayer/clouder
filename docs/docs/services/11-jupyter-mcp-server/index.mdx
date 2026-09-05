@@ -683,6 +683,15 @@ deliberately keeps **no reference of its own** to the session — a test that
 keeps one passes against the broken code, which is how this stayed broken
 while its unit tests were green.
 
+**Measured on prod1 with 2.1.6, 2026-09-05.** A 2025-11-25 client opens a
+notebook through the gateway, subscribes to `notebook://<handle>` and holds
+its standalone `GET` stream; a person editing the same document through the
+Spacer collaboration socket reaches it in **0.97 s**, and the agent's own
+edit in 1.83 s. Read both off the raw wire and through an SDK client, and
+against a pod that was asked what it was running first. One edit currently
+arrives as two notifications — the publishing wrapper and the watcher seeing
+the same change — which costs a subscriber one extra refetch.
+
 What is still open is which *cell* changed: the notification names the
 notebook, and an agent is told to refetch rather than told what moved.
 
