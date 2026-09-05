@@ -117,6 +117,22 @@ shared authentication (`datalayer_common.auth`) verified them and then
 dropped them with the rest of the top-level claims, so every service saw the
 person and none saw the agent.
 
+**The grant holds at both doors, which is the half that matters.** An agent
+reads a notebook through its collaboration room, not through the item
+routes, so a grant enforced only on the routes would hold nowhere it counts.
+`admitted` asks the item's own access check with the agent claims carried —
+the same question `get_item_permissions_service` answers — and both are
+pinned against the same case: shared with `agt-7`, refused to `agt-8` of the
+same person, and refused to that person unless they were shared with in their
+own right.
+
+**`agent_uid` is only ever an agent principal.** IAM stamps it for
+`client_credentials` (a service agent with its own uid) and for `jwt-bearer`
+(a registered client with no person behind it), and never for an ordinary
+OAuth client acting for somebody — that carries `client_id` instead. So
+sharing with an agent cannot widen into "everyone who uses that client",
+which is what it would mean if the claim were the client id.
+
 ## Who last edited
 
 Every model save and every restore stamps the item with who did it and

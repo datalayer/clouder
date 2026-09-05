@@ -312,6 +312,46 @@ authenticating with an API key has **no roles at all**, so requiring
 membership there would refuse every service-to-service call in the platform.
 Giving service identities a role is what that would need first.
 
+### Session controls
+
+Three things an organization can do about how long its agents stay connected,
+all of them here rather than at the gateway: a session's age is a fact about
+the grant, and the gateway never sees one.
+
+**`sessionMaxHours`** is an organization's MCP policy rule, enforced at the
+token endpoint. A refresh past the limit is refused `invalid_grant` — "sign
+in again" — and the grant is revoked with it: left alive it would be offered
+at every retry, and the client would show a connection that fails rather than
+one that has ended. An access token already minted lives out its own hour,
+which is what "the session ends at the next refresh" means. Nothing is
+enforced for a personal-scope grant, for an organization that sets no limit,
+or for a policy that could not be read — signing everybody out because Solr
+hiccuped is a worse failure than the one this guards against.
+
+It is the first rule IAM enforces itself. `ENFORCED_RULES` is the list the
+**gateway** enforces and is held equal to the gateway's own copy by a test;
+`IAM_ENFORCED_RULES` is this one, and `STORABLE_RULES` is the union — a rule
+in neither cannot be saved. Until 2026-09-05 `sessionMaxHours` was in neither
+while the Policies page offered *Session at most*, so setting it failed and
+leaving it unset looked the same as a limit that was working.
+
+**Forced re-consent has no flag.** The grant *is* the consent, so ending it
+sends the next authorization through the consent screen. A second flag would
+be a second answer to the same question, and the two would drift.
+
+**Revoke-all**, in two shapes, neither of which touches anything it was not
+asked to:
+
+| Route | Who may | What it ends |
+| --- | --- | --- |
+| `DELETE /oauth/connected-agents` | the person themselves | every connection they hold, anywhere — *sign out everywhere* |
+| `DELETE /oauth/teams/{uid}/connected-agents` | whoever may manage that team (`_can_manage_team`) | every connection consented in that team, whoever holds it |
+
+Ending a team's sessions is the same kind of authority as removing somebody
+from it, so it asks the same question. Neither route reaches a personal agent
+or another team's — the narrowness the deprovisioning rule below has, one
+principal wider.
+
 ### Deprovisioning revokes the agents that came with the membership
 
 Removing somebody from an organization or a team revokes the OAuth grants
