@@ -332,6 +332,22 @@ seconds, so the honest claim is *within seconds*, not "on the very next
 request" — the alternative buys a fraction of a second and spends a round
 trip on every call in the platform. It refuses as `grant_revoked`.
 
+**It did not work until 2026-09-05, and nothing said so.** The route called
+`get_oauth_grant`, which the Solr store exports and this service had never
+imported, so it raised `NameError` and answered 500 to every question — and
+the gateway, which allows a call on its token's own validity when IAM cannot
+say, allowed every one. Every disconnection was silently an hour again, from
+the day the question was added. The tests around it faked the per-user
+listing and never reached the accessor. Measured on prod1 after the fix: IAM
+stops listing the grant at once, and the gateway refuses the agent 11.3 s
+after the disconnection — the ten-second cache, the commit, and one poll.
+Two guards hold it now: `is_grant_live` is tested through the store's own
+accessor, and `tests/test_session_controls.py` runs ruff's undefined-name
+check (F821) over the whole package, so a name used but never imported
+fails a test instead of the first request that needed it. That guard found
+`POST /mfa` reading two names it was never given — 500 on every call, and
+had it run, reporting every code as valid — on the day it was added.
+
 ### A client the organization does not admit is refused at consent
 
 `allowedClients` is enforced by the gateway on every call, and was asked by

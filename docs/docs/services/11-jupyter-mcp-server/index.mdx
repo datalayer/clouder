@@ -158,6 +158,26 @@ Set `DATALAYER_SOLR_ZK_HOST` in the *same* change as
 `DATALAYER_MCP_STANDALONE: "false"` and `autoscaling.enabled: true`. Then
 check `readyz` before sending traffic — `"records": "memory"` on a platform
 gateway means the pods do not share a session, whatever else the page says.
+
+On a plane, that change is two lines in the plane's rc file rather than a
+`helm` invocation of your own: `plane up` already passes the Solr host,
+credentials and every service URL from the rc, and since 2026-09-05 it also
+passes the mode and the replica count, defaulting to what the chart did on
+its own.
+
+```bash
+export DATALAYER_JUPYTER_MCP_STANDALONE=false   # default: true
+export DATALAYER_JUPYTER_MCP_REPLICAS=2         # default: 1
+plane reup datalayer-jupyter-mcp-server
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records, replica}'
+```
+
+`records` must read `solr` and two consecutive `healthz` answers should name
+two replicas. The `mcp-*` collections must already exist (`plane solr-init`,
+choice **4) AI**); the durable service is a separate matter — with
+`DATALAYER_DURABLE_URL` empty the platform gateway keeps the in-process fake
+and `readyz` says so under `workflows`, which is not a readiness failure but
+is not durability either.
 :::
 
 ```
@@ -621,6 +641,19 @@ spends a round trip on every call in the platform.
 
 A refusal is `grant_revoked` in `mcp.refusals`, and the agent is told the
 connection was disconnected and to authenticate again.
+
+**The card goes too.** `GET /api/mcp/v1/activity` lists the clients that
+called today from the audit rows, and a disconnected agent had called today
+— so its card outlived the disconnection until midnight, saying the opposite
+of what the person had just done. The route now asks IAM, with the caller's
+own token, which of their agents are still connected (`GET
+/api/iam/v1/oauth/connected-agents`, the Settings page's own route) and drops
+a delegated client that is not among them; the answer is cached with the rest
+of the panel, five seconds. A personal access token and a service agent are
+never on that list and are never dropped by it, and an IAM that does not
+answer lists everyone — an outage must not read as "all disconnected". The
+agent's sandboxes stay in the sessions panel until they are reaped: a
+disconnection ends the agent's authority, not the runtime.
 
 Two things it deliberately does not do:
 
@@ -1301,6 +1334,18 @@ standard `OTEL_*` variables, and the metric catalog is declared in one place —
 a tool, an outcome, a dependency, a refusal reason. A user, an agent, an
 organization or a sandbox is **never** a metric label; those belong in
 access-controlled spans and in the audit rows.
+
+**Every audit row names the trace its call ran in.** The row's `trace_id`
+is what the Observability view and `datalayer mcp trace` start from. It was
+read from the client's `traceparent` alone, and most MCP clients send none —
+so until 2026-09-05 their rows carried no trace id while the gateway's own
+spans for the same call were exported under a trace nothing named, and the
+view had an empty state for every one of them. A client's `traceparent`
+still comes first (its span is the parent of ours); without one, the row
+takes the server span the request is served in, which is the trace the
+worker's spans hang under too, since the call to the worker carries its
+context. A malformed header is no header, and outside any span — telemetry
+off, a test process — the row names nothing rather than inventing an id.
 
 The table below is generated from `telemetry.CATALOGUE`, which a test holds
 against the instruments actually created — in both directions — and against
