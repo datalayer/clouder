@@ -138,7 +138,7 @@ which is what it would mean if the claim were the client id.
 Every model save and every restore stamps the item with who did it and
 through what: `last_edited_by_uid_s`, `last_edited_by_agent_uid_s`,
 `last_edited_by_client_id_s` and `last_edited_at_dt`. The agent field is
-empty for a person's own edit, so a page says "edited by <agent>" only when
+empty for a person's own edit, so a page says "edited by `<agent>`" only when
 there was one. The room-open event posted to the activity feed names its
 actor the same way — person or agent, with the agent uid and the client.
 
