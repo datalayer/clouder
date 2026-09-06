@@ -1180,6 +1180,47 @@ written before the rollout
 The outputs the runtime already wrote survive the loss of the process that
 was driving them.
 
+### Asking for a task used to wedge the worker
+
+Discovery advertises `io.modelcontextprotocol/tasks`, so a client may ask for
+a long-running call to become a task. Until 6 September 2026 the first client
+that did never got an answer — **and neither did anything else that worker
+was asked for afterwards.** On a freshly restarted deployment, with nothing
+else running:
+
+```
+1 plain          :    7.2s  {"jsonrpc": "2.0", "id": 1, "result": …}
+2 plain again    :    0.6s  {"jsonrpc": "2.0", "id": 2, "result": …}
+3 ASKING A TASK  :   45.0s  !! ReadTimeout
+4 plain after    :   45.3s  !! ReadTimeout
+5 plain after    :   45.3s  !! ReadTimeout
+```
+
+Not the task's own coroutine stuck: the **event loop**. The worker's main
+thread sat in `sock_alloc_send_pskb` — a blocking socket send with nobody
+reading — while its other seventeen threads waited on futexes. Nothing said
+so: `/api/mcp/v1/operations/workers` reported the worker healthy throughout,
+`serving: 1`, `running: true`, and only a pod restart cleared it.
+
+The cause is one line of `DatalayerTaskStore`:
+
+```python
+await asyncio.to_thread(work, self._dao())
+```
+
+Python evaluates an argument before the call it belongs to, so `_dao()` —
+which opens a Solr connection through ZooKeeper on first use — ran on the
+event loop. The line whose whole purpose was to get this off the loop kept
+the expensive half on it. Both call sites build the repository inside the
+thread now, under a `threading` lock rather than an `asyncio` one, because
+there is no loop where `_dao` runs.
+
+Worth keeping for the shape rather than the line: **a synchronous call on a
+worker's loop takes the whole worker down, not the request that made it**,
+and the directory cannot tell. If a worker ever goes quiet again, the first
+thing to read is `/proc/<pid>/task/*/wchan` in its pod — a main thread that
+is not in `ep_poll` is a blocking call that should have been in a thread.
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The
