@@ -651,23 +651,15 @@ person who is not the owner gets Runtimes' `403`, and the dialog says so
 rather than drawing an empty list of grants, which would read as a sandbox
 shared with nobody.
 
-:::danger Sharing is refused on prod1 until the Runtimes plane is deployed
+**Sharing works, and it took three fixes to get there.**
 
-`PUT /runtimes/{name}/sharing` answers `500 Database Request Error` for a
-user, a team, an organization and an agent alike. Runtimes writes the
-runtime's expiry straight into a Solr **date** field, and the operator
-answers epoch seconds as a string — `'1788671641.000'`. A date field that is
-not a date makes Solr refuse the whole document, which is why the principal
-kind made no difference: the field at fault was the one that never varied.
-
-Fixed in `datalayer_solr.runtime_sharing`, and it ships in the **Runtimes**
-image on the r1 plane. Until that is deployed, neither the tools nor the
-console's Share button can share a sandbox.
-
-Every test of `to_document` called it without an expiry, which is how the
-value that reaches Solr in production never reached it in a test.
-
-:::
+Runtimes wrote the runtime's expiry straight into a Solr **date** field, and
+the operator answers epoch seconds as a string — `'1788671641.000'`. A date
+field that is not a date makes Solr refuse the whole document, so every share
+answered `500 Database Request Error` for a user, a team, an organization and
+an agent alike: the field at fault was the one that never varied. Every test
+of the document builder called it without an expiry, which is how the value
+that reaches Solr in production never reached it in a test.
 
 **A share naming nobody is refused**, and that is live. `share_sandbox` with no principals used
 to `PUT` what was already stored and answer *"sharing updated. They can use
@@ -691,15 +683,31 @@ itself.
 
 :::
 
-:::caution A grantee cannot yet reach the runtime by name
+### A revoked share is not a lost sandbox
 
-`GET /runtimes/{name}` answers `404` for a grantee, so the worker's
-attach-by-name cannot find a runtime shared with it and `use_sandbox` answers
-*"No sandbox with id …"*. The permissions route answers a grantee perfectly
-well; the runtime route does not. Until it does, a share can be made and not
-used.
+After `unshare_sandbox`, a grantee's next call used to be refused *"the
+sandbox is gone: absent — its variables and files are lost"*. It was not
+gone. The owner had stopped sharing it, and those are two different truths
+with two different things to do about them: one says the work is lost, the
+other says ask for the share again.
 
-:::
+Two causes. The liveness check ran **before** the share check, and a grantee
+cannot see the runtime at all once the share is taken back, because Runtimes
+answers a runtime to its owner and nobody else. And swapping them was not
+enough: the share answer is believed for thirty seconds, so a share revoked a
+moment ago still read as held and the call fell through to the liveness check
+anyway.
+
+So a grantee told *absent* has its share re-read without the cache. **Absent
+from a non-owner is not evidence of absence.** A share that still holds
+leaves the loss standing, and a binding the caller owns never takes this
+path.
+
+**Walked on prod1 and r1 on 2026-09-06.** An owner's first execution gets the
+default sandbox; the share with a service agent is stored; Runtimes answers
+that agent `view/update/execute` and names the owner; the agent attaches by
+name and runs code; its binding carries `shared_from` and `on_lost: fail`;
+and the call after `unshare_sandbox` is refused *"no longer shared with you"*.
 
 A grantee calls `use_sandbox` with the sandbox's runtime name, or with the
 owner's handle. The gateway asks Runtimes what the caller may do, and a
