@@ -1039,7 +1039,7 @@ real id first.
 
 :::
 
-### A deploy keeps the sandbox and empties it
+### Execution follows the session's sandbox
 
 Drilled on prod1 and r1 on 2026-09-06. Restart the gateway deployment under a
 live session and the runtime pod is the same pod on the other side, with the
@@ -1071,13 +1071,27 @@ And that middleware no longer sits inside the telemetry wrapper, which
 returns early when no collector is configured: *where a session's code runs*
 must not depend on whether spans are exported.
 
-**It still does not steer.** Both ends are confirmed on the running pods and
-the worker logs that it will follow the sandbox, and the follower's own line
-never appears. What remains is to find whether the header reaches the
-worker's scope at all.
+**The last link was a name.** Extensions are registered under their *manifest*
+name and the follower asked for the *entry-point* name, so the lookup answered
+`None` and the follower gave up — silently, because each of its four ways of
+doing nothing was a bare `return`. Three deployments went on guessing between
+them. Each now says which, and the next deploy answered it in one line:
 
-Until it does, treat a deploy the way you would treat a lost sandbox: what
-was in memory is gone, and what was written to the notebook is not.
+```
+🧭 execute_code names sandbox [01m1twfv…] and there is no sandbox manager to follow it with
+```
+
+A line per decision costs one log entry per execution, and is why this took
+one more deploy rather than five.
+
+**Walked on prod1 and r1 on 2026-09-06, and it holds.** The session's binding
+names a runtime; the kernel's own `socket.gethostname()` is the pod that
+runtime claimed. Restart the gateway under the session and afterwards it is
+the same runtime, the same pod, and the variable set beforehand is still
+there.
+
+So a deploy no longer empties a session's memory, and a grantee attaching to
+a shared sandbox reaches the sandbox rather than a pool pod of its own.
 
 ### Snapshots, and why there is no restore tool
 
