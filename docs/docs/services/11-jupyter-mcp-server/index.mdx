@@ -669,12 +669,27 @@ value that reaches Solr in production never reached it in a test.
 
 :::
 
-**A share naming nobody is refused.** `share_sandbox` with no principals used
+**A share naming nobody is refused**, and that is live. `share_sandbox` with no principals used
 to `PUT` what was already stored and answer *"sharing updated. They can use
 it with `use_sandbox`"* — so a typo'd parameter, an empty list or a uid that
 came back blank all read as a share that happened, and the owner found out
 only when the grantee was refused. An *unshare* naming nobody keeps its
 meaning: revoke everybody at that level.
+
+:::note Building the image needs `agent-runtimes` 1.2 first
+
+`agent-runtimes 1.1.0` pins `opentelemetry-semantic-conventions<0.62`, and
+`opentelemetry-sdk 1.44.0` requires exactly `0.65b0`. So the OpenTelemetry
+1.40 → 1.44 bump cannot be installed beside it and the image will not build
+with both.
+
+Worth knowing because of *how* it fails: pip reports a conflict about
+`mcp[cli]` and `fastmcp-slim`, which is where it gave up rather than what is
+wrong. Resolve the two packages in a clean environment and they install
+together fine; add the OpenTelemetry constraint and the real conflict names
+itself.
+
+:::
 
 :::caution A grantee cannot yet reach the runtime by name
 
