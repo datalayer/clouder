@@ -679,18 +679,21 @@ came back blank all read as a share that happened, and the owner found out
 only when the grantee was refused. An *unshare* naming nobody keeps its
 meaning: revoke everybody at that level.
 
-:::note Building the image needs `agent-runtimes` 1.2 first
+:::note The image needs `agent-runtimes` 1.2 — released on 6 September 2026
 
-`agent-runtimes 1.1.0` pins `opentelemetry-semantic-conventions<0.62`, and
+`agent-runtimes 1.1.0` pinned `opentelemetry-semantic-conventions<0.62`, and
 `opentelemetry-sdk 1.44.0` requires exactly `0.65b0`. So the OpenTelemetry
-1.40 → 1.44 bump cannot be installed beside it and the image will not build
-with both.
+1.40 → 1.44 bump could not be installed beside it and the image would not
+build with both. 1.2.0 lifts the pin, and the running pod carries
+`agent-runtimes 1.2.0`, `opentelemetry-sdk 1.44.0` and
+`opentelemetry-semantic-conventions 0.65b0`.
 
-Worth knowing because of *how* it fails: pip reports a conflict about
-`mcp[cli]` and `fastmcp-slim`, which is where it gave up rather than what is
-wrong. Resolve the two packages in a clean environment and they install
-together fine; add the OpenTelemetry constraint and the real conflict names
-itself.
+Kept because of *how* it failed, which is the part that costs an afternoon:
+pip reported a conflict about `mcp[cli]` and `fastmcp-slim`, which is where
+it gave up rather than what was wrong. Resolve those two in a clean
+environment and they install together fine; add the OpenTelemetry constraint
+and the real conflict names itself. An old `agent-runtimes` in the build
+environment brings it straight back.
 
 :::
 
