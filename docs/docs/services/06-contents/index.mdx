@@ -335,6 +335,22 @@ configured with for the cluster.
 Three things run beside the API and the worker only when a cluster wants the
 workflow. Each is a switch, a secret and a verification; none is on by default.
 
+### Attaching a mount to a running sandbox
+
+`POST /api/contents/v1/attachments` records the attachment, and for a
+`mount` into a Datalayer runtime it then asks Runtimes to bind it **now** —
+`POST /api/runtimes/v1/runtimes/{runtime}/mounts` with the attachment uid and
+the caller's own credentials, so the mount is made the same way, and checked
+the same way, as at launch. A `files` folder or a bucket under `/home/jovyan`
+is bound into the running pod and reads `ready` (the Node Mount Gateway exists
+to mount into a pod that is already up). A **Volume** cannot: its claim is
+fixed at pod creation, so the Operator answers `422` and Contents relays it as
+`409 ATTACHMENT_NOT_MOUNTABLE` — the attachment is not left `requested` for
+ever; create a runtime with the Volume instead. A sandbox that is **not up
+yet** answers `404`, and the attachment is carried by the launch as before. A
+local mount takes its own route (see [Ending a local mount](#ending-a-local-mount)),
+mounting only once its relay session exists.
+
 ### Revoking a mount that is in a running sandbox
 
 `DELETE /api/contents/v1/attachments/{uid}` moves a mount attachment to
