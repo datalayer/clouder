@@ -1022,6 +1022,15 @@ session that has never had a sandbox: `list_sandboxes` answers `[]`,
 sandbox as `active` and `running`, and `launch_sandbox` says the session
 already has one. Three tools, one answer, and state kept across calls.
 
+**A sandbox that is finished is not offered either.** The worker calls every
+entry in its registry `running` without asking anyone, and never forgets one,
+so a terminated sandbox stayed in the listing as `active: true` — from the
+tool an agent is told to consult *for the names you may use*. The gateway
+takes out what it positively knows is finished, and only that: an entry
+matching no binding of the caller's is left alone, because a worker may have
+launched it for itself and dropping on ignorance trades a stale row for a
+missing one.
+
 ### Who writes the outputs
 
 The runtime image carries `jupyter-server-nbmodel`, enabled, and its
