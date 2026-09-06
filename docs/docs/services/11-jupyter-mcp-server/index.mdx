@@ -384,6 +384,17 @@ reads them off it rather than trusting what the client asked for. The OpenID
 Connect scopes (`openid`, `profile`, `email`, `offline_access`) pass through so
 one sign-in answers both questions; none of them grants anything here.
 
+**A token bound to a key is not accepted as a bearer.** RFC 9449 puts a `cnf`
+claim on a token to say only the holder of a named key may use it, and the
+proof travels in a `DPoP` header. Nothing here verifies such a proof yet, and
+until it does the safe reading of a bound token arriving as a plain bearer is
+a refusal, not "close enough" — accepting it would make a stolen bound token
+work exactly as well as a stolen unbound one, and the binding a promise the
+platform makes and does not keep. The refusal says the token is bound and what
+to do, rather than that it is not valid, which is true and useless because the
+holder retries the same token. An empty `cnf` is not a binding, and this
+platform mints no bound tokens, so the only holder of one got it elsewhere.
+
 Because the `aud` names this gateway, the token cannot be forwarded — every
 other Datalayer API refuses it, which is the point. **RFC 8693 token exchange**
 is the way across: the gateway proves to IAM with `DATALAYER_IAM_API_KEY` that
