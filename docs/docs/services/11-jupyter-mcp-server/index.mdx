@@ -1046,22 +1046,38 @@ live session and the runtime pod is the same pod on the other side, with the
 same creation time; the next call resolves the same sandbox handle and is
 answered. Neither the pod nor the binding is a casualty of a deploy.
 
-**The kernel is.** A variable set before the rollout is gone after it, and
-the call that finds out answers `NameError` — as though the agent had never
-assigned it. Counted from inside the runtime there is one kernel before and
-one after, and it is a different one: the kernel holding the session's state
-is gone by the time the new worker looks, and the worker reuses whatever it
-finds instead.
+**The session's memory is not**, and chasing that found something larger.
 
-So a routine deploy silently empties every session's memory, and an agent
-learns it from a name that is suddenly undefined rather than from anything
-that says the state was lost. The mechanism is not settled: the kernel client
-already declines to shut down a kernel it did not start, and which of the
-runtime, the culler or the drain removes the old one has not been
-determined.
+Runtimes come from a **warm pool**: a pod keeps its own name and is *claimed*
+by a logical runtime. The pod claimed by the session's runtime is stable
+across a rollout. But `socket.gethostname()` inside the kernel names a
+*different* pool pod — before the rollout and again after, a different one
+each time. The session's own sandbox is running, and nothing runs on it.
 
-Until it is, treat a deploy the way you would treat a lost sandbox: what was
-in memory is gone, and what was written to the notebook is not.
+**The steering has never worked on this SDK.** The gateway stamps
+`io.datalayer/sandbox` on the request and the worker's hook is meant to read
+it back off `ctx.request_context.meta`. Measured against a real MCP 2 server —
+a `_meta` carrying the key and a tool that prints what it got — that meta is
+**`None`** by the time a tool sees it. So the hook read nothing on every
+request, and the worker ran the code on whatever its manager happened to
+hold.
+
+Three fixes are deployed, each necessary. The extractor reads a plain mapping,
+because `RequestParamsMeta` is a `TypedDict` and not a model with extras. The
+gateway also sends the name in an `x-datalayer-sandbox` header, which is what
+actually crosses — the proxy forwards the scope's headers verbatim, the way
+`traceparent` already travels — read by one ASGI middleware in the worker.
+And that middleware no longer sits inside the telemetry wrapper, which
+returns early when no collector is configured: *where a session's code runs*
+must not depend on whether spans are exported.
+
+**It still does not steer.** Both ends are confirmed on the running pods and
+the worker logs that it will follow the sandbox, and the follower's own line
+never appears. What remains is to find whether the header reaches the
+worker's scope at all.
+
+Until it does, treat a deploy the way you would treat a lost sandbox: what
+was in memory is gone, and what was written to the notebook is not.
 
 ### Snapshots, and why there is no restore tool
 
