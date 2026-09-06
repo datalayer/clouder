@@ -158,7 +158,7 @@ metadata:
     app.kubernetes.io/instance: ingress-nginx
     app.kubernetes.io/name: ingress-nginx
 data:
-  "8686": "datalayer/jupyterpool-jupyterpool-svc:8686"
+  "8686": "datalayer/runtime-pools-runtime-pools-svc:8686"
 EOF
 #
 kubectl edit svc ingress-nginx-controller -n ingress-nginx
@@ -714,26 +714,27 @@ cd $DATALAYER_HOME/src && \
   make pf
 ```
 
-## Jupyterpool
+## Runtime Pools
 
-Deploy `Jupyterpool`.
+Deploy `Runtime Pools`.
 
 ```bash
 eval $(minikube docker-env)
-cd $DATALAYER_HOME/etc/docker/jupyterpool && \
+cd $DATALAYER_HOME/etc/docker/runtime-pools && \
   make build && \
   make push
-plane up minikube jupyterpool
+plane up minikube runtime-pools
 plane ls
-# open $(minikube service jupyterpool-jupyterpool-svc --namespace datalayer --url)/api/jupyterpool
+# kubectl get svc -n datalayer | grep runtime-pools
+# open $(minikube service runtime-pools-runtime-pools-svc --namespace datalayer --url)/api/runtime-pools
 open http://minikube.local/api/jupyter-server/lab?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
 open http://minikube.local/api/jupyter-server/pool/default?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
 open https://minikube.local/api/jupyter-server/pool/default?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
 curl --insecure -I https://minikube.local/api/jupyter-server/api/jupyter-server?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6 | grep ookie
 cd $DATALAYER_HOME/src && \
-  make pf-jupyterpool
+  make pf-runtime-pools
 open http://localhost:8686/api/jupyter-server/lab?token=60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6
-plane down jupyterpool
+plane down runtime-pools
 ```
 
 ## Datalayer IAM

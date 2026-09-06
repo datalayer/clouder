@@ -323,7 +323,7 @@ The setup script sources `kubeadm-cluster.env`, sets Clouder context to your AWS
 ```bash
 cd terraform
 ./generated/clouder-kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
+export KUBECONFIG=~/.clouder/kubeadm/$(terraform output -raw cluster_name)/kubeconfig
 kubectl get nodes -o wide
 ```
 
@@ -345,7 +345,7 @@ cd terraform
 
 The generated script deploys services in this order:
 
-1. System services: cert-manager, ingress (Traefik), Solr, OTEL, observer, Vault, Kafka, Pulsar, OpenFGA, Datashim, mailer.
+1. System services: cert-manager, ingress (Traefik), Solr, OTEL, observer, Vault, Kafka, Pulsar, OpenFGA, Datashim ([deprecated](/services/system/datashim/)), mailer.
 2. Core services: IAM, operator, runtimes, library, spacer, AI agents, functions, scheduler, spider, manager, status.
 3. Optional services: shared filesystem and storage operator/cluster.
 
@@ -360,7 +360,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
+export KUBECONFIG=~/.clouder/kubeadm/$(terraform output -raw cluster_name)/kubeconfig
 
 # Deploy selected services only
 ./generated/services/deploy-datalayer-operator.sh

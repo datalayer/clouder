@@ -5,7 +5,7 @@ import typer
 from .._version import __version__
 from .ctx import ctx_app
 from .vm import vm_app
-from .k8s import k8s_app
+from .kubernetes import kubernetes_app
 from .ssh_key import ssh_key_app
 from .s3 import s3_app
 from .info import info_app
@@ -15,8 +15,14 @@ from .ssh import ssh_app
 from .kubeadm import kubeadm_app
 from .kubectl import kubectl_command
 from .helm import helm_command
-from .azure_cmd import azure_app
-from .aws_cmd import aws_app
+from .azure import azure_app
+from .aws import aws_app
+from .ovh import ovh_app
+from .cost import cost_app
+from .criu import criu_app
+from .node_mounts import node_mounts_app
+from .completion import completion_app
+from ..util.utils import run_sbin
 
 app = typer.Typer(
     name="clouder",
@@ -27,7 +33,7 @@ app = typer.Typer(
 
 app.add_typer(ctx_app, name="ctx", help="Manage Clouder contexts.")
 app.add_typer(vm_app, name="vm", help="Manage virtual machines.")
-app.add_typer(k8s_app, name="k8s", help="Manage Kubernetes clusters.")
+app.add_typer(kubernetes_app, name="kubernetes", help="Manage Kubernetes clusters.")
 app.add_typer(ssh_key_app, name="ssh-key", help="Manage SSH keys.")
 app.add_typer(s3_app, name="s3", help="Manage S3 buckets.")
 app.add_typer(info_app, name="info", help="Show info about the current context.")
@@ -35,8 +41,14 @@ app.add_typer(operator_app, name="operator", help="Manage the Clouder operator."
 app.add_typer(sh_app, name="sh", help="Run shell/sbin scripts.")
 app.add_typer(ssh_app, name="ssh", help="SSH into a virtual machine.")
 app.add_typer(kubeadm_app, name="kubeadm", help="Provision and setup kubeadm Kubernetes clusters.")
+app.add_typer(kubeadm_app, name="k", help="Alias for kubeadm commands.")
 app.add_typer(azure_app, name="azure", help="Azure cloud operations.")
 app.add_typer(aws_app, name="aws", help="AWS cloud operations.")
+app.add_typer(ovh_app, name="ovh", help="OVHcloud operations.")
+app.add_typer(criu_app, name="criu", help="CRIU checkpoint visibility and configuration.")
+app.add_typer(node_mounts_app, name="node-mounts", help="Local CSI driver (local.csi.datalayer.io) checks.")
+app.add_typer(cost_app, name="cost", help="Pricing and cost helpers.")
+app.add_typer(completion_app, name="completion", help="Manage shell autocompletion setup.")
 
 
 def version_callback(value: bool):
@@ -70,21 +82,7 @@ def server():
 @app.command("about")
 def about():
     """Show Clouder banner and project links."""
-    typer.secho(
-        """┏┓┓     ┓    
-┃ ┃┏┓┓┏┏┫┏┓┏┓
-┗┛┗┗┛┗┻┗┻┗ ┛ """,
-        fg=typer.colors.GREEN,
-    )
-    typer.echo(
-        """
-Copyright (c) Datalayer, Inc. https://datalayer.ai
-
-☰ ☁️  Clouder - Create, manage and share Kubernetes clusters.
-
-Documentation: https://clouder.sh
-Source code: https://github.com/datalayer/clouder"""
-    )
+    run_sbin(["shell", "sbin", "about"])
 
 
 # Register the kubectl Click command directly on Typer's Click group.

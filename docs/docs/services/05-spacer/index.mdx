@@ -13,12 +13,12 @@ import { Label, Stack } from '@primer/react-brand';
   <Label color="red">REST API</Label>
 </Stack>
 
-the `Datalayer Spacer` service provides collaborative spaces for data analysis. A space manages the following features.
+`Datalayer Spacer` service provides collaborative spaces for data analysis. A space manages the following features.
 
 ```
 🛂 Identities and permissions that grant users and organisations access to the space.
 
-💼 Contents (Dataset, Cell, Notebook) stored in Git repositories.
+💼 Items (Cell, Notebook, Document) stored in Git repositories. Datasets are owned by the Contents service.
 
 🧑‍🤝‍🧑 RTC (Realtime Collaboration) documents to ease collaboration.
 ```
@@ -37,7 +37,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-spacer.sh
 ```
   </TabItem>
@@ -67,6 +67,97 @@ Check the availability of the Datalayer Spacer Endpoints.
 open https://${DATALAYER_RUN_HOST}/api/spacer/version
 open https://${DATALAYER_RUN_HOST}/api/spacer/v1/ping
 ```
+
+`/version` is liveness — the process is up — and is what the Kubernetes
+readiness probe reads. `/ping` asks **Solr**, and answers `503` when it
+cannot be reached: a Spacer that cannot reach Solr serves nothing at all, and
+until 2026-09-04 this route said `success: true` for the process being up and
+nothing else. Three things read it as a health check — the MCP gateway
+reports it as a dependency, the scheduler gates its self-check on it, and
+`plane local` waits for it — so all three were told a broken Spacer was
+fine. The probe stays on `/version` deliberately, so a Solr outage is
+reported rather than turned into a crash-loop that takes Spacer down with
+it.
+
+## Notebook versions
+
+A version is a notebook's bytes at a moment, kept on purpose — by a person
+pressing *snapshot*, by an agent's `snapshot_notebook` through the
+[Jupyter MCP Server](/services/jupyter-mcp-server/), or by a restore.
+Autosave is not a version: the collaboration room saves continuously, and a
+history of every keystroke is not one anybody reads.
+
+| Route | Access | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/notebooks/{id}/versions` | `view` | The versions, newest first, each naming its actor |
+| `POST …/versions` `{"message": "…"}` | `update` | Keep the notebook as it is now |
+| `GET …/versions/{version}` | `view` | One version, with its content as `model_s` |
+| `POST …/versions/{version}/restore` | `update` | Make it current — after keeping what it replaces |
+
+Versions live beside the notebook in the same bucket
+(`<s3_path>.versions/<stamp>-<uid>.ipynb`), with the actor and message on
+the object's own metadata; nothing else records them, so there is one place
+a version can be. A restore keeps the current content first, as a `restore`
+version by the same actor, so restoring the wrong one is a second restore
+away and not a loss. A notebook a caller cannot read answers `403`, not
+`404`: "not found" would send them looking for a typo.
+
+## Sharing with an agent
+
+An item can be shared with an **agent** at any of the three levels, beside
+users and teams: `agentUids` under `view`, `update` or `execute` on the
+sharing routes (`shared_<level>_agent_uids_ss` on the item). The grant is
+matched on the token's own `agent_uid` and never on the person behind it, so
+sharing with one service agent does not share with its owner's other agents,
+or with the owner. Sharing with a person, as before, shares with everything
+that acts for them.
+
+The token's `agent_uid` and `client_id` reach the services at all now: the
+shared authentication (`datalayer_common.auth`) verified them and then
+dropped them with the rest of the top-level claims, so every service saw the
+person and none saw the agent.
+
+**The grant holds at both doors, which is the half that matters.** An agent
+reads a notebook through its collaboration room, not through the item
+routes, so a grant enforced only on the routes would hold nowhere it counts.
+`admitted` asks the item's own access check with the agent claims carried —
+the same question `get_item_permissions_service` answers — and both are
+pinned against the same case: shared with `agt-7`, refused to `agt-8` of the
+same person, and refused to that person unless they were shared with in their
+own right.
+
+**`agent_uid` is only ever an agent principal.** IAM stamps it for
+`client_credentials` (a service agent with its own uid) and for `jwt-bearer`
+(a registered client with no person behind it), and never for an ordinary
+OAuth client acting for somebody — that carries `client_id` instead. So
+sharing with an agent cannot widen into "everyone who uses that client",
+which is what it would mean if the claim were the client id.
+
+## Who last edited
+
+Every model save and every restore stamps the item with who did it and
+through what: `last_edited_by_uid_s`, `last_edited_by_agent_uid_s`,
+`last_edited_by_client_id_s` and `last_edited_at_dt`. The agent field is
+empty for a person's own edit, so a page says "edited by `<agent>`" only when
+there was one. The room-open event posted to the activity feed names its
+actor the same way — person or agent, with the agent uid and the client.
+
+## Who may join a document's room
+
+A notebook's collaboration room is opened with a **session id** that
+`GET /api/spacer/v1/documents/{id}/ws` hands out, and the websocket admits
+whoever carries it. That endpoint is the door, and it asks the item's own
+access check — the same one a read of the item passes: the owner, a grantee
+at any level, a member for a public item. Until 2026-09-04 it asked for no
+user at all, and the room asked for nothing but the id it handed out.
+
+A token carried to either room is verified and must admit, or the room
+closes with `4003`; the reference middleware's authentication had been
+commented out and an invalid token was logged and let through. The lexical
+room takes no session id, and the platform's own editors do not send it a
+token yet, so a token-less lexical client is still admitted by document id
+alone — logged on every such join. Closing that door is a UI change: the
+editor's `websocketUrl` carrying `?token=`.
 
 ## Tear Down Datalayer Spacer
 

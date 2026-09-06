@@ -1,0 +1,30 @@
+---
+title: Datalayer AI Inference
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🔮 Datalayer AI Inference
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+## Deploy Datalayer AI Inference
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-ai-inference
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>

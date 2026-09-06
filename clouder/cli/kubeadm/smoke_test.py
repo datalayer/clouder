@@ -6,14 +6,20 @@ import time
 import typer
 from rich import print
 from rich.panel import Panel
+from rich.prompt import Prompt
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    _print_section_header,
+    _print_step_header,
+    resolve_kubeadm_cloud_context,
+    resolve_kubeadm_cluster_name,
+    _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
+    _update_cluster_metadata,
 )
 
 
@@ -51,8 +57,9 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("smoke-test")
     def kubeadm_smoke_test(
-        name: str = typer.Argument(..., help="Cluster name."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         cleanup: bool = typer.Option(True, "--cleanup/--no-cleanup", help="Clean up test pods after the test."),
     ):
@@ -66,16 +73,19 @@ def register(kubeadm_app: typer.Typer):
         kubelet API, deletes the pod, builds an OCI image from the checkpoint
         using buildah, deploys a restored pod, and validates that state was preserved.
         """
-        (cloud, context_id) = get_current_context()
+        name = resolve_kubeadm_cluster_name(name)
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
 
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         workers = cluster["workers"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or ("azureuser" if cloud == "azure" else "ubuntu")
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
         print(Panel(
             f"[bold]Cluster:[/bold]  {name}\n"
-            f"[bold]Master:[/bold]   {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold]  {master['name']} ({master['ip']})\n"
             f"[bold]Workers:[/bold]  {', '.join(w['name'] for w in workers)}",
             title="Smoke Test",
         ))
@@ -85,22 +95,20 @@ def register(kubeadm_app: typer.Typer):
         # =====================================================================
         ingress_passed = None  # None = skipped
         ingress_type = None
-        lb_public_ip = None
+        lb_public_endpoint = None
 
-        print("\n" + "=" * 60)
-        print("[bold]Section 1: Ingress + Load Balancer[/bold]")
-        print("=" * 60)
+        _print_section_header("Ingress + Load Balancer")
 
         # Detect ingress controller (nginx or traefik)
         result = _ssh_cmd(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             "kubectl get ns datalayer-nginx -o name 2>/dev/null || true",
             check=False,
         )
         has_nginx = "datalayer-nginx" in result.stdout
 
         result = _ssh_cmd(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             "kubectl get ns datalayer-traefik -o name 2>/dev/null || true",
             check=False,
         )
@@ -114,7 +122,7 @@ def register(kubeadm_app: typer.Typer):
             ingress_type = "traefik" if has_traefik else "nginx"
             print(f"\n  Detected ingress controller: [cyan]{ingress_type}[/cyan]")
 
-            # Discover LB public IP from Azure
+            # Discover LB endpoint
             if cloud == "azure":
                 lb_ip_name = f"{name}-lb-ip"
                 rg = master["resource_group"]
@@ -122,16 +130,35 @@ def register(kubeadm_app: typer.Typer):
                     from ...cloud.azure.api import _get_network_client
                     nc = _get_network_client(context_id)
                     pip = nc.public_ip_addresses.get(rg, lb_ip_name)
-                    lb_public_ip = pip.ip_address
-                    print(f"  LB Public IP: [cyan]{lb_public_ip}[/cyan]")
+                    lb_public_endpoint = pip.ip_address
+                    print(f"  LB Public IP: [cyan]{lb_public_endpoint}[/cyan]")
                 except Exception:
                     print("  [dim]No Azure LB public IP found. Skipping ingress validation.[/dim]")
+            elif cloud == "aws":
+                endpoint_result = _ssh_cmd(
+                    master["ip"],
+                    resolved_user,
+                    key_path,
+                    (
+                        "kubectl -n datalayer-traefik get svc traefik "
+                        "-o jsonpath='{.status.loadBalancer.ingress[0].hostname} {.status.loadBalancer.ingress[0].ip}' "
+                        "2>/dev/null || true"
+                    ),
+                    check=False,
+                )
+                raw_endpoint = endpoint_result.stdout.strip().strip("'")
+                endpoint_parts = [part for part in raw_endpoint.split() if part]
+                if endpoint_parts:
+                    lb_public_endpoint = endpoint_parts[0]
+                    print(f"  LB Endpoint: [cyan]{lb_public_endpoint}[/cyan]")
+                else:
+                    print("  [dim]No AWS LB endpoint assigned yet on Traefik service. Skipping ingress validation.[/dim]")
 
-            if lb_public_ip:
+            if lb_public_endpoint:
                 ingress_passed = True
                 try:
                     # ---- Step 1/4: Deploy test web server ----
-                    print("\n[bold]Step 1/4: Deploying test web server...[/bold]")
+                    _print_step_header(1, 4, "Deploying test web server")
                     ingress_deploy_script = """\
 cat <<'EOF' | kubectl apply -f -
 apiVersion: apps/v1
@@ -168,7 +195,7 @@ spec:
     targetPort: 80
 EOF
 """
-                    result = _ssh_cmd(master["ip"], user, key_path, ingress_deploy_script, check=False)
+                    result = _ssh_cmd(master["ip"], resolved_user, key_path, ingress_deploy_script, check=False)
                     if result.returncode != 0:
                         print(f"  [red]Failed to deploy test web server:[/red]\n{result.stderr}")
                         ingress_passed = False
@@ -177,7 +204,7 @@ EOF
 
                         # Wait for deployment ready
                         result = _ssh_cmd(
-                            master["ip"], user, key_path,
+                            master["ip"], resolved_user, key_path,
                             "kubectl rollout status deployment/clouder-smoke-web --timeout=120s",
                             check=False,
                         )
@@ -195,14 +222,14 @@ EOF
                             "kubectl get service clouder-smoke-web -o wide",
                         ]:
                             print(f"  [dim]$ {kubectl_cmd}[/dim]")
-                            r = _ssh_cmd(master["ip"], user, key_path, kubectl_cmd, check=False)
+                            r = _ssh_cmd(master["ip"], resolved_user, key_path, kubectl_cmd, check=False)
                             if r.stdout.strip():
                                 for line in r.stdout.strip().split("\n"):
                                     print(f"  [dim]{line}[/dim]")
 
                     # ---- Step 2/4: Create Ingress resource ----
                     if ingress_passed:
-                        print("\n[bold]Step 2/4: Creating Ingress resource...[/bold]")
+                        _print_step_header(2, 4, "Creating Ingress resource")
                         ingress_class = "datalayer-nginx" if ingress_type == "nginx" else "datalayer-traefik"
 
                         ingress_yaml = f"""\
@@ -229,7 +256,7 @@ spec:
               number: 80
 EOF
 """
-                        result = _ssh_cmd(master["ip"], user, key_path, ingress_yaml, check=False)
+                        result = _ssh_cmd(master["ip"], resolved_user, key_path, ingress_yaml, check=False)
                         if result.returncode != 0:
                             print(f"  [red]Failed to create Ingress:[/red]\n{result.stderr}")
                             ingress_passed = False
@@ -243,27 +270,40 @@ EOF
                                 "kubectl describe ingress clouder-smoke-ingress",
                             ]:
                                 print(f"  [dim]$ {kubectl_cmd}[/dim]")
-                                r = _ssh_cmd(master["ip"], user, key_path, kubectl_cmd, check=False)
+                                r = _ssh_cmd(master["ip"], resolved_user, key_path, kubectl_cmd, check=False)
                                 if r.stdout.strip():
                                     for line in r.stdout.strip().split("\n"):
                                         print(f"  [dim]{line}[/dim]")
 
-                    # ---- Step 3/4: Validate HTTP through LB from localhost ----
+                    # ---- Step 3/4: Validate HTTP through LB endpoint from localhost ----
                     if ingress_passed:
-                        print("\n[bold]Step 3/4: Validating HTTP through Load Balancer (IP)...[/bold]")
-                        print("  Waiting 15s for ingress rules to propagate...")
-                        time.sleep(15)
+                        _print_step_header(3, 4, "Validating HTTP through Load Balancer endpoint")
+                        propagation_wait_seconds = 15
+                        max_attempts = 5
+                        retry_delay_seconds = 10
+                        connect_timeout_seconds = 10
+                        if cloud == "aws":
+                            # AWS NLB target registration and health checks can take longer.
+                            propagation_wait_seconds = 60
+                            max_attempts = 12
+                            retry_delay_seconds = 10
+                            connect_timeout_seconds = 12
+
+                        print(
+                            f"  Waiting {propagation_wait_seconds}s for ingress rules and LB target health to propagate..."
+                        )
+                        time.sleep(propagation_wait_seconds)
 
                         # Try up to 5 times with 10s spacing — curl from localhost, not from master
                         import subprocess as _sp
                         curl_cmd = [
-                            "curl", "-sv", "--connect-timeout", "10",
-                            f"http://{lb_public_ip}/",
+                            "curl", "-sv", "--connect-timeout", str(connect_timeout_seconds),
+                            f"http://{lb_public_endpoint}/",
                         ]
                         print(f"  [dim]$ {' '.join(curl_cmd)}[/dim]")
 
                         curl_ok = False
-                        for attempt in range(1, 6):
+                        for attempt in range(1, max_attempts + 1):
                             try:
                                 curl_result = _sp.run(
                                     curl_cmd,
@@ -309,9 +349,12 @@ EOF
                                         if vline.startswith("* ") and ("connect" in vline.lower() or "refused" in vline.lower() or "timed out" in vline.lower()):
                                             detail = f" ({vline.strip('* ').strip()})"
                                             break
-                                print(f"  Attempt {attempt}: HTTP {http_code or 'timeout'}{detail} — retrying in 10s...")
-                                if attempt < 5:
-                                    time.sleep(10)
+                                print(
+                                    f"  Attempt {attempt}/{max_attempts}: HTTP {http_code or 'timeout'}{detail} "
+                                    f"— retrying in {retry_delay_seconds}s..."
+                                )
+                                if attempt < max_attempts:
+                                    time.sleep(retry_delay_seconds)
 
                         if curl_ok:
                             print("\n  [green]Ingress LB: PASSED[/green]")
@@ -328,13 +371,36 @@ EOF
                     if ingress_passed:
                         import os as _os
                         run_url = _os.environ.get("DATALAYER_RUN_URL", "")
-                        run_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
+                        env_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
+
+                        # Prefer persisted ingress-specific hostname from kubeadm metadata.
+                        metadata = _load_cluster_metadata(name) or {}
+                        ingress_domain_key = (
+                            "ingress_traefik_domain" if ingress_type == "traefik" else "ingress_nginx_domain"
+                        )
+                        run_host = (
+                            str(metadata.get(ingress_domain_key) or "").strip()
+                            or str(metadata.get("public_hostname") or "").strip()
+                        )
+
                         if not run_host:
-                            print("\n[bold]Step 4/4: Validating HTTP through DATALAYER_RUN_URL...[/bold]")
-                            print("  [dim]DATALAYER_RUN_URL is not set — skipping DNS validation.[/dim]")
-                            print("  [dim]Set it to test DNS resolution: export DATALAYER_RUN_URL=https://prod1.datalayer.run[/dim]")
+                            _print_step_header(4, 4, "Configure public hostname for DNS validation")
+                            prompt_text = "Public hostname for ingress validation"
+                            if env_host:
+                                run_host = Prompt.ask(prompt_text, default=env_host).strip()
+                            else:
+                                run_host = Prompt.ask(prompt_text).strip()
+
+                            if run_host:
+                                _update_cluster_metadata(name, {"public_hostname": run_host})
+                                print(f"  [green]Saved public hostname in kubeadm metadata:[/green] {run_host}")
+
+                        if not run_host:
+                            _print_step_header(4, 4, "Validating HTTP through public hostname")
+                            print("  [dim]No public hostname configured — skipping DNS validation.[/dim]")
+                            print("  [dim]Re-run and provide a hostname, or set DATALAYER_RUN_URL as a default suggestion.[/dim]")
                         else:
-                            print(f"\n[bold]Step 4/4: Validating HTTP through {run_host}...[/bold]")
+                            _print_step_header(4, 4, f"Validating HTTP through {run_host}")
 
                             # Check DNS resolution first
                             import subprocess as _sp2
@@ -346,8 +412,23 @@ EOF
                                 resolved_ip = dig_result.stdout.strip().split("\n")[0] if dig_result.stdout.strip() else ""
                                 if resolved_ip:
                                     print(f"  DNS resolves {run_host} → [cyan]{resolved_ip}[/cyan]")
-                                    if resolved_ip != lb_public_ip:
-                                        print(f"  [yellow]Warning: DNS resolves to {resolved_ip}, but LB IP is {lb_public_ip}[/yellow]")
+                                    expected_ips = {lb_public_endpoint}
+                                    if "." in lb_public_endpoint and not lb_public_endpoint.replace(".", "").isdigit():
+                                        try:
+                                            endpoint_ip_lines = _sp2.run(
+                                                ["dig", "+short", lb_public_endpoint],
+                                                capture_output=True,
+                                                text=True,
+                                                timeout=10,
+                                            ).stdout.strip().split("\n")
+                                            expected_ips = {ip for ip in endpoint_ip_lines if ip}
+                                        except Exception:
+                                            expected_ips = set()
+                                    if expected_ips and resolved_ip not in expected_ips:
+                                        print(
+                                            f"  [yellow]Warning: DNS resolves to {resolved_ip}, "
+                                            f"but LB endpoint currently resolves to {', '.join(sorted(expected_ips))}[/yellow]"
+                                        )
                                 else:
                                     print(f"  [yellow]DNS does not resolve {run_host} — check your DNS A record.[/yellow]")
                             except Exception:
@@ -413,7 +494,7 @@ EOF
                                 print(f"\n  [green]DNS Ingress ({run_host}): PASSED[/green]")
                             else:
                                 print(f"\n  [yellow]DNS Ingress ({run_host}): FAILED — DNS may not be configured yet.[/yellow]")
-                                print(f"  [dim]Ensure your DNS A record points {run_host} → {lb_public_ip}[/dim]")
+                                print(f"  [dim]Ensure your DNS record points {run_host} → {lb_public_endpoint}[/dim]")
                                 # Don't fail the overall test — DNS might not be configured yet
 
                 except Exception as e:
@@ -423,13 +504,15 @@ EOF
                     if cleanup:
                         print("\n[bold]Cleaning up ingress test resources...[/bold]")
                         _ssh_cmd(
-                            master["ip"], user, key_path,
+                            master["ip"], resolved_user, key_path,
                             "kubectl delete ingress clouder-smoke-ingress 2>/dev/null || true; "
                             "kubectl delete deployment clouder-smoke-web 2>/dev/null || true; "
                             "kubectl delete service clouder-smoke-web 2>/dev/null || true",
                             check=False,
                         )
                         print("  Ingress cleanup done.")
+            else:
+                ingress_passed = False
 
         # =====================================================================
         # Section 2: CRIU Checkpoint / Restore
@@ -441,24 +524,22 @@ EOF
         counter_before = "?"
         token_before = None
 
-        print("\n" + "=" * 60)
-        print("[bold]Section 2: CRIU Checkpoint / Restore[/bold]")
-        print("=" * 60)
+        _print_section_header("CRIU Checkpoint / Restore")
 
         try:
             # ---- Step 1/8: Deploy test pod ----
-            print("\n[bold]Step 1/8: Deploying counter pod...[/bold]")
+            _print_step_header(1, 8, "Deploying counter pod")
             deploy_cmd = f"cat <<'EOFPOD' | kubectl apply -f -\n{_SMOKE_POD_YAML}EOFPOD"
-            result = _ssh_cmd(master["ip"], user, key_path, deploy_cmd, check=False)
+            result = _ssh_cmd(master["ip"], resolved_user, key_path, deploy_cmd, check=False)
             if result.returncode != 0:
                 print(f"[red]Failed to deploy test pod:[/red]\n{result.stderr}")
                 raise typer.Exit(1)
             print("  Pod created.")
 
             # ---- Step 2/8: Wait for Running ----
-            print("\n[bold]Step 2/8: Waiting for pod to be ready...[/bold]")
+            _print_step_header(2, 8, "Waiting for pod to be ready")
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl wait --for=condition=Ready pod/clouder-smoke-test --timeout=120s",
                 check=False,
             )
@@ -468,10 +549,10 @@ EOF
             print("  Pod is running.")
 
             # ---- Step 3/8: Accumulate state ----
-            print("\n[bold]Step 3/8: Letting counter accumulate state (15s)...[/bold]")
+            _print_step_header(3, 8, "Letting counter accumulate state (15s)")
             time.sleep(15)
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl exec clouder-smoke-test -- cat /tmp/counter_value",
                 check=False,
             )
@@ -483,7 +564,7 @@ EOF
 
             # Read random token written at pod startup
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl exec clouder-smoke-test -- cat /tmp/smoke_token",
                 check=False,
             )
@@ -495,7 +576,7 @@ EOF
 
             # Print pod details before checkpoint
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o wide",
                 check=False,
             )
@@ -503,7 +584,7 @@ EOF
                 for line in result.stdout.strip().split("\n"):
                     print(f"  [dim]{line}[/dim]")
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='"
                 "{.status.containerStatuses[0].containerID} "
                 "image={.status.containerStatuses[0].image} "
@@ -514,23 +595,36 @@ EOF
                 print(f"  [dim]Container: {result.stdout.strip()}[/dim]")
 
             # ---- Step 4/8: Identify node ----
-            print("\n[bold]Step 4/8: Identifying pod node...[/bold]")
+            _print_step_header(4, 8, "Identifying pod node")
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='{.spec.nodeName}'",
             )
             node_name = result.stdout.strip().strip("'")
 
             result = _ssh_cmd(
-                master["ip"], user, key_path,
+                master["ip"], resolved_user, key_path,
                 "kubectl get pod clouder-smoke-test -o jsonpath='{.status.hostIP}'",
             )
             node_internal_ip = result.stdout.strip().strip("'")
 
-            # Match to a worker by name
+            # Match to a worker by name / hostname.
             worker = next((w for w in workers if w["name"].lower() == node_name.lower()), None)
             if not worker:
                 worker = next((w for w in workers if node_name in w["name"] or w["name"] in node_name), None)
+            if not worker and cloud == "aws":
+                for candidate in workers:
+                    host_res = _ssh_cmd(
+                        candidate["ip"],
+                        resolved_user,
+                        key_path,
+                        "hostname -s 2>/dev/null || hostname 2>/dev/null || true",
+                        check=False,
+                    )
+                    candidate_host = (host_res.stdout or "").strip().lower()
+                    if candidate_host and candidate_host == node_name.lower():
+                        worker = candidate
+                        break
             if not worker:
                 print(f"[red]Could not match node '{node_name}' to any worker VM.[/red]")
                 print(f"  Workers: {[w['name'] for w in workers]}")
@@ -539,14 +633,14 @@ EOF
             print(f"  Pod is on node: [cyan]{node_name}[/cyan] (internal: {node_internal_ip}, public: {worker_ip})")
 
             # ---- Step 5/8: Checkpoint via kubelet API ----
-            print("\n[bold]Step 5/8: Checkpointing via kubelet API...[/bold]")
+            _print_step_header(5, 8, "Checkpointing via kubelet API")
             checkpoint_cmd = (
                 f"sudo curl -sk -X POST "
                 f"'https://{node_internal_ip}:10250/checkpoint/default/clouder-smoke-test/counter' "
                 f"--cert /etc/kubernetes/pki/apiserver-kubelet-client.crt "
                 f"--key /etc/kubernetes/pki/apiserver-kubelet-client.key"
             )
-            result = _ssh_cmd(master["ip"], user, key_path, checkpoint_cmd, check=False)
+            result = _ssh_cmd(master["ip"], resolved_user, key_path, checkpoint_cmd, check=False)
             if result.returncode != 0:
                 print(f"[red]Checkpoint API call failed:[/red]\n{result.stderr}")
                 criu_passed = False
@@ -577,9 +671,9 @@ EOF
             # Continue only if checkpoint was created
             if criu_passed and checkpoint_path:
                 # ---- Step 6/8: Verify checkpoint on worker ----
-                print("\n[bold]Step 6/8: Verifying checkpoint on worker node...[/bold]")
+                _print_step_header(6, 8, "Verifying checkpoint on worker node")
                 result = _ssh_cmd(
-                    worker_ip, user, key_path,
+                    worker_ip, resolved_user, key_path,
                     f"sudo ls -lh {checkpoint_path} && echo 'CHECKPOINT_EXISTS'",
                     check=False,
                 )
@@ -595,7 +689,7 @@ EOF
 
                     # Show checkpoint archive contents
                     result = _ssh_cmd(
-                        worker_ip, user, key_path,
+                        worker_ip, resolved_user, key_path,
                         f"sudo tar tf {checkpoint_path} 2>/dev/null | head -20",
                         check=False,
                     )
@@ -606,9 +700,9 @@ EOF
 
             if criu_passed and checkpoint_path:
                 # ---- Step 7/8: Delete original pod ----
-                print("\n[bold]Step 7/8: Deleting original pod...[/bold]")
+                _print_step_header(7, 8, "Deleting original pod")
                 _ssh_cmd(
-                    master["ip"], user, key_path,
+                    master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-test --grace-period=0 --force 2>/dev/null",
                     check=False,
                 )
@@ -616,7 +710,7 @@ EOF
                 print("  Original pod deleted.")
 
                 # ---- Step 8/8: Import checkpoint and restore ----
-                print("\n[bold]Step 8/8: Importing checkpoint and restoring pod...[/bold]")
+                _print_step_header(8, 8, "Importing checkpoint and restoring pod")
 
                 # The kubelet checkpoint tar is NOT an OCI image — it contains
                 # CRIU dump files, config, and a rootfs-diff.tar with filesystem
@@ -663,7 +757,7 @@ fi
 
 sudo rm -rf "$WORK_DIR"
 """
-                result = _ssh_cmd(worker_ip, user, key_path, import_script, check=False)
+                result = _ssh_cmd(worker_ip, resolved_user, key_path, import_script, check=False)
                 checkpoint_image = ""
                 import_status = ""
                 for line in result.stdout.strip().split("\n"):
@@ -716,20 +810,20 @@ spec:
       done
 """
                     deploy_cmd = f"cat <<'EOFPOD' | kubectl apply -f -\n{restored_yaml}EOFPOD"
-                    result = _ssh_cmd(master["ip"], user, key_path, deploy_cmd, check=False)
+                    result = _ssh_cmd(master["ip"], resolved_user, key_path, deploy_cmd, check=False)
                     if result.returncode != 0:
                         print(f"  [yellow]Failed to deploy restored pod: {result.stderr.strip()}[/yellow]")
                         criu_passed = False
                     else:
                         result = _ssh_cmd(
-                            master["ip"], user, key_path,
+                            master["ip"], resolved_user, key_path,
                             "kubectl wait --for=condition=Ready pod/clouder-smoke-restored --timeout=60s",
                             check=False,
                         )
                         if result.returncode != 0:
                             print("  [yellow]Restored pod did not become ready.[/yellow]")
                             status = _ssh_cmd(
-                                master["ip"], user, key_path,
+                                master["ip"], resolved_user, key_path,
                                 "kubectl describe pod clouder-smoke-restored 2>/dev/null | tail -20",
                                 check=False,
                             )
@@ -739,7 +833,7 @@ spec:
                         else:
                             time.sleep(5)
                             result = _ssh_cmd(
-                                master["ip"], user, key_path,
+                                master["ip"], resolved_user, key_path,
                                 "kubectl exec clouder-smoke-restored -- cat /tmp/counter_value",
                                 check=False,
                             )
@@ -751,7 +845,7 @@ spec:
                                 # Read the random token from the restored pod
                                 token_after = None
                                 res = _ssh_cmd(
-                                    master["ip"], user, key_path,
+                                    master["ip"], resolved_user, key_path,
                                     "kubectl exec clouder-smoke-restored -- cat /tmp/smoke_token",
                                     check=False,
                                 )
@@ -761,7 +855,7 @@ spec:
 
                                 # Print restored pod details
                                 res = _ssh_cmd(
-                                    master["ip"], user, key_path,
+                                    master["ip"], resolved_user, key_path,
                                     "kubectl get pod clouder-smoke-restored -o wide",
                                     check=False,
                                 )
@@ -769,7 +863,7 @@ spec:
                                     for line in res.stdout.strip().split("\n"):
                                         print(f"  [dim]{line}[/dim]")
                                 res = _ssh_cmd(
-                                    master["ip"], user, key_path,
+                                    master["ip"], resolved_user, key_path,
                                     "kubectl get pod clouder-smoke-restored -o jsonpath='"
                                     "{.status.containerStatuses[0].containerID} "
                                     "image={.status.containerStatuses[0].image} "
@@ -825,18 +919,18 @@ spec:
             if cleanup:
                 print("\n[bold]Cleaning up CRIU test resources...[/bold]")
                 _ssh_cmd(
-                    master["ip"], user, key_path,
+                    master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-test --grace-period=0 --force 2>/dev/null || true",
                     check=False,
                 )
                 _ssh_cmd(
-                    master["ip"], user, key_path,
+                    master["ip"], resolved_user, key_path,
                     "kubectl delete pod clouder-smoke-restored --grace-period=0 --force 2>/dev/null || true",
                     check=False,
                 )
                 if checkpoint_path and worker_ip:
                     _ssh_cmd(
-                        worker_ip, user, key_path,
+                        worker_ip, resolved_user, key_path,
                         f"sudo rm -f {checkpoint_path} 2>/dev/null || true; "
                         "sudo ctr -n k8s.io images rm localhost/clouder-smoke-restored:latest 2>/dev/null || true; "
                         "sudo buildah rmi localhost/clouder-smoke-restored:latest 2>/dev/null || true",
@@ -855,7 +949,7 @@ spec:
             summary_lines.append("[dim]Ingress LB: SKIPPED (no ingress controller)[/dim]")
         elif ingress_passed:
             summary_lines.append(f"[green]Ingress LB: PASSED[/green]")
-            summary_lines.append(f"  LB IP: {lb_public_ip}")
+            summary_lines.append(f"  LB Endpoint: {lb_public_endpoint}")
             summary_lines.append(f"  HTTP 200 from localhost via {ingress_type} ingress → nginx backend")
         else:
             summary_lines.append(f"[red]Ingress LB: FAILED[/red]")

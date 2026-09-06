@@ -6,11 +6,9 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import ModalImage from "react-modal-image";
 
-# OTEL
+# ☰ 🔭 Datalayer OTEL
 
-The `datalayer-otel` service provides long-term observability storage and querying for the Datalayer Platform. It collects traces, metrics and logs via Apache Pulsar, stores them as Parquet files using Apache DataFusion, and exposes a REST + WebSocket API for querying.
-
-## Architecture
+`Datalayer OTEL` service provides long-term observability storage and querying for the Datalayer Platform. It collects traces, metrics and logs via Apache Pulsar, stores them as Parquet files using Apache DataFusion, and exposes a REST + WebSocket API for querying.
 
 The `datalayer-otel` Helm chart deploys two components into the `datalayer-otel` namespace:
 
@@ -45,7 +43,7 @@ The `datalayer-otel` Helm chart deploys two components into the `datalayer-otel`
 This is separate from the `datalayer-observer` stack (deployed in the `datalayer-observer` namespace) which runs Tempo, Prometheus and Loki for Grafana-based dashboards. The `datalayer-otel` service provides a dedicated Datalayer-native API for observability data, with SQL query capabilities via DataFusion.
 :::
 
-## Deployment
+## Deploy Datalayer OTEL
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
@@ -86,7 +84,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-otel.sh
 ```
   </TabItem>
@@ -111,8 +109,54 @@ The FastAPI query service exposes the following endpoints under `/api/otel/v1`:
 | `/query/sql` | POST | JWT | Run ad-hoc SQL via DataFusion |
 | `/system/stats` | GET | Admin | Storage statistics |
 | `/ws` | WS | Token | Real-time WebSocket stream |
+| `/dashboards/` | GET, POST | JWT | The built-in MCP dashboards, then the account's own |
+| `/dashboards/{id}` | GET, PUT, DELETE | JWT | One dashboard; built-ins are read-only (`409`) |
+| `/dashboards/{id}/data` | GET | JWT | Every panel, answered under the caller's account scope |
 
 API docs are available at `https://<RUN_HOST>/api/otel/v1/docs` (Swagger) and `/api/otel/v1/redoc` (ReDoc).
+
+## Dashboards
+
+The MCP gateway keeps its metrics catalogue and serves no telemetry route:
+this service is where its signals are read, so its dashboards live here,
+beside the platform's others. Five are built in, one per marketed area —
+**calls and refusals**, **runs**, **sandboxes by provider**, **data access**,
+**agents by organization** — and they are *generated* from a copy of the
+gateway's catalogue (`datalayer_otel/dashboards.py`) that a contract test
+holds equal to the gateway's `telemetry.CATALOGUE`. An instrument the
+gateway adds without a panel fails a test rather than going undrawn; a
+panel naming a label the gateway does not emit fails at import.
+
+A dashboard is a list of panels. A panel is one metric, optionally split by
+one of its labels, summarised one way: counters add up (`sum`), a gauge is
+its latest reading (`last`), a duration is averaged (`avg`); `max` and
+`count` exist. No percentile is promised — the metrics rows carry what the
+exporter wrote per interval, not histogram buckets.
+
+`GET /dashboards/{id}/data?start=&end=&account_uid=` answers every panel
+under the caller's resolved account scope, the same scope every other query
+here gets. That is what "agents by organization" means: the same panels,
+read as one organization by passing its `account_uid`. A panel whose query
+fails answers with its `error` and the other panels still answer.
+
+Whose account a point is under decides who sees it. The gateway exports
+with a service credential, so its platform-level points — workers,
+dependencies, jobs — are filed under the gateway's own account, and a
+platform administrator asking for a built-in dashboard **with no
+`account_uid`** reads that account rather than their personal one, where the
+gateway has never written a point. The account is found in the store, from
+the instruments only the gateway writes about itself, not configured. A call
+made in an organization carries `usage_account_uid` as a label, and the
+consumer files that point under the organization instead: that is what
+"agents by organization" reads when an owner passes their organization's
+`account_uid`, or opens it from the console. Naming an account always means
+that account, and a custom dashboard is never redirected.
+
+People's own dashboards are JSON files under the data directory, one per
+dashboard per account (`{data_dir}/dashboards/{account}/{id}.json`);
+dashboards are few, small and edited by hand, so there is no table to
+migrate. A custom panel may chart any metric this service holds — the other
+services report here too. Built-in ids cannot be taken, updated or deleted.
 
 ## CLI
 
@@ -199,7 +243,7 @@ The collector is configured via the Helm chart ConfigMap. The following Helm val
 
 ### Instrumented Services
 
-The 13 platform services that send telemetry to the OTEL Collector use these environment variables (set via `up.sh` and the `datalayer_common.instrumentation` module):
+The platform services that send telemetry to the OTEL Collector use these environment variables (set via `up.sh` and the `datalayer_common.instrumentation` module):
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -229,6 +273,106 @@ export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://datalayer-collector-collector
 export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="http://datalayer-collector-collector.datalayer-observer.svc.cluster.local:4317"
 ```
 :::
+
+#### Service names
+
+Each service names itself when it installs the providers
+(`datalayer_common.instrumentation.instrument(app, "<name>")`), and that name
+becomes the `service.name` resource attribute every span, metric and log record
+carries — it is what `datalayer-otel services` lists and what the SQL examples
+group by:
+
+`ai-agents`, `ai_inference`, `contents`, `growth`, `iam`, `inbounds`,
+`library`, `manager`, `runtimes`, `scheduler`, `spacer`, `status`, `success`,
+`support`. The Operator and the Runtimes companion pass their name in from
+their configuration rather than hard-coding it.
+
+#### Jupyter MCP Server gateway and workers
+
+The [Jupyter MCP Server](/services/jupyter-mcp-server/) gateway is addressed at
+the collector by the same `OTEL_*` variables as the other services — its chart
+sets all three endpoints, `DATALAYER_OTEL_API_KEY`, `OTEL_PYTHON_LOG_LEVEL` and
+`OTEL_SDK_DISABLED`, and the gateway validates the endpoint at startup and
+reports it on `GET /api/mcp/readyz`. Telemetry is listed there and **never
+probed**: no user operation waits on the collector, and its availability is
+never a readiness condition for the gateway.
+
+Two `service.name`s are reserved for it: `datalayer-jupyter-mcp-server` for the
+gateway replicas, and `datalayer-jupyter-mcp-worker` for the per-user
+`jupyter-mcp-server` processes a replica runs — a worker's last lines are worth
+querying after the process is gone, which is why it gets a name of its own
+rather than being folded into the gateway's.
+
+:::warning Nothing arrives from the gateway yet
+
+The gateway does not install an OpenTelemetry SDK provider: it neither calls
+`datalayer_common.instrumentation.instrument` nor runs under
+`opentelemetry-instrument`. Its instruments are therefore created against the
+global no-op meter, no `service.name` is set, and no span, metric or log record
+from the gateway or its workers reaches this collector. The endpoints are
+configured so the addressing is right the day the provider is installed. Until
+then the gateway is read through its own logs, `/api/mcp/readyz` and
+`GET /api/mcp/v1/operations/workers`.
+:::
+
+##### The MCP metric catalog
+
+The names are declared in one place — `datalayer_jupyter_mcp_server/telemetry.py` —
+so a dashboard and an alert can be written against names that do not drift.
+Labels are closed and bounded: a tool, an outcome, a dependency, a refusal
+reason. A user, an agent, an organization or a sandbox is never a metric label.
+
+| Instrument | Kind | Labels |
+| --- | --- | --- |
+| `mcp.calls` | counter | `tool`, `outcome` — declared, not written yet |
+| `mcp.refusals` | counter | `reason` (`scope`, `item`, `attribution_failed`, `header_body_mismatch`, `access_check_failed`, `unknown_handle`, `sandbox_lost`, `runtimes_unavailable`, `rate_limited:user`, `rate_limited:agent`) |
+| `mcp.workers` | gauge | `state=running` |
+| `mcp.worker_start_seconds` | histogram | `provider=process` |
+| `mcp.forwards` | counter | `outcome` (`ok`, `unreachable`) — cross-replica hops |
+| `mcp.dependency.duration` | histogram | `dependency` (`iam`, `store`, `spacer`, `runtimes`, `contents`), `outcome` |
+| `mcp.dependency.timeouts` | counter | `dependency` |
+| `mcp.readiness.failures` | counter | `dependency` |
+| `mcp.sandbox.lost` | counter | `provider`, `then` (`reported`, `relaunched`) |
+
+The `durable.*` instruments are written by the durable execution service
+under `service.name` `datalayer-durable`, and `sandbox.launch_seconds` by
+the Runtimes path; both are listed, with their alert rules, on the
+[durable service page](../16-durable/index.mdx#metrics-and-alerts). This
+sentence used to say they belonged to a service that was not deployed,
+which stopped being true with the durable chart and was left standing.
+
+##### Correlation
+
+Spans are not emitted by the gateway yet, so none of the fields below can be
+queried today. They are the set the gateway will carry, and the set to write a
+dashboard or a support query against once it does — recorded here so a name is
+agreed before it is used:
+
+| Field | On | Meaning |
+| --- | --- | --- |
+| `mcp.method` / `mcp.tool` | spans, and `mcp.calls` | The JSON-RPC method and the tool name |
+| `mcp.binding.uid` | spans, logs | The handle the call resolved: `nb_…` a notebook, `sb_…` a sandbox session, `ts_…` a toolset |
+| `mcp.task.id` | spans, logs | The run. A task outliving its request links its later spans to the initiating trace, so "show me this run" is a query by task id rather than by one trace id |
+| `sandbox.uid` / `sandbox.provider` | spans | The Runtimes `pod_name` of the session's sandbox, and which provider holds it |
+| `workflow.id` / `workflow.engine` | spans | The durable run behind a task |
+| `contents.source.uid` | spans | The content source a call reached |
+| `user.uid`, `client.id`, `org.uid` | spans only | Identity, on access-controlled spans — never on a metric, where the label set must stay bounded |
+
+The client's `traceparent` (SEP-414, sent in `_meta`) is meant to be continued
+through gateway, worker, Runtimes and Contents; the gateway does not read it
+today. IAM already reads a request's `traceparent` into the `trace_id` of the
+audit rows it writes, so its security decisions can be joined to a run once the
+gateway carries the trace.
+
+##### Dashboards and alerts
+
+There are none for MCP yet: no dashboard on this service, no alert rules on the
+SLOs, and no `PrometheusRule` in the gateway's chart. A gateway outage is
+caught today by the ordinary Kubernetes deployment, ingress and certificate
+alerts. The SLIs the alerts will read — availability of `POST /mcp`, p95 call
+duration for the synchronous tools, task success rate, and p95 sandbox launch
+time per provider — need `mcp.calls`, `mcp.call.duration` and
+`sandbox.launch_seconds`, none of which is written yet.
 
 ## Connecting from the Internet (Public Endpoints)
 

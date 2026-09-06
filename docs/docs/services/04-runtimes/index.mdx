@@ -6,21 +6,23 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# ☰ 🪐 Datalayer Runtimes
+# ☰ 📦 Datalayer Runtimes
 
 <Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
   <Label color="blue">Kubernetes</Label>
   <Label color="red">REST API</Label>
 </Stack>
 
-The `Datalayer Runtimes` service manages the access to the ⚪ Runtimes based on the defined 🎱 Jupyterpools.
+`Datalayer Runtimes` service manages access to ⚪ Runtimes based on the defined 🎱 Runtime Pools.
 
 ```
-🌳 Environments that define the type, requested and limits for CPU/GPU and memory, the parameters, the Contents mount points (cloud buckets compatible with S3, local drive via SSHFS) and a Docker Image (the Datalayer Operator is responsible to build the Docker Images).
+🌳 Environments that define the type, requested and limits for CPU/GPU and memory, the parameters, the Runtime Contents they bring (selected by uid: git repositories pinned to a revision, subpaths of the shared filesystem, S3 buckets) and a Docker Image (the Datalayer Operator is responsible to build the Docker Images).
 
-🎱 Jupyterpool that deploys a parametrised Runtimes with an availability based on a calendar.
+🎱 Runtime Pool that deploys parametrised Runtimes with an availability based on a calendar.
 
 ⚪ Runtimes (active or paused) ready to serve users.
+
+📎 Contents attachments — the Home Folder, a Volume, a local folder over the bridge relay — prepared with the Contents service at launch and handed to the Operator (in the cluster) or mounted by the sandbox itself (at an external provider).
 ```
 
 ## Deploy Datalayer Runtimes
@@ -58,7 +60,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-runtimes.sh
 ```
   </TabItem>
@@ -101,6 +103,186 @@ Check the availability of the Datalayer Runtimes Endpoints.
 open https://${DATALAYER_RUN_HOST}/api/runtimes/version
 open https://${DATALAYER_RUN_HOST}/api/runtimes/v1/ping
 ```
+
+## Environment Contents
+
+An Environment selects Runtime Contents by uid (see the [Operator](/services/operator/) page for the definitions). Whether a selected content can be delivered depends on where the sandbox runs. In the cluster everything is a mount. At an external provider there is no cluster: a git content is a materialized checkout, a bucket is reachable from code through a Python filesystem object (fsspec) with the bucket's credentials — not mounted — and the platform shared filesystem cannot be reached at all.
+
+| Content type | Datalayer | Daytona, E2B, Modal |
+| --- | --- | --- |
+| `git` | mount of the pinned checkout | materialized checkout |
+| `nfs` | mount of the shared filesystem subpath | refused (nothing can mount the platform filesystem) |
+| `s3` | mount (Node Mount Gateway, Mountpoint for S3) | `python` access from code; not mounted |
+
+Any other provider has no delivery rules and delivers nothing.
+
+**Endpoints**
+
+- `GET /api/runtimes/v1/environments` — every Environment, with `contents`: the selected uids and, resolved from their definitions, `name`, `type`, `revision`, `mount` and `permissions`.
+- `GET /api/runtimes/v1/environments/<name>/contents?provider=<provider>` — the contents resolved for a provider (the Environment's own by default): `environment`, `provider`, `supported` and `contents`, a list of resolved contents each carrying `uid`, `name`, `type`, `mount`, `permissions`, `revision`, `sha256`, a `status` of `resolved`, `unsupported` or `unresolved`, and a `detail` saying what the content becomes or what cannot be met. When the Environment resolves on Datalayer, the result is recorded as a Contents `environment` source (once per Environment, idempotent on its uid, brought up to date when the build changes) and returned as `source`.
+- `PUT /api/runtimes/v1/environments/<name>/contents` — platform administrators only; body `{"contents": [{"uid": "...", "mount": "...", "permissions": "ro"}]}`; proxied to the Operator, which resolves every uid before patching the `RuntimeEnvironment`.
+- `GET /api/runtimes/v1/runtime-contents` — the catalog as a user may see it: `uid`, `name`, `type`, `description`, `permissions`, and for a public git repository its `source` and pinned `revision`. Credentials, bucket names and filesystem paths are withheld.
+
+**The launch gate**
+
+`POST /api/runtimes/v1/runtimes` refuses a launch — before anything starts — when a content the Environment selects cannot be delivered where the sandbox will run: `422` with `code` `ENVIRONMENT_CONTENT_UNSUPPORTED` and a message naming the content, the provider and the semantics that cannot be met (`ENVIRONMENT_CONTENT_UNRESOLVED` when a selection matches no definition or a git content is not pinned).
+
+Registering the `environment` source needs `DATALAYER_RUNTIMES_API_KEY` (the Runtimes identity Contents accepts for it) and `DATALAYER_CONTENTS_URL`.
+
+## Contents attachments
+
+An account attaches what a sandbox should see through the
+[Contents](/services/contents/) catalog (`POST /api/contents/v1/attachments`,
+naming the sandbox), and Runtimes is where that attachment meets the launch.
+The Environment Contents above are the Environment's; these are the
+account's. Runtimes' part, in order:
+
+1. **Prepare.** `POST /api/runtimes/v1/runtimes` with
+   `content_attachment_uids: [...]` (and a `pod_name`; without one Runtimes
+   names the sandbox `runtime-<ulid>` and prepares for that name). Runtimes
+   reads the sandbox's manifest, `GET /attachments/manifest/{sandbox_uid}`,
+   **with the caller's credentials** — a uid the manifest does not list is
+   `404` — then has Contents prepare each one,
+   `POST /attachments/{uid}/prepare` with `token_audience: sandbox:<uid>`,
+   under its own identity (`DATALAYER_RUNTIMES_API_KEY`, the
+   `attachments:prepare` scope). Preparing is what mints a short-lived token
+   for what the sandbox will fetch, or a bridge session for a local mount.
+   Each prepared attachment is stamped with its source's `kind`, read with
+   the caller's credentials again — a source the caller cannot read refuses
+   the launch — because the Operator renders a Home Folder (`files`) and a
+   Volume differently and the catalog is where that difference is written.
+   A `files` source attached under `/home/jovyan` — a share — comes back
+   from prepare with its `source_path`, the claim-relative folder the
+   Operator binds; the manifest carries the same field, so a listing and
+   a launch name the same place.
+2. **Resolve the Home Folders.** When the request asks for the `home_folder`
+   capability or one attachment is a Home Folder, Runtimes asks IAM for the
+   caller's memberships and sets `home_folder_mounts` to their own folder plus
+   one per organization and team — mounts supplied by the client are
+   replaced, never trusted. When IAM cannot answer, the runtime gets its own
+   folder only. Without a Home Folder in the request, no home folder is
+   mounted: a Volume alone mounts its Volume.
+3. **Refuse before anything runs.** Two gates answer `422` with a `code`
+   before a provider is chosen: `ENVIRONMENT_CONTENT_UNSUPPORTED` /
+   `ENVIRONMENT_CONTENT_UNRESOLVED` (the Environment's contents, above), and
+   `LOCAL_BRIDGE_UNSUPPORTED` for a `local-bridge` attachment on an
+   environment that cannot run the bridge filesystem. A bridge mount is a
+   userspace filesystem inside the sandbox — fusepy over `/dev/fuse` — and
+   whether a sandbox has one is a property of its **environment**, never of
+   the provider: Runtimes reads the environment's `features` from the
+   Operator's record of it, else from the provider catalog in
+   `code_sandboxes`, and refuses unless `fuse` is among them, naming the
+   environment, the provider, what it would need and what it advertises,
+   and offering Synchronize (a copy, called a copy). On Datalayer nothing is
+   refused: the Operator renders a CSI volume and the node driver mounts
+   it, so nothing runs in the sandbox. The stock external environments
+   declare no `fuse`.
+4. **Hand over.** In the cluster the prepared attachments go to the
+   Operator in `content_attachments` of `POST /api/operator/v1/runtimes`,
+   which mounts them and reports each outcome to Contents itself (see
+   [Operator](/services/operator/#contents-attachments)). At an external
+   provider (Daytona, E2B, Modal) there is no Operator in the path: the
+   session thread fetches the manifest with the user's credentials, builds
+   the `code_sandboxes` content manifest — the account's attachments, then
+   the Environment's contents as `environment` entries, plus `contents_url`
+   — has `code_sandboxes` prepare it inside the sandbox (materialized
+   checkouts, bucket access from code, the bridge filesystem run **from
+   inside** the sandbox), and reports every outcome under
+   `DATALAYER_RUNTIMES_API_KEY` (the `attachments:status` scope). A required
+   attachment Contents no longer lists is an error; an optional one is
+   skipped and logged. Without a service key nothing is reported and the
+   attachment stays `preparing` — a misconfiguration that shows in the
+   catalog rather than hiding.
+
+The attachments a runtime was launched with travel on its record, so a
+runtime's description lists what it actually mounts, and an external
+session's manifest can be put back in the form Contents takes.
+
+### Which launches wait for a Pod
+
+A Pod's volumes are fixed when it is created, so a launch that mounted
+anything used to be given a Pod of its own — scheduling, an image pull and a
+Jupyter startup probe — while a launch that mounted nothing was handed a
+prewarmed one. With the
+[Node Mount Gateway](/services/system/node-mount-gateway/) deployed and
+`DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` set on the Operator, a Home Folder launch
+is served from the pool as well: the Operator writes the mount set on the
+pooled Pod and the node agent binds the folders in while it runs.
+
+Nothing in step 2 changes. The memberships are still resolved in Runtimes,
+from IAM, with the caller's own credentials, and still replace whatever the
+client sent — the gateway changes *when* a folder is mounted, never *who*
+decides which. A Volume or a Local Mount still gets a Pod of its own, and so
+does everything when the gateway is off. The Operator's page has the full
+table: [Pool or its own Pod](/services/operator/#pool-or-its-own-pod-which-launches-pay-for-a-cold-start).
+
+A runtime's record carries `mount_gateway`, so a client can tell before it
+asks whether this sandbox takes a mount while it runs.
+
+**Configuration**
+
+| Variable | Meaning |
+| --- | --- |
+| `DATALAYER_CONTENTS_URL` | Where the manifest is read and attachments are prepared and reported (`runtimes.env` in the chart; default the in-cluster `datalayer-contents-svc`). |
+| `DATALAYER_RUNTIMES_API_KEY` | Runtimes' identity to Contents (`attachments:prepare`, `attachments:status`, and registering the `environment` source). Required as soon as a launch names an attachment: `503` without it. |
+| `DATALAYER_OPERATOR_API_KEY` | The key Runtimes uses towards the Operator, unchanged. |
+
+## An external sandbox answers its own account
+
+The `/api/runtimes/v1/external/{runtime_name}/api/...` surface is a Jupyter
+Server as far as a client is concerned, standing in front of a sandbox at
+Daytona or E2B. Opening one is scoped to the caller — the record is fetched
+from the Operator *as that user*, so one account cannot open another's
+sandbox by knowing its name.
+
+Until 2026-09-05 the routes that only **looked at** a sandbox already open,
+or **closed** it, took no caller at all. Against `r1` with no `Authorization`
+header, `GET …/api/status` and `GET …/api/kernels` both answered `200`, and
+`DELETE …/api/kernels/{id}` closed the sandbox for anybody who knew the
+runtime name — which travels in an agent's `_meta`, in task records and in
+logs. The `POST …/restart` immediately below the delete required a caller;
+the delete did not.
+
+They all require one now, and answer only the account whose sandbox it is.
+A caller who is not the owner gets exactly what an address with nothing open
+gets — an empty kernel list, `kernels: 0`, a `404` for a named kernel, and a
+`204` from a close that closed nothing — so a reply never says which runtime
+names are real.
+
+Six routes still take no caller, deliberately: the version handshake, the
+kernel spec, the empty terminal list, the two checkpoint stubs and the
+interrupt that always answers `501`. Each returns the same thing for every
+name and touches nothing, so none of them can say whether a sandbox exists.
+
+## Sharing a runtime
+
+A runtime can be shared with other people, teams, organizations and service
+agents, at one of three nested levels: `view` reads outputs, `update` may
+change files, `execute` may run code.
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/runtimes/v1/runtimes/{name}/sharing` | the owner | The grants, per level and kind of principal |
+| `PUT …/sharing` `{"access": {"view": {"userUids": […], "teamUids": […], "organizationUids": […], "agentUids": […]}, …}}` | the owner | Replace the grants at the levels named; levels not named are kept. Leaving no grant at all removes the record |
+| `GET …/permissions` | anybody | `view`, `update`, `execute` for the caller, `owner`, and whose it is |
+| `GET /api/runtimes/v1/runtimes/{name}` | a grantee | The runtime as its owner sees it, marked `shared_from` and `shared_access` |
+
+**Ownership is the operator's to say.** A runtime is listed for the account
+that launched it and for nobody else, so every question here starts by
+asking the operator *as the caller*: answered, the caller owns it; refused,
+the record decides, with the caller's memberships from IAM. An agent grant
+is matched on the token's own `agent_uid` and never on the person behind
+it. "Not shared with you" and "no such runtime" answer alike — three
+`false` — so asking is not a way to learn which runtimes exist.
+
+The record is one document per shared runtime in the `sandbox-snapshots`
+collection, beside the snapshots and never carrying the two fields their
+queries key on. It lives as long as its runtime: the cleanup loop purges
+records past the runtime's expiry. The
+[Jupyter MCP Server](/services/jupyter-mcp-server/) is the first caller:
+its `share_sandbox` and `unshare_sandbox` tools write here with the
+caller's own credential, and its gateway asks `permissions` on every call a
+grantee makes.
 
 ## Tear Down Datalayer Runtimes
 

@@ -15,11 +15,16 @@ import { Label, Stack } from '@primer/react-brand';
 
 `Datalayer Operator` ensures that the requested services and resources are available. Datalayer Operator is a Kubernetes operator that constantly monitors the system and takes action so that the desired state is met on the Kubernetes cluster. It is responsible for managing the state of the Datalayer services.
 
-- Manage the defined 🛣️ Routes to secure and direct the incoming request to the correct service or pod.
-- Manage the defined 🐋 Docker Images building and publication in the Docker registry.
-- Manage the defined 💼 Jupyter Contents, 🌳 Jupyter Environments and 🎱 Jupyterpools.
+```
+- 🛣️ Manages the Routes to secure and direct the incoming request to the correct service or pod.
+- 🐋 Manages the Docker Images building and publication in the Docker registry.
+- 💼 Manages the Runtime Contents.
+- 🌳 Manages the Runtime Environments
+- 🎱 Manages the Runtime Pools.
+- 📎 Provisions the Volumes and mounts the Contents attachments — Home Folders, Volumes, local bridges — into the Runtime pods, and tells Contents how each came up.
+```
 
-Please note that the [Jupyter Service](/services/runtimes/) is responsible to deliver the ⚪ Runtimes to the user, so it is not the duty of the Datalayer Operator to serve Runtimes.
+Please note that the [Runtimes Service](/services/runtimes/) is responsible to deliver the ⚪ Runtimes to the user, so it is not the duty of the Datalayer Operator to serve Runtimes.
 
 A subset of the Operator methods is exposed via REST endpoints for internal consumption (not visible from external clients).
 
@@ -43,9 +48,17 @@ helm upgrade \
   --set operator.image="${DATALAYER_DOCKER_REGISTRY}/operator:0.1.1" \
   --set operator.certificateIssuer="letsencrypt" \
   --set operator.crds="true" \
-  --set operator.env.AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
-  --set operator.env.AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
-  --set operator.env.AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}" \
+  --set operator.cloudCredentials.enabled="true" \
+  --set operator.cloudCredentials.create="true" \
+  --set operator.cloudCredentials.secretName="${RELEASE}-cloud-credentials" \
+  --set operator.cloudCredentials.aws.accessKeyId="${AWS_ACCESS_KEY_ID}" \
+  --set operator.cloudCredentials.aws.secretAccessKey="${AWS_SECRET_ACCESS_KEY}" \
+  --set operator.cloudCredentials.aws.defaultRegion="${AWS_DEFAULT_REGION}" \
+  --set operator.cloudCredentials.azure.tenantId="${AZURE_TENANT_ID}" \
+  --set operator.cloudCredentials.azure.clientId="${AZURE_CLIENT_ID}" \
+  --set operator.cloudCredentials.azure.clientSecret="${AZURE_CLIENT_SECRET}" \
+  --set operator.cloudCredentials.azure.subscriptionId="${AZURE_SUBSCRIPTION_ID}" \
+  --set operator.cloudCredentials.azure.resourceGroup="${AZURE_RESOURCE_GROUP}" \
   --set operator.env.DATALAYER_DOCKER_REGISTRY="${DATALAYER_DOCKER_REGISTRY}" \
   --set operator.env.DATALAYER_RUN_HOST="${DATALAYER_RUN_HOST}" \
   --set operator.env.DATALAYER_OPERATOR_API_KEY="${DATALAYER_OPERATOR_API_KEY}" \
@@ -63,11 +76,119 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-operator.sh
 ```
   </TabItem>
 </Tabs>
+
+### After the upgrade: re-apply the Runtime Contents and the Environments
+
+Since Environments select their Runtime Contents **by uid**, the Operator
+spawns nothing from an Environment still applied in the earlier shape
+(`contents: [{name: ...}]`), and nothing from one whose uids match no
+`RuntimeContent` in the cluster — every pool pod on it is refused before it
+is created. Upgrading the image is therefore not the whole upgrade. Apply the
+definitions first (each carries its `spec.uid`), then the Environments:
+
+```bash
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-contents/
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+kubectl get runtime-contents -n datalayer-runtimes -o custom-columns=NAME:.metadata.name,UID:.spec.uid,TYPE:.spec.type
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
+Every content must show a `UID` and every Environment a list of uids; a
+`name` in an Environment's `contents` is the old shape.
+
+**When no pool pod comes up.** The Operator now says why, at startup and on
+every reconcile, on its own logger:
+
+```bash
+plane logs datalayer-operator | grep -E "startup_check|pool_reconcile|add_runtime_pod"
+```
+
+`[startup_check] Environment 'X' still selects its contents by name …` or
+`… selects a Runtime Content the cluster cannot deliver …` names the spec to
+re-apply; `[startup_hydrate] runtime contents (name: uid)` lists what the
+cluster defines; `[add_runtime_pod] FAILED` carries the traceback of a spawn
+that failed for any other reason. The pool retries a minute later, so a
+re-applied spec is picked up without a restart.
+
+## Cloud Credentials (AWS/Azure)
+
+For Operator scaling/executor workflows, credentials are consumed through a
+Kubernetes Secret referenced by the Operator Deployment.
+
+- `plane up datalayer-operator` configures Helm values to create and mount
+  `${RELEASE}-cloud-credentials`.
+- `plane down datalayer-operator` removes the release and the generated
+  `${RELEASE}-cloud-credentials` Secret.
+- If you manage credentials outside Plane, keep
+  `operator.cloudCredentials.enabled=true`, set `operator.cloudCredentials.create=false`,
+  and point `operator.cloudCredentials.secretName` to your existing Secret.
+
+### Recommended Azure Flow (Clouder Kubeadm)
+
+For clusters created with `clouder kubeadm`, the recommended flow is to generate
+a cluster-scoped Helm values JSON and let Plane use it automatically.
+
+1. Ensure Azure is configured in Clouder.
+
+```bash
+clouder azure configure
+```
+
+2. Generate operator cloud credentials JSON for your cluster.
+
+```bash
+clouder azure helm-values --cluster my-cluster
+```
+
+By default this creates:
+
+```text
+~/.clouder/kubeadm/r1/datalayer-operator-azure.json
+```
+
+3. Deploy the operator.
+
+```bash
+plane up datalayer-operator
+```
+
+`plane/datalayer_plane/sbin/up.sh` now checks the current kube context and, when
+present, automatically applies:
+
+```text
+~/.clouder/kubeadm/<current-context>/datalayer-operator-azure.json
+```
+
+4. Optional: override the file path explicitly.
+
+```bash
+export DATALAYER_OPERATOR_AZURE_VALUES_FILE=/path/to/datalayer-operator-azure.json
+plane up datalayer-operator
+```
+
+5. Optional: deploy with Helm directly.
+
+```bash
+helm upgrade \
+  --install datalayer-operator \
+  oci://${DATALAYER_HELM_REGISTRY_HOST}/datalayer-charts/operator \
+  --namespace datalayer-runtimes \
+  --create-namespace \
+  --values ~/.clouder/kubeadm/r1/datalayer-operator-azure.json
+```
+
+The generated JSON includes:
+
+- `operator.cloudCredentials.azure.tenantId`
+- `operator.cloudCredentials.azure.clientId`
+- `operator.cloudCredentials.azure.clientSecret`
+- `operator.cloudCredentials.azure.subscriptionId`
+- `operator.cloudCredentials.azure.resourceGroup`
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
@@ -85,18 +206,18 @@ helm ls -A
 Check the availability of the Datalayer CRDs.
 
 ```bash
-kubectl get crd jupyter-contents.datalayer.io
-kubectl explain jupyter-contents.spec
+kubectl get crd runtime-contents.datalayer.io
+kubectl explain runtime-contents.spec
 ```
 
 ```bash
-kubectl get crd jupyter-environments.datalayer.io
-kubectl explain jupyter-environments.spec
+kubectl get crd runtime-environments.datalayer.io
+kubectl explain runtime-environments.spec
 ```
 
 ```bash
-kubectl get crd jupyterpools.datalayer.io
-kubectl explain jupyterpools.spec
+kubectl get crd runtime-pools.datalayer.io
+kubectl explain runtime-pools.spec
 ```
 
 Check the availability of the Datalayer Operator Pods.
@@ -110,6 +231,279 @@ Check the logs of the Datalayer Operator Pods.
 ```bash
 kubectl logs -n datalayer-runtimes -l app=operator -f
 ```
+
+## Runtime Contents and Environments
+
+A `RuntimeContent` defines something an Environment can bring into a runtime: a git repository, a subpath of the platform shared filesystem (`nfs`), or a S3 bucket. Every content carries a stable identity, `spec.uid` (a ULID assigned once, when the content is defined), and Environments select contents **by uid, never by name** — a content can be renamed or re-described without every Environment that uses it quietly pointing elsewhere.
+
+```yaml
+apiVersion: datalayer.io/v1
+kind: RuntimeContent
+metadata:
+  name: jakevdp-sklearn-tutorial-content
+  namespace: datalayer-runtimes
+spec:
+  uid: 01M0YX0MXYRP0Q29YWYRE5THZE
+  type: git
+  description: Jake VanderPlas scikit-learn tutorial
+  source: https://github.com/jakevdp/sklearn_tutorial.git
+  revision: 5098cee2a638c56c311aca0c18987e407fe127fd
+```
+
+| Field | Meaning |
+| --- | --- |
+| `uid` | The identity Environments select by. Required. |
+| `type` | `git`, `nfs` or `s3`. |
+| `source` | The repository URI (`git`) or the bucket name (`s3`). |
+| `subPath` | The subpath of the shared filesystem (`nfs`). |
+| `revision` | The commit sha a `git` content is checked out at. A git content without a revision is refused at launch: a tutorial that changes under a user is not the tutorial they were promised. |
+| `sha256` | Optional. The digest of `git archive --format=tar <revision>`; when set, the checkout is verified and the runtime pod fails to start on a mismatch. |
+| `permissions` | The content's own access, `ro` (default) or `rw`. |
+| `secret` | The Kubernetes Secret holding the bucket credentials (`s3`). |
+
+An Environment selects what it brings, and where:
+
+```yaml
+apiVersion: datalayer.io/v1
+kind: RuntimeEnvironment
+spec:
+  contents:
+    - uid: 01M0YX0MXYD8YZVMJW016KTB4M # nfs-models-oss-content
+      mount: /home/jovyan/models/datalayer-oss
+      permissions: ro
+    - uid: 01M0YX0MXYRP0Q29YWYRE5THZE # jakevdp-sklearn-tutorial-content
+      mount: /home/jovyan/tutorials/sklearn-tutorial
+```
+
+The `permissions` of a selection narrows the content's own access and is never wider than it; absent means the content's own. The name after `#` is a comment for the reader — the Operator resolves names, types and revisions from the definitions when it lists Environments.
+
+At launch, the Operator:
+
+- resolves every selected uid against its index of `RuntimeContent` definitions (the kopf cache, with the API server as fallback). A uid nothing defines, or a git content with no revision, **refuses the launch** with an error naming the uid — a runtime never starts with less than its Environment promised;
+- mounts **only the selected entries**. On a pod spawned for the launch, a `git` content is checked out at its pinned revision by an init container (`alpine/git`) that fails the pod when the revision is missing or the digest does not match, and a `nfs` content is a subpath of the shared filesystem claim. An `s3` content is no longer rendered into the spec — Datashim is retired (audit 83); it is served by the [Node Mount Gateway](/services/system/node-mount-gateway/) as a `cloud-storage` grant (Mountpoint for S3, from the content's own `secret`), which is possible because an Environment whose contents are all gateway-servable is served from a **pooled** pod rather than spawned. A pooled pod renders **none** of its Environment's contents into the spec — not the git checkout, not the NFS subpath, not the bucket — and takes all of them as gateway grants (`git`, `shared-folder` or `nfs`, `cloud-storage`) applied after the pod is running. It defers on purpose (audit 83): a creation-time mount would double what the grant delivers, and a `subPath` would create `/home/jovyan/<dir>` root-owned — where the companion's link, made inside the sandbox as the runtime user, could not add a sibling. A content the gateway cannot deliver refuses the pool and spawns instead, so a runtime never starts short of what its Environment promised;
+- publishes the resolved contents on the pod, in the `contents.datalayer.io/attachments` annotation the Contents attachments already use, as `delivery: environment` entries carrying `mount_path`, `mode` and `provider_resource_id` (the RuntimeContent uid). The sandbox manifest therefore lists everything the runtime mounts, wherever it came from. These entries have no Contents attachment record behind them: nothing is prepared, reported or revoked for them.
+
+A platform administrator changes what an Environment brings through the Runtimes gateway (`PUT /api/runtimes/v1/environments/<name>/contents`), which proxies to the Operator's `PUT /api/operator/v1/environments/<name>/contents` with a body of the form `{"contents": [{"uid": "...", "mount": "/home/jovyan/...", "permissions": "ro"}]}`. The Operator resolves every uid before writing, patches the `RuntimeEnvironment` spec, and answers `422` naming a uid nothing defines, a git content nobody pinned, or a mount path that is not a unique absolute path.
+
+```bash
+kubectl get runtime-contents -n datalayer-runtimes
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
+## Contents attachments
+
+The [Contents](/services/contents/) service keeps the catalog — what an
+account may bring into a sandbox — and the Operator is the one process that
+turns an attachment into something a pod can read. Contents never talks to
+Kubernetes; the Operator never decides who may attach what. Three things are
+the Operator's, in the order they happen.
+
+### Volumes: the PersistentVolumeClaims
+
+A Volume source in the Contents catalog is a PVC in `datalayer-runtimes`,
+made by the Operator on Contents' request. The request is not inline any
+more: creating a Volume source records a `volume-provision` operation that the
+Contents worker claims and drives against the Operator's REST endpoints —
+`POST /api/operator/v1/volumes` to create, `GET /volumes/{uid}` until the
+claim is `Bound`, `DELETE /volumes/{uid}` as the compensation when every
+attempt is spent. The calls carry the owner in `x-forwarded-user` and the
+Operator's own key (`DATALAYER_OPERATOR_API_KEY`); the Volume's uid is the
+source's uid, so a claim is always traceable to its catalog entry. A source
+is trusted — `ready`, mountable — once the claim is bound **or** its storage
+class binds only on first mount. That last case is the common one: the
+Operator reports each claim's `binding_mode_s`, and on a
+`WaitForFirstConsumer` class — the EKS default `gp3` among them — the claim
+stays `Pending` by design until a pod mounts it, so the Volume is marked
+ready the moment the claim exists rather than waiting for a `Bound` that only
+an attach could produce (audit 80). The class is the cluster default unless
+`DATALAYER_VOLUMES_STORAGE_CLASS` names one; it must be `ReadWriteOnce`-capable
+(EBS `gp3`, not EFS). When a pod mounts a Volume the Operator records the
+assignment on the PVC and clears it when the runtime is deleted, so a Volume
+in use is never re-attached elsewhere.
+
+```bash
+kubectl get pvc -n datalayer-runtimes
+```
+
+### At launch: rendering the attachments
+
+Runtimes launches a sandbox that has attachments with
+`POST /api/operator/v1/runtimes` carrying `content_attachments` — the
+attachments it just had Contents **prepare** for that pod name (see
+[Runtimes](/services/runtimes/#contents-attachments)). The Operator refuses
+the launch (`4xx`) when an attachment is not in `preparing` state, names
+another sandbox or another provider than `datalayer`, or when two of them
+share a mount path or one is not an absolute path. Then, per `delivery`:
+
+| Attachment | What the pod gets |
+| --- | --- |
+| Home Folder (a `files` source, stamped by Runtimes) | subpaths of the platform shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`), one per membership the caller has — their own, each organization, each team — at `/home/jovyan/<handle>`; an init container creates the folders and hands them to the runtime user. The list of memberships is resolved by Runtimes from IAM and travels on the pod as `runtime-pools.datalayer.io/home-folder-mounts`. Contents reads the same claim at the same path, which is why the two services' mount paths must agree. With the Node Mount Gateway on, the same folders reach the same paths through a pooled pod instead — see below |
+| A **share** — a `files` source attached at `/home/jovyan/<name>`, carrying the `source_path` Contents puts on its prepare answer | a gateway `files` grant: that claim sub-path bound at `/mnt/datalayer/<name>` (linked as `/home/jovyan/<name>` by the companion), in the attachment's `mode`. Someone else's Home Folder shared with the caller, or the caller's own read-only under a second name. A `<name>` that is already a mount is skipped, not bound twice; a path outside `/home/jovyan` is refused with `FILES_PATH_UNSUPPORTED`. Without a `source_path` (a Contents older than this row) the attachment is not mounted — the Home Folder rendering above knows only the caller's memberships. |
+| `mount` of a Volume | the Volume's PVC, at the attachment's `mount_path` (default `/home/jovyan/volumes/<volume name>`), read-only when the `mode` is `ro`. A Volume of another account refuses the launch; a required Volume that cannot be found refuses it, an optional one is dropped |
+| `local-bridge` (a person's own folder over the relay) | a Node Mount Gateway grant of kind `local-bridge`, targeted at `<name>` under `/home/jovyan`, naming the Secret **`bridge-<bridge uid>`** (keys `mount-token`, `session-key`, `relay-url`; label `contents.datalayer.io/bridge-uid`). The Secret is created right after the pod and owned by it, so the token goes when the pod goes; the grant on the pod's annotation names the bridge and never carries the token. The node agent runs the bridge filesystem from the Secret once the pod is up. The inline `local.csi.datalayer.io` CSI volume that once did this at pod creation is retired (audit 82). A bridge Contents did not prepare a session for is refused as a grant (`BRIDGE_NOT_PREPARED`) rather than rendered as an empty directory |
+| `environment` (brought by the Environment, see above) | the pinned git checkout, the shared-filesystem subpath, or — for an `s3` content — a Node Mount Gateway `cloud-storage` grant (Mountpoint for S3), Datashim retired (audit 83); no Contents record, nothing reported |
+| anything else | refused when required, dropped when optional |
+
+A mount the gateway holds can also be taken **out** of a running runtime:
+`DELETE /api/operator/v1/runtimes/{name}/mounts/{target}` rewrites the pod's
+mount set without it, waits for the node agent to answer for the new set, and
+only then reports the attachment behind the removed grant `revoked` to
+Contents — the order is the point; a record that said `revoked` while the
+sandbox could still read the folder would be a lie. A grant with no
+attachment uid (a membership Home Folder) has nothing to report. Contents
+calls this route, through Runtimes and as the person revoking, when a
+gateway-served mount is revoked; a person can call it directly.
+
+After the mounts, the home links. The node agent binds each folder at
+`/mnt/datalayer/<name>`; the companion in the pod is what makes
+`/home/jovyan/<name>` point at it, and on a freshly spawned pod the companion
+is routinely a second or two behind the gateway. The Operator asks for the
+links again, with backoff, for up to `90` seconds, and gives up at once only
+on a companion that *answers* with a refusal.
+
+The companion's start hooks (`run-start-hooks`, when `RUNTIMES_RUN_HOOKS` is
+on) are asked in the same breath and had no such patience until audit 73: on
+a spawned pod the call was refused at the socket once and the runtime started
+with its hooks silently skipped. They are retried the same way now. A timeout
+is not retried — the companion took the request and runs the hooks on its own
+clock — and neither is a `404`, which is a pool pod built before the route
+existed: recreate the pool or bump the companion image.
+
+The rendered list is written on the pod as the
+`contents.datalayer.io/attachments` annotation. It is the record: a pod spec
+rebuilt from it renders the same mounts, the Operator's cache is rebuilt from
+it at restart, and the runtime's API description lists what the pod actually
+mounts rather than something re-derived from billing labels.
+
+```bash
+kubectl get pod -n datalayer-runtimes <pod> -o jsonpath='{.metadata.annotations.contents\.datalayer\.io/attachments}'
+kubectl get secret -n datalayer-runtimes -l contents.datalayer.io/bridge-uid
+```
+
+### Reporting to Contents
+
+The Operator tells Contents how each attachment came up, with
+`PATCH /api/contents/v1/attachments/{uid}/status` under
+`DATALAYER_OPERATOR_API_KEY` (the `attachments:status` scope):
+
+- `ready` once the pod runs — for the Home Folder and the Volumes. A
+  `local-bridge` is **not** reported ready by the Operator: the volume is
+  there, but the bytes are readable only once the bridge connects, and that
+  is the relay's to say;
+- `failed`, with a code and a message, for what could not be mounted. A
+  required attachment whose report cannot be delivered ends the launch: the
+  runtime is deleted (`attachment_failed`) and the caller gets `502`;
+- `revoked` when the runtime is deleted, after the Volume assignments are
+  cleared — so the catalog never lists a sandbox that is gone;
+- `ready` again for every attachment of a pod the Operator finds when it
+  (re)starts and indexes the cluster, so a restart of the Operator does not
+  leave attachments stuck in `preparing`.
+
+Environment entries are skipped in all four: nothing prepared them and there
+is no record to update.
+
+### Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `DATALAYER_CONTENTS_URL` | Where the Operator reports (`operator.env` in the chart; default the in-cluster `datalayer-contents-svc`, `https://r1.datalayer.run` in the code). |
+| `DATALAYER_OPERATOR_API_KEY` | The Operator's identity to Contents — one key per calling process, so it can be rotated without touching Runtimes' and the audit trail says which acted. Required as soon as one attachment exists: without it the report raises. |
+| `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim the Home Folders live on. Contents mounts the same claim at the same path (`DATALAYER_SHARED_FS_MOUNT_PATH`); a mismatch makes a path recorded by one unresolvable in the other. |
+| `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` | Whether pooled pods carry the Node Mount Gateway and a Home Folder launch is served from the pool. Off by default. Turn it on **after** the node agent is deployed: pods would otherwise carry the volume and wait for mounts nobody makes. |
+| `DATALAYER_NODE_MOUNT_GATEWAY_READY_TIMEOUT_SECONDS` | How long the Operator waits for the node agent to report a grant applied (default 20). Past it the launch is reported without its folders, loudly. |
+| `DATALAYER_NODE_MOUNT_GATEWAY_MAX_MOUNTS_PER_POD` | The most folders one sandbox may be granted (default 32). |
+
+### Pool or its own Pod: which launches pay for a cold start
+
+A Pod's volumes are fixed when it is created, so a launch that mounts
+something used to need a Pod of its own — scheduling, an image pull, the init
+containers and a Jupyter startup probe — while a launch that mounts nothing
+cost one `PATCH` against a prewarmed Pod.
+
+With `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` that is no longer true of the Home
+Folder. What decides, per launch:
+
+| The launch | Where the Pod comes from |
+| --- | --- |
+| Mounts nothing | The pool. |
+| Home Folder only (the `home-folder` capability, or a `files` attachment), gateway on, a pooled Pod carrying the gateway | **The pool**, with a hot attach: the Operator writes the mount set on the Pod and the node agent binds it in. |
+| Home Folder only, gateway off | Its own Pod. |
+| An Environment whose contents mount deeper than one segment below the home (`/home/jovyan/datasets/<name>`) | **The pool**, when every content is of a kind the agent serves: a gateway target may be a path of up to three clean segments, so the Environment's contents are grants like the folders. Before that rule changed, such an Environment could not be served from the pool and every launch of it that mounted anything got its own Pod — the p95 gate's twenty seconds. An Environment that mounts a bucket is served too, once the agent's `credentials` and `buckets` switches are on: the content names the catalog's static Secret, which the agent may neither read (not the pod's) nor understand (not its keys), so the Operator copies it into a Secret the pod owns, in the agent's shape (`content-<pod>-<origin>`), and the grant names the copy. With either switch off the Operator refuses the grant here (`GATEWAY_KIND_OFF`) and the launch spawns, rather than write one the agent answers `SECRET_REFUSED`. |
+| A launch that names its runtime (`runtime_name`) **and** brings attachments made for that name | Its own Pod, named as asked. The id is the join between the attachment records and the pod; a pooled pod has a name of its own and cannot take another. A named launch with nothing to attach may take the pool. |
+| A Volume, or anything else the gateway cannot serve | Its own Pod, whatever the gateway setting. A Volume has a PVC nothing staged on the node. (A Local Mount is *not* one of these any more: it is a gateway grant the node agent applies after the pod starts — audit 82. A launch that includes one still spawns its own Pod, but the mount is delivered through the gateway, not an inline CSI volume.) |
+| Home Folder only, gateway on, but the pool holds only Pods built before it | Its own Pod. Handing out a pre-gateway Pod would start a runtime whose folders never arrive. |
+
+The hot-attach path writes `runtime-pools.datalayer.io/node-mount-gateway-mounts` on the
+Pod and waits for the node agent's answer on `…/gateway-mounts-ready` — the
+hash it asked for, not merely a recent answer — then asks the companion to
+link `/home/jovyan/<handle>` to the gateway path. The mount set is resolved
+from the memberships Runtimes resolved against IAM with the caller's own
+credentials, never from what the request named. The whole node side is on the
+[Local CSI driver](/services/system/node-mount-gateway/) page.
+
+Endpoints, for a runtime that is already running:
+
+~~~bash
+GET    /api/operator/v1/runtimes/{runtime}/mounts            # granted, and what is applied
+POST   /api/operator/v1/runtimes/{runtime}/mounts            # mount the caller's home folders
+DELETE /api/operator/v1/runtimes/{runtime}/mounts/{target}   # take one out
+~~~
+
+`POST` takes attachment **uids**, never records: Runtimes resolves and
+prepares them through Contents with the caller's credentials, exactly as at
+launch, and drops any `content_attachments` a request carries. A client that
+could hand over an attachment record could hand over a bridge session it does
+not own.
+
+It answers `409` when the gateway is off in this deployment or the Pod was
+created without it, `422` for an attachment the gateway cannot serve, and
+`504` when the node agent did not apply the mounts in time — never `200` for a
+mount nobody confirmed.
+
+**What can be attached to a running Runtime:** a Home Folder, a Local Mount,
+and a mounted bucket — the last two only where their path is under
+`/home/jovyan`. A Volume cannot — its PVC is not
+staged on the node — and neither can a Local Mount asking for any other
+absolute path, because the gateway delivers under the home folder. A
+creation-time mount can be anywhere and still can; the refusal names the
+reason (`LOCAL_BRIDGE_PATH_UNSUPPORTED`) rather than mounting somewhere the
+caller did not ask for. A hot-attached Local Mount's token goes into the
+Pod-owned `bridge-<uid>` Secret, which the Operator creates **before** it
+writes the grant, so the agent never looks for a Secret that is not there. A
+mounted bucket's STS session goes into `mount-<attachment uid>` the same way.
+
+### Keeping a mounted bucket alive
+
+A bucket's session expires and a runtime does not. `refresh_mount_sessions`
+runs in the Operator every
+`DATALAYER_MOUNT_SESSION_REFRESH_INTERVAL_SECONDS` (60 by default, and off
+entirely when the gateway is off): it finds every session Secret within ten
+minutes of expiry by its
+`contents.datalayer.io/mount-attachment-uid` label, asks Contents for a newer
+one at `POST /attachments/{uid}/mount-session`, and **replaces the Secret in
+place**. The node agent's credential endpoint re-reads it and the filesystem
+never stops running — nothing is unmounted and no open file handle is
+disturbed.
+
+The same pass also **heals a rebuilt Pod**. A Pod spec rebuilt from its
+annotations carries the grant — writing the mount set on the Pod is the point
+of it — but not the session, which is deliberately never written there, and
+the Secret was owned by the Pod that is gone. So a grant with no Secret is
+treated as a session to mint: the loop finds it, mints one, and creates the
+Secret owned by the new Pod. The node agent retries the grant on its next
+reconcile and the bucket comes back. A Pod that is terminating is skipped —
+its Secret is gone because the Pod is going, and minting one would create a
+credential for something already leaving.
+
+A Secret whose expiry cannot be read is refreshed anyway: a session nobody can
+date is one nobody can trust, and re-minting costs one API call. One that
+cannot be re-minted is logged and skipped; that mount keeps working until its
+session ends and then reports itself through the health path.
+
+~~~bash
+kubectl -n datalayer-runtimes get secret -l contents.datalayer.io/mount-attachment-uid
+kubectl -n datalayer-api logs deploy/datalayer-operator | grep 'mounted bucket session'
+~~~
 
 ## Tear Down Datalayer Operator
 

@@ -1,6 +1,6 @@
 ---
 title: clouder ssh-key
-sidebar_position: 6
+sidebar_position: 16
 ---
 
 # clouder ssh-key
@@ -11,7 +11,7 @@ Manage SSH keys — both local keys and keys registered with your cloud provider
 
 ### `clouder ssh-key create`
 
-Create an SSH key pair locally and register it with the cloud provider (OVH only).
+Create an SSH key pair locally and register it with the cloud provider when supported.
 
 ```bash
 clouder ssh-key create <name> [OPTIONS]
@@ -24,8 +24,13 @@ clouder ssh-key create <name> [OPTIONS]
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--type` | `-t` | Key type: `ed25519` (default), `rsa` |
+| `--region` | `-r` | AWS region for key pair import (AWS only) |
 
-The key pair is generated locally in `~/.ssh/` using `ssh-keygen`. If the current context is OVH, the public key is also registered with the cloud provider.
+The key pair is generated locally in `~/.ssh/` using `ssh-keygen`.
+
+- **AWS context**: imports the public key as an EC2 key pair (`import-key-pair`).
+- **OVH context**: registers the public key in OVH cloud keys.
+- **Azure context**: keeps keys local (Azure has no account-level SSH key registry).
 
 **Example:**
 
@@ -38,15 +43,24 @@ clouder ssh-key create my-key -t rsa
 
 ### `clouder ssh-key ls`
 
-List SSH keys (both local and cloud-registered).
+List SSH keys (both local and cloud-registered where available).
 
 ```bash
 clouder ssh-key ls
 ```
 
+AWS region override:
+
+```bash
+clouder ssh-key ls --region us-east-1
+```
+
 Shows two tables:
 - **Local keys** from `~/.ssh/` with their paths.
-- **Cloud keys** registered with the current provider (OVH shows fingerprint and public key, Azure shows local keys only).
+- **Cloud keys** registered with the current provider:
+	- AWS: EC2 key pairs (name, fingerprint)
+	- OVH: cloud SSH keys (id, name, fingerprint, public key)
+	- Azure: local keys only
 
 ---
 
@@ -60,7 +74,7 @@ clouder ssh-key set-current
 
 Lists the SSH keys available in `~/.ssh/` and asks you to pick one as the default. You can also choose **(clear default)** to unset it. The selection is stored in `~/.clouder/clouder.yaml` and automatically used by:
 
-- `clouder ssh connect`
+- `clouder ssh`
 - `clouder kubeadm setup`, `enable-ingress-nginx`, `smoke-test`, etc.
 
 An explicit `--key`/`-i` flag on any command still takes priority.
@@ -113,4 +127,4 @@ clouder ssh-key download my-server
 - During `clouder vm create`, you can pick from existing local keys or generate a new one.
 - Use `clouder ssh-key set-current` to avoid being prompted for a key every time. The stored default is used whenever no explicit key is provided and no cluster-specific key exists.
 - Keys generated during VM creation are named `<vm-name>-key`.
-- `clouder ssh connect` auto-detects keys matching `<vm-name>-key` in `~/.ssh/`.
+- `clouder ssh` auto-detects keys matching `<vm-name>-key` in `~/.ssh/`.

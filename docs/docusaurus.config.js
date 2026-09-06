@@ -8,6 +8,7 @@ module.exports = {
     require.resolve('./src/gtag-shim.js'),
   ],
   onBrokenLinks: 'throw',
+  onBrokenAnchors: 'throw',
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
   organizationName: 'datalayer', // Usually your GitHub org/user name.
@@ -42,9 +43,21 @@ module.exports = {
         },
         {
           type: 'doc',
+          docId: 'cli/index',
+          position: 'left',
+          label: 'CLI',
+        },
+        {
+          type: 'doc',
           docId: 'cluster/index',
           position: 'left',
           label: 'Cluster',
+        },
+        {
+          type: 'doc',
+          docId: 'deployments/index',
+          position: 'left',
+          label: 'Deployments',
         },
         {
           type: 'doc',
@@ -60,9 +73,9 @@ module.exports = {
         },
         {
           type: 'doc',
-          docId: 'deployments/index',
+          docId: 'management/index',
           position: 'left',
-          label: 'Deployments',
+          label: 'Management',
         },
         {
           type: 'doc',
@@ -78,15 +91,9 @@ module.exports = {
         },
         {
           type: 'doc',
-          docId: 'cli/index',
+          docId: 'support/index',
           position: 'left',
-          label: 'CLI',
-        },
-        {
-          type: 'doc',
-          docId: 'professional-services/index',
-          position: 'left',
-          label: 'Professional Services',
+          label: 'Support',
         },
         {
           type: 'doc',

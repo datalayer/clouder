@@ -3,13 +3,30 @@ sidebar_position: 1
 title: Architecture
 ---
 
-import DocCardList from '@theme/DocCardList';
+# Architecture
 
-# Datalayer Architecture
+Kubeadm is the preferred architecture path for Clouder-managed Kubernetes clusters.
 
-Clouder is the Kubernetes infrastructure and operations layer for Datalayer managed AI agents for data analysis.
+Clouder uses Kubeadm to bootstrap and operate production-grade clusters across supported cloud providers while keeping full control of runtime behavior, node configuration, and platform services.
 
-It connects cloud resources, Kubernetes runtime control, and Datalayer services into one governed execution path.
+## Why Kubeadm Is Preferred
+
+- Full control over kubelet and container runtime settings required by advanced runtime workflows.
+- Reliable support for checkpoint/restore setup and low-level node customization.
+- Reproducible cloud bootstrap for networking, storage, and ingress integrations.
+- Consistent day-0/day-1 operations through `clouder kubeadm` commands.
+
+## Scope
+
+This section documents the architecture capabilities built around the Kubeadm-first model:
+
+- User persistent storage design.
+- Secrets and environment variable injection.
+- Checkpoint and restore (CRIU).
+- Bring your own container (BYOC).
+- Bring your own node (BYON).
+
+For end-to-end provisioning and operations, see the Kubeadm CLI guide at [/cli/kubeadm](/cli/kubeadm).
 
 ## System View
 
@@ -93,5 +110,3 @@ flowchart TD
 - Validate continuously with observability and evals before and after changes.
 
 Continue with the [Setup Guide](/cluster/) to provision infrastructure and deploy services.
-
-<DocCardList />

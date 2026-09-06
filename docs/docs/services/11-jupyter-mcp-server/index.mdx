@@ -1,0 +1,3040 @@
+---
+title: Datalayer Jupyter MCP Server
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🪐 Datalayer Jupyter MCP Server
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+  <Label color="green">MCP</Label>
+</Stack>
+
+The hosted MCP gateway: one endpoint — `https://mcp.datalayer.run/mcp` — that
+AI agents (Claude Code, Claude Desktop, Codex, Cursor, VS Code, Windsurf,
+Cline, any MCP client) connect to in order to read, edit and execute the
+Notebooks their user is allowed to reach, and to run code in Datalayer
+sandboxes.
+
+The tool vocabulary comes from the open source
+[`jupyter-mcp-server`](https://jupyter-mcp-server.datalayer.tech); this service
+adds identity, tenancy, per-item permissions, rate limiting, session-to-sandbox
+affinity and cross-replica routing around it.
+
+The gateway runs on the **platform plane**, in `datalayer-api`, beside IAM and
+Spacer. It owns no notebook, no sandbox and no content: every one of those is
+an authenticated call to the service that does own it, made with the caller's
+own exchanged token. It keeps only what a request must be able to find again
+on another replica — handles, the worker directory and rate windows — and it
+keeps those in Solr, not in the pod.
+
+## Processes and ports
+
+| Process | Purpose | Port |
+| --- | --- | --- |
+| Gateway | The one container of the Deployment: the MCP transport on `/mcp`, the RFC 9728 metadata, the `/api/mcp/*` REST routes, scope and item enforcement, the rate limiter, the worker directory and cross-replica forwarding | `4404` (`PORT`) |
+| Worker | One `jupyter-mcp-server` process **per user**, started by the gateway on demand, reached over loopback only | an ephemeral loopback port per worker |
+
+Both run from the one image. The gateway is `python -m
+datalayer_jupyter_mcp_server.main` (uvicorn, one worker process, proxy headers
+trusted because TLS is terminated at the ingress); a worker is `python -m
+datalayer_jupyter_mcp_server.worker_main start --transport streamable-http`
+pointed at Spacer for documents and at Runtimes for sandboxes.
+
+### Why a process per user
+
+The open source server keeps state per process: a singleton configuration,
+HTTP clients with a token baked into their session, the notebooks that have
+been used. All of that is correct for one person and none of it is safe to
+share, so the boundary used is the one the operating system already gives —
+a process. Workers are keyed by **user**, not by agent: two agents of the same
+person share a process, which is safe because what each agent may do was
+already decided in the gateway, by scope, before anything was proxied. Two
+people never share one.
+
+A worker holds no credential of its own. The gateway forwards the caller's
+`Authorization` header on every request, and clears
+`DATALAYER_API_KEY`, `DATALAYER_TOKEN`, `DOCUMENT_TOKEN`, `CODE_SANDBOX_TOKEN`
+and `JUPYTER_TOKEN` out of the child's environment before putting back the
+caller's own exchanged token — so a credential configured on the gateway is
+never handed to a user's worker.
+
+Workers are reclaimed after `DATALAYER_MCP_WORKER_IDLE_TIMEOUT` (default 900 s)
+and evicted least-recently-used when `DATALAYER_MCP_MAX_WORKERS` (default 50
+per replica) is reached. Neither the reaper nor the eviction stops a worker
+whose session has a task `working`: the task store is asked first, and when it
+cannot answer the worker is kept.
+
+## Two modes, and which one you are running
+
+This service is two things at once. It is an **MCP server** that answers a
+client, and it is the **platform surface** around one: Solr-backed bindings
+and tasks, a durable engine, a scheduler, an organization policy fetched from
+IAM on every call.
+
+Every item in that second list is a dependency that can be missing,
+misconfigured or slow — and when one is, what a person sees is *"Claude cannot
+connect"*.
+
+`DATALAYER_MCP_STANDALONE` keeps the first and turns off the second.
+
+| | Standalone | Platform |
+| --- | --- | --- |
+| Tools — notebooks, cells, sandboxes | **unchanged** | unchanged |
+| Authentication and scopes | **unchanged** | unchanged |
+| Bindings, tasks, rate windows | in this process | `mcp-gateway`, `mcp-tasks` |
+| Audit | in this process | `mcp-audit` |
+| Durable runs | the in-process fake (`durable: false`) | [Durable](/services/system/durable/) |
+| Periodic jobs (retention, alerts) | not scheduled | on a lease |
+| Organization policy | not fetched | from IAM, cached, enforced |
+| Replicas | **one** | as many as the HPA gives you |
+
+:::info The tools are not what standalone turns off
+
+A worker still starts, still opens notebooks through Spacer and still launches
+sandboxes through Runtimes, because those *are* the tools. What goes is
+everything that exists to make several replicas agree with each other, which
+one replica does not need.
+
+It is not a lesser gateway. It is the same gateway with nothing behind it to
+go wrong — which is the right thing to deploy while that machinery is being
+brought up, and the right thing for anybody running one of these outside
+Datalayer's own cluster.
+:::
+
+:::caution Standalone means one replica
+
+Every record lives in the process that made it. A second pod would have its
+own idea of every binding and every task, and a session would work or not
+depending on which one answered. The chart ships `replicaCount: 1` alongside
+the flag; raise it back to 2 in the same change that turns the flag off, never
+before.
+:::
+
+Two things it deliberately does **not** touch. **Authentication** — standalone
+is about what is behind the gateway, never about who may reach it, and a flag
+that quietly stopped checking tokens would be a very bad thing to have on by
+default. And the **audit**, which is still written, to this process rather
+than to Solr: a record nobody keeps is not the same as one kept in one place.
+
+The flag also wins over an explicit `DATALAYER_MCP_STORE=solr`. A deployment
+that asked for no platform machinery and still names Solr has contradicted
+itself, and honouring the narrower answer is what keeps the flag meaning
+"nothing behind this to go wrong".
+
+### Turning it off
+
+Setting `DATALAYER_MCP_STANDALONE: "false"` does not on its own move the
+records out of the process. It removes the check that kept the deployment to
+one replica; **`DATALAYER_SOLR_ZK_HOST` is what actually decides**, and the
+chart ships it empty.
+
+So the flag off, `autoscaling.enabled` back on, and that host still empty
+gives you two pods with separate bindings, tasks, rate windows and alert
+state. What a person then sees is `use_notebook` answered by one pod and
+`read_cell` by the other: a truthful *"no such notebook"* for a notebook that
+is open. It works about half the time, and every health check stays green
+throughout. Of all the ways this service can be misconfigured it is the only
+one nobody sees.
+
+Three things say so, and none of them infers it from another:
+
+- the **chart refuses to render** more than one replica whose records stay in
+  the process, by the same rule the process follows;
+- **startup** reports it wherever the chart is not — every local run — as a
+  configuration problem naming both halves of the remedy. Not fatal: one
+  replica on memory is a perfectly good gateway, and refusing to start would
+  take that away;
+- **`readyz` answers `records` beside `mode`**, because they are different
+  questions and `platform` on `memory` is the interesting answer.
+
+:::tip The change that turns the flag off
+
+Set `DATALAYER_SOLR_ZK_HOST` in the *same* change as
+`DATALAYER_MCP_STANDALONE: "false"` and `autoscaling.enabled: true`. Then
+check `readyz` before sending traffic — `"records": "memory"` on a platform
+gateway means the pods do not share a session, whatever else the page says.
+
+On a plane, that change is two lines in the plane's rc file rather than a
+`helm` invocation of your own: `plane up` already passes the Solr host,
+credentials and every service URL from the rc, and since 2026-09-05 it also
+passes the mode and the replica count, defaulting to what the chart did on
+its own.
+
+```bash
+export DATALAYER_JUPYTER_MCP_STANDALONE=false   # default: true
+export DATALAYER_JUPYTER_MCP_REPLICAS=2         # default: 1
+plane reup datalayer-jupyter-mcp-server
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records, replica}'
+```
+
+`records` must read `solr` and two consecutive `healthz` answers should name
+two replicas. prod1 made this change on 2026-09-05: two replicas, records in
+Solr, the acceptance run's cross-replica checks passing — and the audit
+ledger, which had been in the process and gone with every restart, in
+`mcp-audit` from that day. The `mcp-*` collections must already exist (`plane solr-init`,
+choice **4) AI**); the durable service is a separate matter — with
+`DATALAYER_DURABLE_URL` empty the platform gateway keeps the in-process fake
+and `readyz` says so under `workflows`, which is not a readiness failure but
+is not durability either.
+:::
+
+```
+helm upgrade ... --set jupyterMcpServer.env.DATALAYER_MCP_STANDALONE=false \
+                 --set jupyterMcpServer.autoscaling.enabled=true
+
+Error: DATALAYER_MCP_STANDALONE is off and the gateway would still keep its
+records in the process: DATALAYER_MCP_STORE names memory, or it names nothing
+and DATALAYER_SOLR_ZK_HOST is empty. [...]
+```
+
+### Which one is running
+
+```
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records}'
+{
+  "mode": "standalone",
+  "records": "memory"
+}
+```
+
+`mode` is what the deployment asked for; `records` is where the bindings,
+tasks, audit rows and alert state actually went. They agree in standalone,
+which always keeps them in the process. In platform mode they can differ, and
+that difference is the failure above.
+
+Ask this first when a task is missing or a policy is not applying — for most
+of those questions `standalone` *is* the answer, and working it out from an
+empty list is how somebody spends an afternoon. The startup log says it too:
+
+```
+🎯 Standalone: the MCP endpoint and the tools, with no durable engine, no
+scheduler, no organization policy and every record in this process.
+```
+
+## Where it sits, and what it calls
+
+| Dependency | Plane | Why |
+| --- | --- | --- |
+| [IAM](/services/iam/) | platform | Issues and signs the tokens this gateway verifies locally; the RFC 8693 exchange that turns a gateway token into one the rest of the platform accepts. **Gates readiness** |
+| Solr (`mcp-gateway`) | platform | Handles, the worker directory and rate windows. **Gates readiness** |
+| [Spacer](/services/spacer/) | platform | Notebooks and the per-notebook permission check |
+| [Runtimes](/services/runtimes/) | runtimes | Sandboxes: launch, look up, terminate — always through the Runtimes API, never a Kubernetes call and never a provider SDK |
+| [Contents](/services/contents/) | runtimes | The per-source permission check, at `/api/contents/v1/sources/{uid}/permissions` |
+| [AI Agents](/services/ai-agents/) | platform | Best-effort activity events, so what an agent does appears in the feed |
+| [OTEL](/services/system/otel/) | platform | Where telemetry is addressed. Never probed, never a readiness condition |
+
+Contents and Runtimes are **cross-plane**: they run on the runtimes plane and
+are reached at their configured public URLs (`https://r1.datalayer.run` in
+production), never at an assumed same-cluster service name. The gateway refuses
+to start on a malformed URL, and reports a missing one through readiness
+instead — a deployment that does without a dependency still serves the rest and
+says which tools will not work. `DATALAYER_CONTENTS_URL` has no fallback and is
+rejected when it names the IAM host.
+
+IAM must be deployed with the same `DATALAYER_JUPYTER_MCP_SERVER_URL` value
+used here: IAM stamps it into the audience of every OAuth token, and this
+service refuses a token naming anything else.
+
+## Routes and authentication boundaries
+
+| Surface | Route | Authentication boundary |
+| --- | --- | --- |
+| MCP | `POST /mcp` | An OAuth 2.1 access token whose `aud` is this gateway, or a personal access token. Refused before the body is read when the scope does not cover the call |
+| Protected-resource metadata | `GET /.well-known/oauth-protected-resource`, `…/oauth-protected-resource/mcp` | None. RFC 9728: the document belongs to the resource, and it is where a `401` from `/mcp` sends a client |
+| Server Card | `GET /.well-known/mcp-server` | None, deliberately. It is read *before* a client authenticates — it is what lets a registry list this server and a client decide whether authenticating is worth it |
+| Audit | `GET /api/mcp/v1/audit` | The caller's own rows; `organization_security_auditor` or owner for the organization's. Cursor-paged, with the retention window in `retention_days` |
+| Activity | `GET /api/mcp/v1/activity` | The caller's own token. What the home page's Running now grid reads: each client with its `last_call` (tool, item, time, decision, outcome) and its sandbox count |
+| Liveness | `GET /api/mcp/healthz` | None — the kubelet has no token |
+| Readiness | `GET /api/mcp/readyz` | None. `200` ready, `503` not; the body reports every dependency on its own line |
+| Version | `GET /api/mcp/version` | None |
+| Handles | `GET /api/mcp/v1/bindings`, `DELETE /api/mcp/v1/bindings/{uid}` | The caller's own token. A `DELETE` of an `sb_…` handle needs `code:execute` and terminates the sandbox through Runtimes |
+| Notebook tasks | `GET /api/mcp/v1/notebooks/{uid}/tasks` | `notebooks:read` plus the item check. Reads `mcp-tasks`, so every replica answers the same |
+| Tasks | `GET /api/mcp/v1/tasks` | `notebooks:read`, scoped to the caller. `?org=` widens it to the organization, decided by the same rule as the audit. Open tasks only — a finished one is the audit's |
+| One task | `GET /api/mcp/v1/tasks/{uid}`, `DELETE …` to cancel, `POST …/input` to answer one waiting on a person, `GET …/events` for its changes as server-sent events | `notebooks:read` to read, `code:execute` to cancel or answer. A task that is not yours is `404` rather than `403`: saying it exists but is not yours is saying it exists |
+| Policy | `GET /api/mcp/v1/policy` | The caller's own effective policy, rule by rule, with the layer that decided each — platform, organization, team or personal. `?org=` widens it by the same rule as the audit; `?agent=` reads it as one connected client rather than as the caller, which is what the console's **Preview as** and `datalayer mcp policy --agent` ask for |
+| Alerts | `GET /api/mcp/v1/alerts`, `POST …/{uid}/acknowledge` | An organization's owners and security auditors, the same rule as the audit. Acknowledging is idempotent; somebody else's organization's alert is `404`, because the uid of an alert is enough to know one fired |
+| Audit forwarding | `GET /api/mcp/v1/audit/forwarding` | The same rule again. Says whether the audit is reaching the organization's own system of record — never the destination or the secret |
+
+Forwarding **never fails the call it describes** — holding up a tool call
+because a customer's SIEM is down would be the worse trade — so a failure is
+invisible unless something reports it, and a silently dropped audit record
+looks exactly like nothing having happened.
+
+That route is what reports it, and the console's Audit page now renders it: a
+line when it is working, and the destination's own words when it is not. If
+you alert on one thing here, alert on `healthy` going false — the counters
+alone cannot tell a failing destination from a quiet week.
+
+:::note `configured` is not `healthy`
+An organization that has set a destination and had nothing shipped to it yet
+reports `configured: false` with counters at zero and no error. That reads
+exactly like a working destination on a quiet week, which is why the two are
+separate fields rather than one — and for an organization that *did* set a
+destination, "never attempted" is the worse of the two states.
+:::
+| Organization usage | `GET /api/mcp/v1/organizations/{uid}/usage` | The same roles as the overview. Spend, running sandboxes and the per-minute cap, each beside the limit in force, plus the day's credits by agent — see [The two sandbox quotas](#the-two-sandbox-quotas) and [Which agent spent it](#which-agent-spent-it) |
+| Organization overview | `GET /api/mcp/v1/organizations/{uid}/overview` | An organization owner or security auditor, `?team=` to narrow. The enterprise console's first page: agents, spend, tasks and alerts for one organization |
+| Worker directory | `GET /api/mcp/v1/operations/workers` | The `platform_admin` role, and nothing else |
+| Sandbox ended | `POST /api/mcp/v1/operations/runtime-ended` | Runtimes' own key. How an **external** sandbox's loss reaches the gateway — see below |
+| Workflow backend | `GET /api/mcp/v1/operations/workflows` | The `platform_admin` role. Says whether a run would survive this pod: `durable: true` is [Durable](/services/system/durable/), `false` is the in-process fallback |
+| Periodic work | `GET /api/mcp/v1/operations/jobs` | The `platform_admin` role. Answers for **the replica that happens to serve the request** — see [Periodic work](#periodic-work) before reading the numbers |
+| OpenAPI | `GET /api/mcp/v1/docs`, `/api/mcp/v1/openapi.json` | None |
+
+:::info Why `runtime-ended` exists
+A Datalayer runtime can be *asked* about — the gateway polls Runtimes and
+finds it gone. A Daytona, E2B or Modal sandbox that its provider reaped, whose
+credentials expired, or that idled out is known to Runtimes and to nobody
+else. Without this webhook the binding stays `active` and the next call fails
+somewhere far from the cause, with the agent believing its session is fine.
+
+The sessions are marked `lost`, not closed: `lost` carries the reason and the
+resource state, and is what `SANDBOX_LOST` reports to an agent holding the
+handle. A session created with `on_lost: relaunch` gets its replacement on
+its next call rather than here — a lifecycle event is news, not an
+instruction to spend money.
+:::
+
+The ingress publishes on `mcp.datalayer.run`: the `/mcp`,
+`/.well-known/oauth-protected-resource` and `/api/mcp` prefixes, and the exact
+path `/.well-known/mcp-server`. Nothing else on the host is routed to this
+service.
+
+A route the app serves and the ingress does not publish is a route that does
+not exist from outside, and it fails as a `404` that looks like a missing
+feature rather than a missing rule — the Server Card was served correctly and
+unreachable for exactly that reason. When adding a `.well-known` document,
+add the ingress path in the same change.
+
+:::note The card needs the chart re-applied
+The `/.well-known/mcp-server` path was added to the ingress on 2026-08-28. A
+deployment created before that serves the card in-pod and answers `404` on the
+host until `p reup datalayer-jupyter-mcp-server` applies the new rule. Check
+which you have by comparing the two:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://mcp.datalayer.run/.well-known/mcp-server
+kubectl -n datalayer-api exec deploy/datalayer-jupyter-mcp-server -- \
+  curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4404/.well-known/mcp-server
+```
+
+`404` outside and `200` inside is the missing ingress rule, not a missing card.
+:::
+
+### The two credentials
+
+**An OAuth 2.1 access token** is a user's authority narrowed to what they
+approved for one agent: it carries `scope`, `client_id` and an `aud` naming
+this gateway. **A personal access token** is the user acting as themselves: no
+`aud`, no `scope`, and therefore every scope the gateway knows —
+`notebooks:read`, `notebooks:write`, `code:execute`, `sandboxes:manage`,
+`data:read`, `data:write`, `tools:use`. Both are Datalayer JWTs signed
+with the shared secret, so verification is local and no round trip to IAM sits
+on the request path.
+
+`code:execute` and `sandboxes:manage` are separate because they are different
+questions. The first is running code on a sandbox; the second is *deciding
+which* sandbox, keeping it, sharing it and ending it — each spending credits
+on a decision the agent made. `launch_sandbox`, `use_sandbox`,
+`terminate_sandbox` and `snapshot_sandbox` require it; `list_sandboxes` does
+not, since seeing what you have is not managing it; and the implicit launch a session does when it
+has none stays under `code:execute`, because an agent granted "run this" and
+given nowhere to run it would otherwise be refused for asking to do exactly
+what it was granted.
+
+:::warning Deploy IAM before the gateway when this scope arrives
+Every agent authorized before `sandboxes:manage` existed loses those three
+tools until it is re-authorized. The refusal says so and names the remedy. An
+agent re-authorizing against an IAM that cannot yet grant the scope gets a
+grant that still does not work, so IAM goes first.
+
+A test holds the ends together — because a mapping typo otherwise fails as a
+refusal, and a refusal is what a correctly configured agent also gets.
+
+**Three lists have to agree**, and only checking two is how this scope
+shipped unreachable:
+
+| List | Where | If a scope is missing |
+| --- | --- | --- |
+| `TOOL_POLICIES` | gateway | The tool asks for nothing and anyone may call it |
+| `SCOPES_SUPPORTED` | gateway | **No client can request it.** It is what the protected-resource metadata publishes, so it is the only thing a client reads to know what to ask for — the consent screen never shows it, no token carries it, and the tool is refused for everybody |
+| `RESOURCE_SCOPE_NAMES` | IAM | The authorization server refuses the request |
+
+`sandboxes:manage` was in the first and the third and not the second, so
+`launch_sandbox`, `use_sandbox` and `terminate_sandbox` were unreachable for
+every agent — with a message that reads like the caller's own fault. Fixed in
+`99020fa4`; the test now checks tools against what is advertised, in both
+directions.
+:::
+
+A client's own URL may narrow what it gets: `…/mcp?scopes=notebooks:read,code:execute`.
+
+**A service agent key** is the third, and the only one that is not a JWT. It
+authenticates an agent that is a *principal* rather than a person's proxy —
+see [Service agents](#service-agents) below. It looks like `dla_sa_…`, which
+is how the gateway tells it from a token before sending it anywhere: an
+access token forwarded to IAM as a key would be a token in a log line on a
+service that had no business seeing it.
+The scopes travel on the `resource` of the protected-resource document, and IAM
+reads them off it rather than trusting what the client asked for. The OpenID
+Connect scopes (`openid`, `profile`, `email`, `offline_access`) pass through so
+one sign-in answers both questions; none of them grants anything here.
+
+**A token bound to a key is not accepted as a bearer.** RFC 9449 puts a `cnf`
+claim on a token to say only the holder of a named key may use it, and the
+proof travels in a `DPoP` header. Nothing here verifies such a proof yet, and
+until it does the safe reading of a bound token arriving as a plain bearer is
+a refusal, not "close enough" — accepting it would make a stolen bound token
+work exactly as well as a stolen unbound one, and the binding a promise the
+platform makes and does not keep. The refusal says the token is bound and what
+to do, rather than that it is not valid, which is true and useless because the
+holder retries the same token. An empty `cnf` is not a binding, and this
+platform mints no bound tokens, so the only holder of one got it elsewhere.
+
+Because the `aud` names this gateway, the token cannot be forwarded — every
+other Datalayer API refuses it, which is the point. **RFC 8693 token exchange**
+is the way across: the gateway proves to IAM with `DATALAYER_IAM_API_KEY` that
+it is a Datalayer service and receives a token for another audience, same user,
+never more scope. Exchanged tokens are cached until shortly before they expire.
+Without that key, OAuth callers reach nothing.
+
+Enforcement is layered and deny-by-default. `enforcement.py` reads `Mcp-Method`
+and `Mcp-Name` and refuses a call the scope does not cover *before* the body is
+read, then cross-validates the body against the headers; a tool absent from the
+policy table is treated as requiring the strongest scope. A caller that cannot
+be attributed to a user is refused (`-32001`), never served. The per-item
+`read`/`write`/`execute` decision is asked of Spacer or Contents on every call
+and is never cached.
+
+| JSON-RPC error | Meaning |
+| --- | --- |
+| `-32000` | Refused: scope, item permission, or an unknown handle |
+| `-32001` | The call could not be attributed, or an access check could not be made — fail closed |
+| `-32002` | Rate limited; the data carries `retry_after_ms` |
+| `-32010` | `SANDBOX_LOST`, with the runtime's `ResourceState` |
+| `-32011` | Runtimes could not be reached to launch or check a sandbox |
+
+Client registration is IAM's: clients are registered by **Client ID Metadata
+Document** — a `client_id` that is a URL IAM fetches, validates and caches,
+advertised as `client_id_metadata_document_supported` in the RFC 8414
+metadata — with Dynamic Client Registration kept as the deprecated fallback.
+See [IAM](/services/iam/).
+
+:::warning A desktop client's redirect port is not fixed
+
+IAM matches a redirect URI exactly against the client's document — the whole
+string as the client wrote it, never a prefix, never a different scheme, path,
+query or fragment — **except the port of a loopback address**, where any port
+is accepted.
+
+That exception is RFC 8252 §7.3 and it is not optional. Claude Code, Claude
+Desktop and every other native client listen on whatever port the operating
+system hands them *at the moment they start the flow*: `http://localhost:3118/
+callback` today, something else tomorrow. No document can list those ports —
+the client does not know them when it is written.
+
+Matching the port too refuses the client on its own callback:
+
+```json
+{"error":"invalid_request",
+ "error_description":"Redirect URI [http://localhost:3118/callback] is not registered for this client."}
+```
+
+which reads to whoever hit it as the server being broken. If you see that
+error, check whether the host and path match the document — those are still
+compared exactly, and `127.0.0.1` is not `localhost` as far as matching is
+concerned.
+:::
+
+## Sessions and sandboxes
+
+What a person means by "my session" is the sandbox their code has been running
+in. That sandbox **is** the session, and it is an `sb_…` handle in
+`mcp-gateway`:
+
+- one active sandbox per (user, `client_id`) unless a client holds several
+  handles on purpose;
+- every execution of the session resolves the binding first and targets its
+  `sandbox_uid`, on the replica whose worker holds the connection;
+- the Runtimes `pod_name` is **derived from the binding uid**, so a retried
+  launch or two replicas racing cannot make two sandboxes for one session;
+- a sandbox that is gone ends the call with `SANDBOX_LOST` and the runtime's
+  `ResourceState`. Only a binding created with `on_lost: relaunch` gets a
+  replacement, and it says so in the result. There is no silent relaunch;
+- a binding follows the runtime's reservation; closing it ends the session's
+  open tasks.
+
+`GET /api/mcp/v1/bindings` lists a caller's handles in every state, `lost`
+included — a session whose sandbox is gone is exactly what an operator and a
+user want to see, with why.
+
+## What a tool says about itself
+
+A client reads a tool's annotations before it calls it, and decides two
+things from them: whether to ask the person first — a **destructive** tool
+usually earns a prompt — and whether a call that timed out is safe to send
+again, which only an **idempotent** one is. Left unset, the cautious defaults
+answer: not idempotent, open world. Those are the wrong answers for a
+listing, and until 2026-09-05 they were the answers for every tool this
+service adds to the worker: twenty-two tools with a title and at most one
+hint, so a client retried none of the reads and asked before `list_notebooks`.
+
+Every tool of this service now answers all four — `readOnlyHint`,
+`destructiveHint`, `idempotentHint`, `openWorldHint` — and a test holds the
+rule over the tool list as it is actually served, not as the open source
+project ships it (`tests/test_every_tool_says_what_it_is.py`). The reads say
+read-only, idempotent, closed world; what keeps a version
+(`snapshot_notebook`, `save_query_as_revision`) says *not* idempotent,
+because a retry keeps one more; `query_source` says destructive and not
+idempotent, because a statement is whatever the caller wrote; and nothing
+this service adds says open world, since every one of them talks to one
+known deployment.
+
+Two tools replace an open source one under its own name — `use_notebook`, so
+a notebook can be named as well as identified, and `launch_sandbox`, so an
+agent is not offered a dozen providers it does not choose between. They are
+held to a different rule: they say exactly what the original said, its
+annotations and its **output schema** both, taken from the original at the
+moment it is replaced (`replacing.py`). Written `-> Any`, the two had been
+the only tools on a worker that advertised no output at all, which the open
+source contract that every tool says what it returns caught the moment a
+checkout carried this service.
+
+Borrowed toolset tools (below) say what their *source* said. Contents reads
+the annotations off each upstream tool into its manifest, in the wire
+names, and the gateway hands the four hints on under its own title — a
+borrowed tool is named for its source, so a title in the manifest is
+dropped, and so is anything that is not one of the four booleans. A source
+that says nothing leaves the cautious defaults to answer for its tool,
+which is the honest outcome: the gateway knows nothing the source did not
+say.
+
+## Toolsets and Contents
+
+Two families of tools reach data, and both call the Contents service with
+the caller's own exchanged token. Contents decides; the gateway owns none
+of it.
+
+**Toolsets** are a source's own tools, borrowed. `list_toolsets` shows
+which sources lend any; `enable_toolset` mints a Contents MCP session —
+which is what scopes what may be called and where results may be written —
+and registers the source's tools as `<source>__<tool>` with the source's
+own schema, then says the tool list changed. A call goes to
+`/mcp-sessions/{uid}/calls` with an idempotency key derived from what the
+call *is*, so a retry after a timeout is answered the first result rather
+than run again. `pending-approval` comes back as `input_required` naming
+the approval a person has to decide.
+
+**Contents tools** are the catalogue, attachments, queries and revisions.
+Three rules worth knowing:
+
+- **No tool returns bulk bytes.** A query answers its uid, its state and
+  `datalayer://queries/{uid}/results`. The rows are an Arrow stream a
+  client fetches when it wants them.
+- **An attachment belongs to the session's sandbox**, keyed on the
+  sandbox's uid. A session with no sandbox is told to launch one; a
+  Contents tool never launches one itself, because attaching is not
+  executing and a sandbox nobody asked for is a sandbox somebody is billed
+  for.
+- **Secrets are named, never read.** `list_secrets` answers names, and no
+  tool here accepts or returns a value.
+
+Cancelling the task that is waiting for a query cancels the query too: the
+tool registers the Contents cancel as the task's interrupt. Without it the
+Datasource keeps executing while the task says cancelled.
+
+| Scope | What it buys |
+|---|---|
+| `data:read` | The catalogue, a source, a query's state, a secret's name, and a borrowed tool's call |
+| `data:write` | Attaching, detaching, saving a revision — and `enable_toolset`, which is where writing artifacts into your storage is consented to, once |
+| `tools:use` | Borrowing a source's tools at all |
+
+### Bulk data is named, never carried
+
+Three resources say where data is rather than handing it over, so a large
+result costs an agent's context nothing:
+
+| Resource | What it answers |
+|---|---|
+| `datalayer://queries/{uid}/results` | A Flight ticket where Contents mints one, and the HTTPS Arrow stream beside it — the same bytes for a client that cannot carry gRPC |
+| `datalayer://objects/{uid}` | What an object is, its versions, and the URL its bytes are at |
+| `datalayer://transfers/{uid}` | A transfer's progress |
+
+All three cost `data:read` and are cached **privately**: two callers get
+different answers, and a shared cache would hand somebody else's data to
+whoever asked next. The bytes themselves are fetched from Contents by the
+client, with its own credential, and are never proxied through the
+gateway.
+
+## A sandbox has two names
+
+A sandbox is identified by a **ULID** — that is its `sandbox_uid`, and it
+is what Contents validates and keys attachments on. Its **Pod name** is a
+deployment detail: the Operator names a runtime `runtime-<ulid>`, and this
+gateway derives `sb-<ulid>` from a session handle (`sb_<ULID>`) because a
+Pod name has to be a DNS label. An external sandbox is
+`external-<provider>-sb-<ulid>`.
+
+Until 2026-09-04 the gateway stored the Pod name in a field called
+`sandbox_uid` and handed it on — to `_meta`, to the task projection, to
+the durable engine and through Runtimes to Contents, which refused it. The
+binding stores `runtime_name` now and derives the uid from its own handle,
+so there is one stored fact and no second copy to disagree with it. Every
+Runtimes call takes the name; `_meta` carries both.
+`datalayer_common.runtime_names.sandbox_uid_of` is the one converter that
+knows every name the platform mints, and answers `""` rather than a name
+it cannot convert.
+
+### The first execution binds the session
+
+A session's first `execute_code`, `execute_cell` or `insert_execute_code_cell`
+with no sandbox bound gets the deployment's default, launched by the gateway
+itself — reserved under the session's identity, counted against the budget,
+created through Runtimes and bound with what the runtime said it can do —
+exactly as `launch_sandbox` with no arguments would. A quota refusal there
+is answered as `BUDGET_EXCEEDED`, not as a failed call.
+
+**On prod1 it did not launch anything until 2026-09-05.** The gateway's own
+Runtimes client sent `environment_name`; the operator's `CreateRuntimeRequest`
+takes `environment: {name}` — an object, not the bare name — and requires a
+`credits_limit`, so every first execution was refused `422`, a
+`runtimes_unavailable` to the agent, which reads as an outage. Three fixes in
+a row, each found by the next 422: the field's name, its shape, and the
+credits limit, which the gateway now computes the way the worker's own
+launcher does — the environment's `burning_rate × 60 ×
+DATALAYER_SANDBOX_RESERVATION_MINUTES` (default 10), read off the caller's
+environment catalogue, so the two launch paths reserve the same. A limit the
+caller set is kept; an environment the catalogue cannot name sets none, and
+the operator's refusal then says what is missing rather than the gateway
+inventing a number. The one-process gate (`test_the_default_sandbox_gate.py`)
+could see none of this: its Runtimes was a double that accepted whatever it
+was sent. `use_sandbox` and
+`restart_notebook` launch nothing: one selects a sandbox, the other has
+nothing to restart.
+
+Every execution the gateway forwards names the session's sandbox in the
+request's `_meta` under `io.datalayer/sandbox`. The worker's before-call
+hook makes that sandbox its active one, attaching by name when this worker
+never launched it — so execution lands on the session's sandbox on
+whichever replica serves the call, and a shared sandbox is reached the same
+way by its grantee's worker.
+
+### Sharing a sandbox
+
+A sandbox can be shared with other people, teams, organizations and
+service agents, at one of three nested levels: `view` reads outputs,
+`update` may change files, `execute` may run code. The record and the
+decision live on [Runtimes](/services/runtimes/): `share_sandbox` and
+`unshare_sandbox` are worker-side tools that carry the caller's own
+credential to `PUT /runtimes/{name}/sharing`, and Runtimes settles who owns
+a runtime by asking the operator *as the caller*. Both cost
+`sandboxes:manage`: who else may use a sandbox is its owner's decision, and
+an agent granted "run this" may not hand it around.
+
+**Two names, and the route takes the second.** A sandbox has the name it
+was launched under — what every tool takes — and the runtime's own uid,
+which is what Runtimes' routes take. Until 2026-09-05 `share_sandbox` sent
+the first to a route that wanted the second: Runtimes asked the operator for
+a runtime called `shared-drill`, found none, and the owner was told only the
+owner may share their own sandbox. The worker translates the alias through
+its manager now, and a name it does not know is passed through, so an owner
+may name the runtime directly. Underneath, `code-sandboxes`' Datalayer
+sandbox kept the uuid it drew at construction as its id after the runtime
+existed; it takes the runtime's uid at launch now, which reaches a worker
+with the next `code-sandboxes` release.
+
+**From the console, as well as from an agent.** The bound-sandboxes panel of
+the MCP dashboard has a *Share* action beside *Terminate*, and the sandbox
+details dialog a *Manage sharing* button; both open the same access dialog
+that content uses, against `GET|PUT /runtimes/{name}/sharing` directly.
+Runtimes answers an `access` document in exactly the shape the dialog reads,
+so there is no translation between them and nothing to keep in step.
+
+The name is the runtime's here too, and `sandboxSharingUrl` is where that is
+written down for both surfaces. It answers nothing for a sandbox with no
+runtime behind it — a browser or local kernel, or a binding still reserving —
+so those are offered no button rather than a button that always fails. A
+person who is not the owner gets Runtimes' `403`, and the dialog says so
+rather than drawing an empty list of grants, which would read as a sandbox
+shared with nobody.
+
+**Sharing works, and it took three fixes to get there.**
+
+Runtimes wrote the runtime's expiry straight into a Solr **date** field, and
+the operator answers epoch seconds as a string — `'1788671641.000'`. A date
+field that is not a date makes Solr refuse the whole document, so every share
+answered `500 Database Request Error` for a user, a team, an organization and
+an agent alike: the field at fault was the one that never varied. Every test
+of the document builder called it without an expiry, which is how the value
+that reaches Solr in production never reached it in a test.
+
+**A share naming nobody is refused**, and that is live. `share_sandbox` with no principals used
+to `PUT` what was already stored and answer *"sharing updated. They can use
+it with `use_sandbox`"* — so a typo'd parameter, an empty list or a uid that
+came back blank all read as a share that happened, and the owner found out
+only when the grantee was refused. An *unshare* naming nobody keeps its
+meaning: revoke everybody at that level.
+
+:::note Building the image needs `agent-runtimes` 1.2 first
+
+`agent-runtimes 1.1.0` pins `opentelemetry-semantic-conventions<0.62`, and
+`opentelemetry-sdk 1.44.0` requires exactly `0.65b0`. So the OpenTelemetry
+1.40 → 1.44 bump cannot be installed beside it and the image will not build
+with both.
+
+Worth knowing because of *how* it fails: pip reports a conflict about
+`mcp[cli]` and `fastmcp-slim`, which is where it gave up rather than what is
+wrong. Resolve the two packages in a clean environment and they install
+together fine; add the OpenTelemetry constraint and the real conflict names
+itself.
+
+:::
+
+### A revoked share is not a lost sandbox
+
+After `unshare_sandbox`, a grantee's next call used to be refused *"the
+sandbox is gone: absent — its variables and files are lost"*. It was not
+gone. The owner had stopped sharing it, and those are two different truths
+with two different things to do about them: one says the work is lost, the
+other says ask for the share again.
+
+Two causes. The liveness check ran **before** the share check, and a grantee
+cannot see the runtime at all once the share is taken back, because Runtimes
+answers a runtime to its owner and nobody else. And swapping them was not
+enough: the share answer is believed for thirty seconds, so a share revoked a
+moment ago still read as held and the call fell through to the liveness check
+anyway.
+
+So a grantee told *absent* has its share re-read without the cache. **Absent
+from a non-owner is not evidence of absence.** A share that still holds
+leaves the loss standing, and a binding the caller owns never takes this
+path.
+
+**Walked on prod1 and r1 on 2026-09-06.** An owner's first execution gets the
+default sandbox; the share with a service agent is stored; Runtimes answers
+that agent `view/update/execute` and names the owner; the agent attaches by
+name and runs code; its binding carries `shared_from` and `on_lost: fail`;
+and the call after `unshare_sandbox` is refused *"no longer shared with you"*.
+
+A grantee calls `use_sandbox` with the sandbox's runtime name, or with the
+owner's handle. The gateway asks Runtimes what the caller may do, and a
+`view` is the least that makes a binding — one of the grantee's own, naming
+the owner in `shared_from`, never `on_lost: relaunch` (a relaunch would be a
+sandbox of the grantee's own). The worker attaches to the runtime by name
+with the grantee's token, which Runtimes now answers for a grantee.
+
+**The grant is checked on every call.** Each tool's access — `read`,
+`write`, `execute` from its policy — needs the matching level, and the
+answer is believed for thirty seconds at most. A tool the level does not
+cover is refused `SANDBOX_ACCESS_REVOKED` with `reason: insufficient`; a
+grant that is gone altogether is `reason: revoked`, the binding is closed,
+and the next call is refused without asking again. Both name the owner and
+say `launch_sandbox` is the way to a sandbox of one's own. Counted as
+`access_revoked` in `mcp.refusals`.
+
+### A subscriber is told, or nobody is
+
+An agent that has opened a notebook can ask to hear when it changes —
+`resources/subscribe` on `notebook://<handle>` at 2025-11-25, a
+`subscriptions/listen` filter at 2026-07-28 — and the worker holds a
+persistent connection to the collaborative document so that a *person's* edit
+in JupyterLab is announced too, not only the agent's own.
+
+**None of it was delivered until 2026-09-05, and the server reported that it
+had been.** The registry of subscribed sessions was weak-keyed so that a
+session going away would take its subscriptions with it; nothing else holds
+an SDK `ServerSession`, so every subscription was collected between the
+request that made it and the next call. `publish` then returned `True`
+anyway, because the 2026-07-28 bus had accepted the event — and that bus
+knows nothing of the 2025-11-25 client waiting on its stream. Measured
+against prod1 first (subscribe accepted, listen stream open, nothing ever
+arriving), then reproduced in one process against a raw client, where the
+verdict is on the wire rather than in a client library.
+
+Three things were wrong, and all three are fixed in the open source server:
+the registry holds its sessions **strongly**, with removal said out loud — on
+unsubscribe, on a send that fails, and past a ceiling of 256 sessions, oldest
+first; the legacy half runs whether or not a modern bus exists, where before
+an early `return` skipped it entirely on any SDK without
+`subscriptions/listen`; and a subscriber that cannot be told is logged rather
+than dropped in silence. The test that holds it (`tests/test_a_subscriber_
+really_hears.py`) runs a real server over real TCP, reads the wire, and
+deliberately keeps **no reference of its own** to the session — a test that
+keeps one passes against the broken code, which is how this stayed broken
+while its unit tests were green.
+
+**Measured on prod1 with 2.1.6, 2026-09-05.** A 2025-11-25 client opens a
+notebook through the gateway, subscribes to `notebook://<handle>` and holds
+its standalone `GET` stream; a person editing the same document through the
+Spacer collaboration socket reaches it in **0.97 s**, and the agent's own
+edit in 1.83 s. Read both off the raw wire and through an SDK client, and
+against a pod that was asked what it was running first.
+
+### The notification names the cell
+
+`resources/updated` carries `notebook://<handle>/cells/<id>` as well as
+`notebook://<handle>`, so an agent watching one cell of a hundred-cell
+notebook refetches one cell.
+
+**As well as, never instead of.** A client subscribed to the notebook asked
+about the notebook, and a *deleted* cell names nobody — its id went with it,
+and there is nothing left to read. The notebook frame is what every
+subscriber can rely on; the cell frames are an addition on top of it.
+
+Both halves say which cell. A writing tool already resolves an index to a
+cell id and attaches it to its result, for the agent's benefit; the publisher
+reads it back off that result rather than off the tool's arguments, because
+an argument may be an index and an index is not something anybody can
+subscribe to. The watcher reads it off the pycrdt events: a change inside a
+cell arrives with the cell's index at the head of its path, and an inserted
+cell — which is how a *moved* cell appears — carries its own id in the delta.
+Inserting a cell names no cell, deliberately: nobody was subscribed to a cell
+that did not exist.
+
+**One edit is one notification again.** It used to be two: the tool published
+on its way out, and the same edit then arrived back over the watcher's
+persistent connection carrying no origin, looking like somebody else's, and
+was announced again. Naming the cell would have made that two identical cell
+frames. So a watched notebook's tools hand their news to the watcher's own
+debounce instead of publishing it, and the tool's edit and the watcher's
+sight of it collapse into one frame — which picks up a person's *concurrent*
+edit in the same window for free. An unwatched notebook is unaffected: its
+tools publish immediately, because nothing else is going to.
+
+**The news never takes the edit with it.** The watchers are one object for
+the process and outlive the loop they were started on; folding onto a closed
+loop raises, and until it was caught it raised *inside the result wrapper* —
+every writing tool answering `Event loop is closed` after doing its work
+perfectly well. An agent told its edit failed when it had not makes the edit
+again. So `fold` refuses a watch whose loop is closed or is not the one
+running now, and the announcement is wrapped besides: the edit is done and
+the answer is in hand by the time any of it runs.
+
+Worth saying because the unit tests were green through all of it. What found
+it was the integration suite against a real Jupyter server, and what made it
+findable was comparing the failures against the same suite at `HEAD` — a
+suite with twenty pre-existing failures tells you nothing until you know
+which twenty.
+
+Each URI of a burst is published as its own attempt. Inside one `try`, a
+frame that failed took the rest of the burst with it and made a publish that
+had reached somebody answer that nobody was told — and the caller counts
+that answer, reading `False` as "nothing is listening".
+
+**A debounce must not decide anything by reading a clock.** Two Windows CI
+jobs failed on a suite green everywhere else, and the cause is not really
+Windows: asyncio runs a timer once the loop's time is within one *clock
+resolution* of its deadline, and on Windows that resolution is about 16 ms —
+so a 50 ms debounce fires with its own deadline still in the future. The
+check for "a later timer has taken over this burst" read that deadline,
+decided the firing was premature and declined, and the notification never
+arrived. It is a generation counter now: arming advances it, a firing
+carries the number it was armed with, and only the current one announces.
+The same race exists on Linux; a finer resolution merely makes it rare.
+
+The debounce has a ceiling (`MAX_WAIT_SECONDS`, 2 s) now that the server's
+own edits feed it. A debounce with no ceiling is starvation waiting for a
+fast enough typist: every keystroke pushes the timer back and a subscriber
+hears nothing until the typing stops, which in a notebook two agents are
+working in may be never.
+
+**Measured on prod1 with 2.1.7, 2026-09-05.** A 2025-11-25 client subscribes
+to the Welcome notebook and to two of its cells by id, and overwrites one:
+off the raw wire, `notebook://welcome` and `notebook://welcome/cells/<id>`,
+one frame each, nothing for the other subscribed cell. Then a person edits
+that same cell through the Spacer collaboration socket, and the subscriber
+hears the notebook and that cell in **0.35 s** — a frame naming the cell
+somebody typed in, from a change this server did not make.
+
+The image **asserts** `watchers.fold` at build time, beside the assertions
+for the extensions and the sandbox client. A wheel too old to fold now fails
+the build rather than deploying into a silence nobody would look for.
+
+:::note Where the cell ids come from
+
+Not from `read_notebook`, which answers a text summary. A client is handed a
+cell id on `read_cell`'s own `_meta`, under `io.jupyter-mcp/cell_id`, put
+there by the resolver that turned an index into a cell.
+
+:::
+
+:::caution An open source fix is not deployed by deploying
+
+The image builds **this** service from source — the build context is
+`k8s/services`, so `pip install ./jupyter-mcp-server` is the gateway package
+— and takes the open source `jupyter_mcp_server` the worker runs from
+**PyPI**, through the dependency `jupyter-mcp-server>=2.1.5`. So a fix in the
+open source repository is invisible here until that wheel is released, and a
+redeploy will look exactly like a fix that did not work. It cost half an hour
+on 2026-09-05: the subscription fix passed in process, the walk against prod1
+failed identically afterwards, and the ingress and the proxy were both
+exonerated before the pod was asked what it was actually running.
+
+```bash
+kubectl exec -n datalayer-api deploy/datalayer-jupyter-mcp-server -- \
+  python -c "import importlib.metadata as m; print(m.version('jupyter-mcp-server'))"
+```
+
+Ask the pod that before believing an open source change is live.
+:::
+
+### A disconnected agent stops within seconds, not within the hour
+
+Disconnecting an agent revokes its grant, and the refresh token stops working
+at once. The **access token it already holds** was another matter: this
+gateway verifies the signature, the issuer, the expiry and the audience, and
+asked nobody whether the consent behind the token still stood — so every call
+that token made went through until it expired, up to an hour. The disconnect
+route says as much in its own docstring, so the trade was deliberate; it is
+not what a person means by *disconnect*.
+
+IAM now stamps `grant_uid` on the tokens it mints from a grant and answers,
+to platform services only, whether that grant is live. The gateway asks
+before it judges a call and remembers the answer for ten seconds
+(`LIVENESS_TTL_SECONDS`), so the question costs a round trip occasionally
+rather than on every call. The honest claim is **within seconds**, not "on
+the very next request": the alternative buys a fraction of a second and
+spends a round trip on every call in the platform.
+
+A refusal is `grant_revoked` in `mcp.refusals`, and the agent is told the
+connection was disconnected and to authenticate again.
+
+**The card goes too.** `GET /api/mcp/v1/activity` lists the clients that
+called today from the audit rows, and a disconnected agent had called today
+— so its card outlived the disconnection until midnight, saying the opposite
+of what the person had just done. The route now asks IAM, with the caller's
+own token, which of their agents are still connected (`GET
+/api/iam/v1/oauth/connected-agents`, the Settings page's own route) and drops
+a delegated client that is not among them; the answer is cached with the rest
+of the panel, five seconds. A personal access token and a service agent are
+never on that list and are never dropped by it, and an IAM that does not
+answer lists everyone — an outage must not read as "all disconnected". The
+agent's sandboxes stay in the sessions panel until they are reaped: a
+disconnection ends the agent's authority, not the runtime.
+
+Two things it deliberately does not do:
+
+- **A token that names no grant is never asked about.** A personal access
+  token and a service-agent key are not grants and were never in question.
+- **An IAM that cannot be reached does not refuse.** A token good in every
+  other way is stopped only when IAM *says* the grant is gone. An outage that
+  logged every agent out would be a worse failure than the hour this
+  shortens, and it is the behaviour that was in place before the question
+  existed. A failure is not remembered as an answer either, so one blip
+  cannot let a revoked agent run for the whole window.
+
+### External sandboxes
+
+A sandbox at Daytona, E2B or Modal is bound like any other: the same
+handle, the same `SANDBOX_LOST`, the same quota. Two things differ.
+
+**Transport.** Runtimes reaches an external sandbox either through the
+provider's HTTPS and WebSocket ingress to a real Jupyter server
+(`provider-ingress`), or through the provider's own execution API
+(`direct`). A direct sandbox has no Jupyter server behind it, so every tool
+that reaches for one — files, kernels, notebook cells — has nothing to
+reach. The gateway keeps the runtime's latest word on a live binding, the
+transport among it, and refuses those tools with `transport_direct`, naming
+`execute_code` as what works and `launch_sandbox` as the way to a sandbox
+with a Jupyter server. Counted in `mcp.refusals`.
+
+**Cancelling a running cell.** A task's `execute` step runs the code in a
+thread, which nothing outside that thread can stop. While it runs, the
+durable worker asks the engine every two seconds whether the run was
+cancelled — from any replica, since the engine's record is shared — and
+interrupts the kernel through the runtime's sandbox client the moment it
+was. A ten-minute cell a person had already given up on used to keep
+computing until it finished on its own.
+
+### The follower, and why it never ran
+
+Every execution the gateway forwards names the session's sandbox in the
+request's `_meta`, and a hook in the worker makes that sandbox the active one
+— attaching by name when this worker never launched it, which is what lets an
+execution land on whichever replica serves it.
+
+**It asked for an attribute that does not exist.** The hook read `manager` off
+the sandboxes extension; the extension publishes its registry as `sandboxes`,
+a property it exposes precisely so nothing downstream reaches for `_manager`.
+So `getattr` answered `None` and the hook returned without doing anything, on
+every execution, on every deployment.
+
+What that looked like on prod1 on 2026-09-05: the gateway launched a
+session's default sandbox and the binding came back `active`, and
+`print(6*7)` answered **no output and no error**. A tool that fails silently
+cannot be told apart from a program that printed nothing.
+
+Neither package's tests could see it. The extension's do not know this
+gateway exists; this gateway's faked the manager and never asked where a real
+one comes from. The test that holds it now reads the attribute name off the
+real extension class, so a rename on either side fails rather than returning
+quietly. Re-walked after the fix, `print(6*7)` answers **42**.
+
+A second defect sat behind it, in `code-sandboxes`: `DatalayerSandbox._adopt`
+marked a sandbox started because the sandbox *is* running, and left
+`agent_runtimes` with no kernel client, so the first execution answered
+`Kernel client is not started`. `from_id` connects now; `list_all` does not,
+because listing thirty runtimes must not open thirty kernel connections, and
+`run_code` connects on demand. That half reaches the image with the next
+`code-sandboxes` release.
+
+`code-sandboxes` 1.4.3 carries that half, and the image asserts it at build
+time beside the other floors: a wheel too old to connect to a runtime it
+adopted fails the build rather than deploying into silence.
+
+### The listing agrees with the session
+
+`list_sandboxes` answers about the *worker's* registry — what that process
+launched. The session's sandbox is the gateway's record, and the two differ
+whenever the gateway launched it or another replica did. So a session whose
+`execute_code` had just run was told by `list_sandboxes` that it had no
+sandbox, while `launch_sandbox` said it already had one.
+
+The gateway completes the answer now: the session's sandbox is **added** to
+what the worker knew, never substituted for it, because the worker's entries
+carry which notebooks are attached and dropping those would trade one wrong
+answer for another.
+
+:::note Three places, and the first two looked right
+
+The same fact had to be wired through the decoration, the lookup, and
+`_wanted` — the gate deciding whether this layer looks at an answer at all,
+where a `False` forwards the body byte for byte. The lookup reached for
+`self.sessions` on the *rewriter* rather than on the layer it was handed, and
+the `except` beneath it swallowed the `AttributeError`. Each of the first two
+passed its unit tests and answered an unchanged listing on prod1. All three
+are held by tests that run the thing rather than read its source.
+
+:::
+
+**Walked on prod1 on 2026-09-05**, with every binding cleared first. A
+session that has never had a sandbox: `list_sandboxes` answers `[]`,
+`print(6*7)` answers **42**, `list_sandboxes` then names the session's
+sandbox as `active` and `running`, and `launch_sandbox` says the session
+already has one. Three tools, one answer, and state kept across calls.
+
+### Who writes the outputs
+
+The runtime image carries `jupyter-server-nbmodel`, enabled, and its
+`/api/kernels/<id>/execute` route is served: read from inside a deployed
+runtime on 2026-09-05, `POST` there answers **202 Accepted**.
+
+Nothing goes through it yet. The worker drives the kernel itself over a
+websocket and writes the outputs into the document, so the outputs stop when
+the worker stops. Executing through the runtime's own route would put the
+writing on the far side of that loss, which is what "a task survives the
+process driving it, with the outputs the runtime already wrote still in the
+notebook" asks for.
+
+:::caution Probing that route
+
+The kernel id in the path must match Jupyter's own uuid pattern. With a
+made-up id Tornado never reaches the route and answers **404**, which reads
+exactly like an extension that was never loaded. Ask `/api/kernels` for a
+real id first.
+
+:::
+
+### Execution follows the session's sandbox
+
+Drilled on prod1 and r1 on 2026-09-06. Restart the gateway deployment under a
+live session and the runtime pod is the same pod on the other side, with the
+same creation time; the next call resolves the same sandbox handle and is
+answered. Neither the pod nor the binding is a casualty of a deploy.
+
+**The session's memory is not**, and chasing that found something larger.
+
+Runtimes come from a **warm pool**: a pod keeps its own name and is *claimed*
+by a logical runtime. The pod claimed by the session's runtime is stable
+across a rollout. But `socket.gethostname()` inside the kernel names a
+*different* pool pod — before the rollout and again after, a different one
+each time. The session's own sandbox is running, and nothing runs on it.
+
+**The steering has never worked on this SDK.** The gateway stamps
+`io.datalayer/sandbox` on the request and the worker's hook is meant to read
+it back off `ctx.request_context.meta`. Measured against a real MCP 2 server —
+a `_meta` carrying the key and a tool that prints what it got — that meta is
+**`None`** by the time a tool sees it. So the hook read nothing on every
+request, and the worker ran the code on whatever its manager happened to
+hold.
+
+Three fixes are deployed, each necessary. The extractor reads a plain mapping,
+because `RequestParamsMeta` is a `TypedDict` and not a model with extras. The
+gateway also sends the name in an `x-datalayer-sandbox` header, which is what
+actually crosses — the proxy forwards the scope's headers verbatim, the way
+`traceparent` already travels — read by one ASGI middleware in the worker.
+And that middleware no longer sits inside the telemetry wrapper, which
+returns early when no collector is configured: *where a session's code runs*
+must not depend on whether spans are exported.
+
+**The last link was a name.** Extensions are registered under their *manifest*
+name and the follower asked for the *entry-point* name, so the lookup answered
+`None` and the follower gave up — silently, because each of its four ways of
+doing nothing was a bare `return`. Three deployments went on guessing between
+them. Each now says which, and the next deploy answered it in one line:
+
+```
+🧭 execute_code names sandbox [01m1twfv…] and there is no sandbox manager to follow it with
+```
+
+A line per decision costs one log entry per execution, and is why this took
+one more deploy rather than five.
+
+**Walked on prod1 and r1 on 2026-09-06, and it holds.** The session's binding
+names a runtime; the kernel's own `socket.gethostname()` is the pod that
+runtime claimed. Restart the gateway under the session and afterwards it is
+the same runtime, the same pod, and the variable set beforehand is still
+there.
+
+So a deploy no longer empties a session's memory, and a grantee attaching to
+a shared sandbox reaches the sandbox rather than a pool pod of its own.
+
+### Snapshots, and why there is no restore tool
+
+A sandbox is the one place a session's state is *not* recoverable. The
+notebook is in the Spacer, the binding is in `mcp-gateway`, a lost sandbox can
+be relaunched — but what is loaded inside one, the data read and the packages
+installed and the model fitted, lives nowhere else. That is what `on_lost:
+relaunch` means when it says the replacement is empty.
+
+`snapshot_sandbox` saves it. It costs `sandboxes:manage`, not `code:execute`:
+it writes storage the account is billed for and produces something another
+session can be started from, so an agent granted "run this" may run it and may
+not leave a copy behind. `datalayer://snapshots` is the catalogue, fetched
+with the caller's own token — a service credential there would list
+everybody's saved working state — and it costs `data:read`, because finding
+out which snapshots exist is not making one.
+
+**Restoring is `launch_sandbox(snapshot_name=…)`, not a tool of its own.** A
+launch is the door where the gateway reserves the session, counts the sandbox
+against the quota and checks the provider against policy. A `restore_snapshot`
+beside it would be a second way to obtain a sandbox and a second place to
+remember all three — and the gateway intercepts by tool name, so the one it
+did not know about is the one that skips the checks.
+
+**`restore_notebook` is not that tool.** It restores a *notebook version* —
+the Spacer's kept copy of a notebook's content — and touches no sandbox.
+`snapshot_notebook`, `list_notebook_versions` and `restore_notebook` resolve
+a name the way `use_notebook` does and hand the uid to the Spacer with the
+caller's exchanged credential, so the Spacer decides who may and its `403`
+reaches the agent in words. A restore keeps what it replaces first, so it
+can itself be undone. They cost `notebooks:read` for the listing and
+`notebooks:write` for the two that change history — a notebook's history,
+not a sandbox's state, which is why they sit beside the editing tools and
+not here.
+
+**A sandbox started from a snapshot cannot also ask for `on_lost:
+relaunch`,** and that pair is refused. A relaunch is built from what the
+binding recorded — the alias, the provider, the environment — and a snapshot
+is not among them: the name an agent gives is resolved to a snapshot at
+launch time, and the same name can point at a different snapshot later. A
+relaunch is also silent, so the alternative is a sandbox that comes back
+empty after being asked for a saved state, found whenever somebody next
+looks for a variable. Launch with `on_lost: fail` and launch again with the
+same `snapshot_name` when you are told the sandbox is gone.
+
+Only sandboxes whose **Environment declares the `snapshot` capability** are
+offered the tool at all: it is filtered out of `tools/list` for a session
+whose sandbox cannot do it, and a call to it anyway is refused naming the
+capability. An agent on Modal never sees it — an external provider's
+environment never gets `snapshot` from the shared vocabulary.
+
+:::warning A capability nobody declares hides the tool from everybody
+
+This is per Environment, like `home-folder`, and it is opt-in. Every
+platform Environment shipped in `plane/etc/specs/runtime-environments`
+declares it; an Environment added without it will not offer
+`snapshot_sandbox` to any session, and nothing about that reads as an error
+— the tool is simply absent from `tools/list`.
+
+A **deployment** can take it away again: a snapshot is written to the shared
+filesystem, so the Operator turns `snapshot` off where
+`SHARED_FS_VOLUME_CLAIM_NAME` is unset, exactly as it does `home-folder`. On
+such a deployment no session reports the capability however the Environments
+are written, and a launch that requires it is refused rather than given a
+sandbox that cannot snapshot.
+
+`server/discover` is where to look. Under `io.jupyter-mcp/capabilities` it
+answers three things:
+
+| Field | Says |
+| --- | --- |
+| `known` | Every capability name the shared vocabulary defines — what exists at all |
+| `knownFamilies` | Prefixes with one member per thing they name. `contents.` is the only one: an Environment that brings a Content declares `contents.<uid>`, which no fixed list can hold |
+| `capabilities` | What **this session's** sandbox reported, which is empty when the session has no sandbox |
+
+A tool missing while its capability is in `known` and not in `capabilities`
+is an Environment that has not declared it, and not a broken gateway.
+
+:::
+
+## What it stores
+
+Three Solr collections belong to this service, all in the **AI** set beside
+what `ai-agents` owns, and all three are one recovery unit — the `mcp` scope,
+nested inside the wider `ai` one so the gateway can be restored without the
+rest of the AI plane. See [Solr](/services/system/solr/) and
+[Continuity](/operations/continuity/).
+
+| Collection | Written today by | Holds |
+| --- | --- | --- |
+| `mcp-gateway` | the gateway, and **IAM** | Handles (`nb_…` notebooks, `sb_…` sandbox sessions, `ts_…` toolsets), the worker directory, rate windows, fired alerts, the scheduler's leases — and IAM's MCP policies and alert rules |
+| `mcp-tasks` | read by the gateway | The task projection. `GET /api/mcp/v1/notebooks/{uid}/tasks` and the Running now panel answer from this collection, so every replica gives the same answer. Tasks are *created* by whatever runs them — [Durable](/services/system/durable/) — so the gateway reads and ends them rather than writing new ones |
+| `mcp-audit` | the gateway | The append-only audit trail, one row per call and decision, served by `GET /api/mcp/v1/audit`. Rows carry `decision`, `outcome`, `trace_id`, `replica`, `protocol_version`, `refusal_reason`, `duration_ms` and a hash of the arguments rather than the arguments |
+
+`mcp-gateway` holds eight document families, told apart by `type_s`:
+
+| `type_s` | Written by | Holds |
+| --- | --- | --- |
+| `mcp_binding` | the gateway | A handle returned to an agent, and its lifecycle |
+| `mcp_worker` | the gateway | Which replica holds the connection for one user's sandbox |
+| `mcp_rate_window` | the gateway | A per-subject counter over one window |
+| `mcp_alert_event` | the gateway | A rule that fired: what, when, whose, acknowledged by |
+| `mcp_lease` | the gateway | Which replica is doing one periodic job right now |
+| `mcp_policy` | **IAM** | One layer's rules for one subject — see [Policy layers](#policy-layers) |
+| `mcp_alert_rule` | **IAM** | What an organization asked to be told about — see [Alert rules](#alert-rules) |
+| `mcp_audit_settings` | **IAM** | How long an organization keeps its audit and where a copy goes — see [Audit settings](#audit-settings) |
+
+The last three are IAM's to write and the gateway never writes them; they live
+here rather than in an IAM collection because a rule and the events it
+produces are one question, and answering it across two collections is a join
+nobody would write.
+
+Every record carries a version, so a write that names the version it read fails
+when the record moved in between, and every record carries an expiry. Nothing
+here is a cache: it is what a request must be able to find again on another
+pod.
+
+:::info The mapping is generated, versioned and fingerprinted
+`MCP_MAPPING_VERSION` is **9**. The mapping in `mcp_mappings.json` is
+generated from the DAOs' own codecs and a test fails when the checked-in copy
+disagrees with the code, so a field added without a version bump cannot ship.
+Every version so far has been additive — a document written under an earlier
+one reads back correctly — so no deployment needs a reindex to take an
+upgrade.
+:::
+
+The store is chosen by `DATALAYER_MCP_STORE`. Unset, Solr is used when
+`DATALAYER_SOLR_ZK_HOST` is configured and an in-memory store otherwise — which
+is right for `plane local` and wrong in a cluster, where it would give every
+replica its own idea of who holds what.
+
+One rule decides it, for the bindings, the audit ledger, the task projection
+and the alert state together. They are separate collections but never separate
+answers: a deployment whose audit went to Solr while its bindings stayed in
+the process would be a gateway half in each mode, and nothing would say so.
+`readyz` reports the answer as `records`, and [Turning it
+off](#turning-it-off) is what to read before changing it.
+
+```bash
+plane solr-backups-apply mcp      # the three collections as one backup unit
+plane solr-backups-status mcp
+plane solr-restore mcp
+
+plane solr-backups-apply ai       # the wider unit: these three and ai-agents'
+```
+
+:::note A refusal is a decision, not an error
+`decision` records what *policy* did. A call for a tool that does not exist is
+`decision=allowed, outcome=is_error`: nothing refused it, and the worker
+answered with an error. A call naming a handle bound to nobody is
+`decision=refused, refusal_reason=unknown_handle`, and never reaches a worker.
+Reading the first as a missing refusal is the mistake to avoid when auditing.
+:::
+
+## Deploy
+
+The gateway needs IAM and Spacer to be up, and the three `mcp-*` collections
+to exist. Create them with `plane solr-init` and choose **4) AI**, which
+creates only that set rather than issuing a create against every Core
+collection the cluster already has. Without `mcp-gateway` the gateway starts,
+serves `/api/mcp/healthz`, and never becomes ready:
+`readyz` reports `store … Unknown collection: mcp-gateway`, the pods stay
+`0/1`, and the ingress answers `no available server`. Build and push the image from the
+Services repository:
+
+```bash
+cd plane/etc/dockerfiles/datalayer-jupyter-mcp-server
+make build-dev
+make push
+```
+
+The build asserts that a worker could start — the `spaces` and `sandboxes`
+extensions are on the entry point, `datalayer-core` is new enough, and the
+traceback hook installs — so a missing piece fails the build rather than
+showing up hours later as every user getting the wrong tool list.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-jupyter-mcp-server
+kubectl rollout status deployment/datalayer-jupyter-mcp-server -n datalayer-api
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-jupyter-mcp-server.sh
+```
+  </TabItem>
+</Tabs>
+
+`up.sh` passes `DATALAYER_JUPYTER_MCP_SERVER_URL` (default
+`https://mcp.datalayer.run/mcp`), the IAM, Spacer, Runtimes and Contents URLs,
+the Solr identity, the JWT settings and the OTLP endpoints. It leaves the
+scaling values, the worker limits and the rate limits at their chart defaults.
+`plane up` runs a fixed `helm upgrade`, so anything it does not pass is changed
+in the chart's `values.yaml` (or with a `helm upgrade --reuse-values --set` of
+your own) rather than on the `plane` command line.
+
+### Local development
+
+`plane local` starts the gateway beside IAM, Spacer, Runtimes and Contents on
+`http://localhost:4404`, validates `/api/mcp/healthz` and prints the
+`claude mcp add datalayer-local --transport http http://localhost:4404/mcp`
+line to connect a client to it. It runs on the in-memory store.
+
+## Verify
+
+### The acceptance run
+
+`tests/test_acceptance.py` drives a deployed gateway the way an agent does —
+both protocol versions, a handle across replicas, the audit export, the
+activity panel, a disconnection, a trace — and skips loudly rather than
+passing vacuously: every skip names the variable that would unlock it, and
+asking for the file with nothing configured is a failure, not a green run.
+
+```bash
+export DATALAYER_MCP_ACCEPTANCE_URL=https://mcp.datalayer.run
+export DATALAYER_MCP_E2E_TOKEN=…            # the run's own credential; a PAT will do
+export DATALAYER_MCP_E2E_SECOND_TOKEN=…     # an OAuth token of the same person's, from a real
+                                            # consent — it is the agent that gets disconnected
+export DATALAYER_MCP_ACCEPTANCE_REPLICAS=2  # say so only when the deployment has two
+pytest tests/test_acceptance.py -v
+```
+
+The second token has to be a *grant* — a personal access token names none
+and cannot be disconnected — and it is spent by the run: the disconnection
+revokes it. Mint another for the next run. A client that still performs the
+handshake (2025-11-25) opens a session first; without one the SDK answers
+`400 Missing session ID`, which is the gateway being right.
+
+```bash
+kubectl get pods,service,ingress -n datalayer-api -l app=jupyter-mcp-server
+kubectl logs -n datalayer-api -l app=jupyter-mcp-server
+```
+
+The gateway is served on a host of its own, so it has a certificate of its own,
+declared by the chart rather than inferred from ingress annotations — the
+ingress deliberately carries no `cert-manager.io/*` annotation, because two
+owners for one secret is how a certificate ends up repeatedly reissued.
+
+```bash
+kubectl describe certificate mcp.datalayer.run-datalayer-api-cert -n datalayer-api
+kubectl get certificate,certificaterequest,order,challenge -n datalayer-api | grep mcp
+```
+
+`Ready: True` means the certificate is issued. While it is still being issued
+the browser reports the site as not secure, and the events of the resource say
+what the ACME challenge is waiting for — most often DNS for the new host not
+yet resolving to the ingress.
+
+```bash
+curl -s https://mcp.datalayer.run/api/mcp/version
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '.dependencies[] | {name, required, ready, detail}'
+curl -s https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp
+curl -s https://mcp.datalayer.run/.well-known/mcp-server | jq '{name, version, protocolVersions}'
+```
+
+The third is the document an MCP client reads to discover where to
+authenticate. If it does not answer, no agent can connect. The fourth is the
+Server Card: what this server is, before anyone authenticates.
+
+### Calling it by hand
+
+A `tools/list` at 2025-11-25 is an ordinary JSON-RPC POST:
+
+```bash
+curl -s https://mcp.datalayer.run/mcp \
+  -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+**2026-07-28 is not the same request with a different header.** There is no
+`initialize` handshake, so each call carries what the handshake used to
+establish, and repeats its method — and its tool name, for `tools/call` — in
+headers so a proxy can route without parsing a body it may not read:
+
+```bash
+curl -s https://mcp.datalayer.run/mcp \
+  -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "MCP-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+Omitting any of it is a `400` that names what is missing, and it is the
+server being correct:
+
+| Omission | Answer |
+| --- | --- |
+| no `params._meta` envelope | `params._meta must be an object carrying the required … envelope keys` |
+| no `MCP-Method` header | `mcp-method header does not match the request body's method` |
+| no `MCP-Name` on a `tools/call` | `mcp-name header does not match the request body's 'name' parameter` |
+
+Reading those as a gateway that refuses 2026-07-28 is the mistake to avoid;
+they are the gateway enforcing the version it advertises.
+
+### Authentication end to end
+
+An unauthenticated request must be refused *and* must say where to
+authenticate:
+
+```bash
+curl -i https://mcp.datalayer.run/mcp
+```
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="Datalayer",
+  resource_metadata="https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp"
+```
+
+A `401` without that header means a client will fail instead of starting the
+OAuth flow. With a personal access token:
+
+```bash
+curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  https://mcp.datalayer.run/api/mcp/v1/bindings
+```
+
+## Scaling and the drain
+
+The gateway is one Deployment whose replicas are **interchangeable**, and the
+chart says so.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `jupyterMcpServer.replicaCount` | `2` | The floor. Applied only when autoscaling is off — with the HPA enabled the Deployment omits `replicas` so the two do not fight |
+| `jupyterMcpServer.autoscaling` | `enabled`, `minReplicas: 2`, `maxReplicas: 8`, `targetCPUUtilizationPercentage: 70` | An `autoscaling/v2` HPA on CPU, with `scaleDown.stabilizationWindowSeconds: 600` so a quiet minute does not take a pod away from the sessions on it |
+| `jupyterMcpServer.podDisruptionBudget` | `enabled`, `minAvailable: 1` | A node drain never empties the service |
+| `jupyterMcpServer.topologySpread` | `enabled` | `maxSkew: 1` across `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, `ScheduleAnyway` so a small cluster still schedules rather than leaving a replica `Pending` |
+| `strategy.rollingUpdate` | `maxSurge: 1`, `maxUnavailable: 0` | A rolling upgrade is the ordinary case; the new pod is ready before an old one goes |
+| `jupyterMcpServer.terminationGracePeriodSeconds` | `900` | Long enough to finish the streamed responses a pod is holding |
+| node affinity | `role.datalayer.io/api=true` (required) | The API node pool |
+| pod annotation | `karpenter.sh/do-not-disrupt: "true"` | Karpenter does not consolidate a pod holding sessions |
+
+The HPA scales on CPU only. The plan's request-rate and running-worker
+(`mcp.workers{state=running}`) targets are written into the template as a
+comment and are not wired: they need an external-metrics adapter over the OTEL
+service, which is not deployed.
+
+**What the first measurement showed (prod1, 2026-09-05).** The load harness
+(`tests/load/`) at 25 agents for 90 s against 1, 2 and 4 replicas gave 3.99,
+4.22 and 3.91 calls/s at a p95 of 11.8, 11.6 and 12.7 s — flat, and for a
+reason that is not the gateway's. Every agent in a run carries one
+credential, one credential is one user, and a user is **one worker process**:
+the ceiling is that worker's kernel, wherever the gateway puts it, and no
+number of replicas moves it. What the run does prove is that the session
+path holds *through* the gateway — the p95 did not degrade when every call
+to the one worker was forwarded across four pods. A measurement of capacity
+growing needs a credential per agent, which is a fixture the platform does
+not hand out yet. The run also counted 5% HTTP 500s, all one defect: a
+session's `last_used_at` touch is a compare-and-set, it was retried once,
+and under twenty-five agents on one session the retry lost too. It re-reads
+up to five times now, and a touch that keeps losing answers what was written
+last rather than failing the call. And getting the harness as far as a
+number found the four defects listed under *The first execution binds the
+session* and *No affinity at the edge*, none of which a one-process test
+could see.
+
+The two disruption runs, same day and shape (25 agents, two replicas, the
+disruption twenty seconds in): **losing one pod** cost 2 × 502 and 5
+in-flight timeouts out of 393 calls — that pod's requests in flight and
+little else; the survivor forgot the dead pod's directory entries on the
+first refused forward, and the agents' handle kept working. **A rolling
+restart** cost 23 × 502 and two timeouts out of 385: the pod being replaced
+kept serving requests forwarded *to* it while its worker children were
+already dying. A drain that stops accepting forwards before anything else,
+and re-registers nothing, is what closes that gap; the grace period alone
+does not.
+
+### No affinity at the edge
+
+The ingress round-robins. There is **no cookie affinity** and there are no
+single-replica idle timeouts, because affinity is a **directory lookup**, not a
+cookie: every worker is written into `mcp-gateway` keyed by user *and* by
+sandbox session, naming its replica and an address. A replica that is asked for
+a worker another replica holds forwards the request there over the cluster
+network, carrying `x-datalayer-mcp-hop`; a replica that sees that header serves
+the request itself, so two stale entries can never bounce a request forever.
+
+**A replica that is not there is forgotten on the first refused connection.**
+Until 2026-09-05 an unreachable target answered `502 replica_unreachable` and
+said to retry — and kept saying it: a pod that went with a rollout stopped
+refreshing its entries, but they lived on for
+`DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` (default 180 s), and every session
+that pod held was a 502 for three minutes. That is not "losing that pod's
+in-flight requests and nothing else", which is the property the scale-out
+measurement exists to prove; prod1's first `initialize` after leaving
+standalone mode met exactly it. Now the replica that could not reach the
+target drops the directory entries that named it — the session's and the
+user's — and serves the request itself, which is what the entry expiring
+would have meant, three minutes later. The connection fails before any of the
+body is sent, so the fallback has the whole request. Expiry remains the
+backstop for an entry nobody asks about; `502 worker_unreachable` remains the
+answer when the local worker cannot be reached either.
+
+The ingress keeps `proxy-read-timeout` and `proxy-send-timeout` at `900` to
+match the pod's drain, and `proxy-buffering: off` so a streamed response is not
+collected at the edge. These are `nginx.ingress.kubernetes.io/*` annotations,
+as on the other Datalayer charts; under the default `datalayer-traefik` class
+they are inert and the equivalent limits are Traefik entrypoint settings.
+
+:::info `POD_IP` is what lets a forward leave the pod
+
+A replica registers itself at `DATALAYER_MCP_REPLICA_ADDRESS`, or at
+`http://$POD_IP:4404` when `POD_IP` is set, and at `http://127.0.0.1:4404`
+otherwise. The chart's Deployment sets `POD_IP` and `POD_NAME` from the
+downward API, which is what the cross-replica acceptance check on prod1
+(2026-09-05, two replicas, a handle issued by one and read six times through
+the other) relied on. Without it every replica registers the loopback address
+and a forward lands back on the pod that sent it — which then serves the
+request itself, correctly but on the wrong worker, so a session mid-execution
+can be answered by a second sandbox connection. A chart of your own needs the
+same:
+
+```yaml
+# values.yaml of the datalayer-jupyter-mcp-server chart
+jupyterMcpServer:
+  envValueFrom:
+    POD_IP:
+      fieldRef:
+        fieldPath: status.podIP
+```
+
+`POD_NAME` needs nothing: the replica names itself from `HOSTNAME`, which
+Kubernetes already sets to the pod name.
+:::
+
+### What a pod does when it is told to stop
+
+1. uvicorn stops accepting new connections and lets the in-flight requests and
+   streamed responses finish.
+2. The supervisor marks itself **draining**, so `/api/mcp/readyz` answers `503`
+   with `"draining": true`.
+3. Every worker-directory entry of this replica is given an expiry of *now*, so
+   no other replica forwards a request to a pod on its way out.
+4. Every worker on the pod is stopped and waited on, up to ten seconds each.
+
+Step 4 stops **every** worker, including one under a `working` task — only the
+idle reaper and the capacity eviction consult the task store first. Until runs
+live in a durable engine rather than in the worker's connection, a rolling
+upgrade ends the executions in flight on the pod being replaced. `maxSurge: 1` /
+`maxUnavailable: 0` and the 900 s grace keep that to the sessions of one pod at
+a time.
+
+Handles, sessions and rate windows survive all of it: they are in Solr, and a
+replica restarts empty and is serving in seconds.
+
+```bash
+kubectl scale deployment/datalayer-jupyter-mcp-server -n datalayer-api --replicas=4
+kubectl get hpa datalayer-jupyter-mcp-server -n datalayer-api
+kubectl get pdb datalayer-jupyter-mcp-server -n datalayer-api
+```
+
+To see which replica holds which worker, as a `platform_admin`:
+
+```bash
+curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  https://mcp.datalayer.run/api/mcp/v1/operations/workers | jq
+```
+
+## Health and readiness
+
+| Route | Answers |
+| --- | --- |
+| `/api/mcp/healthz` | Liveness: the process is up. Version and replica name, nothing else |
+| `/api/mcp/readyz` | Readiness: may traffic be sent here. `200` / `503`, plus every dependency on its own line |
+
+The body also carries `mode` — `standalone` or `platform`, what the deployment
+asked for — and `records` — `memory` or `solr`, where the bindings, tasks,
+audit rows and alert state actually went. Ask for both. They agree in
+standalone; in platform mode `"records": "memory"` means the replicas do not
+share a session, and it is the one misconfiguration every other check here
+reports as healthy. See [Turning it off](#turning-it-off).
+
+Readiness is gated on what **every** request needs: IAM (to verify a token) and
+the store (to find a handle). Spacer, Runtimes, Contents, the audit ledger, the
+task projection and the workflow backend are *reported* and never gate — an outage in Contents must
+read as "Contents unavailable" in the Contents tools, not as a gateway that
+stopped serving notebooks. OTEL is listed and **never probed**: telemetry is
+never a readiness dependency. A draining replica is not ready.
+
+The `workflows` line says where durable work goes, and whether it can be
+accepted. The gateway falls back to the in-process fake whenever
+`DATALAYER_DURABLE_URL` is unset — the rule the store and the ledger already
+follow — so a deployment in **platform** mode with that variable empty keeps
+every workflow in one process and loses them on restart, while `mode:
+platform` says the opposite. That reads as not-ready, because it is a
+misconfiguration rather than an intent; the same fake in standalone mode is
+what that deployment asked for, and reads as ready with a detail saying
+nothing survives a restart. A real `datalayer-durable` is ready when it says
+it can durably accept work — it answers that honestly, so a launched engine
+whose system database cannot be read says `durable: false`, and a gateway that
+called it ready anyway would repeat the failure one layer up. None of this
+gates: a durable outage costs the long-running calls and leaves everything
+else working, and gating readiness on it would turn that into a total outage.
+
+The `store`, `audit` and `tasks` lines each name **which implementation
+answered**, not only whether it did, and that is the point of them. Each lives
+in its own Solr collection, so the bindings collection being healthy says
+nothing about the other two — a deployment whose task collection is missing
+would otherwise serve a green page and lose every long-running call. And a
+line reading `MemoryTaskStore` is perfectly healthy *and* means tasks do not
+survive a restart and are invisible to the other replicas, which is the same
+warning `"records": "memory"` gives above and worth reading twice.
+
+Each dependency probe is bounded at three seconds
+(`PROBE_TIMEOUT_SECONDS`), and they run concurrently, so a hung dependency is
+reported as hung rather than hanging the endpoint. **That bound is also the
+endpoint's worst case**: one unreachable dependency — including an optional
+one, which does not gate readiness — costs the full three seconds before
+`readyz` answers `200`.
+
+:::warning Give the probe more time than the endpoint takes
+
+The Kubernetes default `timeoutSeconds` is **1**, which is shorter than
+`readyz` is designed to take. Left at the default, the kubelet cuts the probe
+off before the endpoint can answer:
+
+```
+Readiness probe failed: Get "http://10.244.2.137:4404/api/mcp/readyz":
+  context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+```
+
+The pods stay `0/1` with a healthy process inside them and the ingress answers
+`no available server`, while `curl` from inside the pod returns `200`. The
+chart states the budget rather than inheriting it:
+
+```yaml
+# values.yaml of the datalayer-jupyter-mcp-server chart
+jupyterMcpServer:
+  readinessPath: /api/mcp/readyz
+  readinessTimeoutSeconds: 5   # must exceed PROBE_TIMEOUT_SECONDS (3)
+  livenessTimeoutSeconds: 2    # healthz reaches nothing
+```
+
+Raise both together if `PROBE_TIMEOUT_SECONDS` ever rises. This bit on prod1
+when `datalayer-runtimes` — an *optional* dependency — was failing its own
+ping, which is how an optional dependency being down took the gateway out of
+service entirely.
+:::
+
+To see which dependency is slow rather than guessing:
+
+```bash
+kubectl -n datalayer-api exec deploy/datalayer-jupyter-mcp-server -- \
+  python -c "import urllib.request,json;\
+print(json.dumps(json.load(urllib.request.urlopen(\
+'http://127.0.0.1:4404/api/mcp/readyz')),indent=2))"
+```
+
+Each line names the dependency, whether it is `required`, whether it is
+`configured`, whether it is `ready`, and the detail — `ready`, `timed out`, or
+the store's own message such as `Unknown collection: mcp-gateway`.
+
+A configuration mistake is one log line at the top of the log, not a permission
+error an hour later: a malformed URL is fatal and the process refuses to start
+naming the setting; a missing one is an error line and a readiness report.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DATALAYER_JUPYTER_MCP_SERVER_URL` | The resource identifier of this gateway: what a token's `aud` must name, what the protected-resource metadata publishes, and what the ingress host is derived from — so the host and the audience cannot drift apart. Default `https://mcp.datalayer.run/mcp` |
+| `DATALAYER_JUPYTER_MCP_VERIFY_AUDIENCE` | Refuse a token issued for another resource; default `true`. Turning it off is for a local run against a token minted before the resource URL was settled, never for a deployment |
+| `DATALAYER_IAM_URL` | The authorization server: token verification metadata, the RFC 8693 exchange, and the readiness probe. Required |
+| `DATALAYER_IAM_API_KEY` | Proves to IAM that this is a Datalayer service, which is what lets it exchange a caller's gateway token for one the rest of the platform accepts. Without it, OAuth callers reach nothing. `DATALAYER_OPERATOR_API_KEY` is accepted as a fallback. Supply it through a Kubernetes Secret |
+| `DATALAYER_SPACER_URL` | Where notebooks and their permissions live; defaults to `DATALAYER_IAM_URL` |
+| `DATALAYER_RUNTIMES_URL` | Where a sandbox is asked for. Provider-neutral: the same URL launches an internal runtime or an external one, and the gateway never sees which SDK is behind it. Defaults to `DATALAYER_IAM_URL` |
+| `DATALAYER_CONTENTS_URL` | Where Contents runs — the runtimes plane, at its own public URL (`https://r1.datalayer.run`). No fallback, and a value equal to `DATALAYER_IAM_URL` is reported as a misconfiguration: a gateway that does not know where Contents is has no Contents, and readiness says so |
+| `DATALAYER_AI_AGENTS_URL` | Where activity events are posted, so what an agent does appears in the feed; defaults to `DATALAYER_IAM_URL`. Every post is best-effort and off the request path |
+| `DATALAYER_MCP_STANDALONE` | Run the MCP endpoint with none of the platform machinery behind it — see [Two modes](#two-modes-and-which-one-you-are-running). `true`/`1`/`yes`/`on`; anything else, including `false`, is off. It wins over `DATALAYER_MCP_STORE` below, and it requires `replicaCount: 1`. Turning it **off** does not by itself move the records out of the process — set `DATALAYER_SOLR_ZK_HOST` in the same change, or the chart refuses to render. See [Turning it off](#turning-it-off) |
+| `DATALAYER_MCP_STORE` | `solr` in a deployment, `memory` for a single local process. Unset, Solr is used when `DATALAYER_SOLR_ZK_HOST` is set and memory otherwise. Any other value refuses to start. Ignored under `DATALAYER_MCP_STANDALONE` |
+| `DATALAYER_SOLR_ZK_HOST` | The ZooKeeper ensemble the `mcp-gateway` DAO connects through |
+| `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | The Solr identity, supplied through Kubernetes Secrets |
+| `DATALAYER_MCP_MAX_WORKERS` | The most worker processes one replica runs at once; default `50`. Reached, the least recently used idle worker without a working task is stopped to make room, and a caller who cannot be given one is refused `503` with the reason. This is the density limit of a replica — capacity is added by adding pods, not by a bigger pod |
+| `DATALAYER_MCP_WORKER_IDLE_TIMEOUT` | How long a worker may sit unused before it is reclaimed; default `900` seconds. A worker whose session has a task `working` is never idle |
+| `DATALAYER_MCP_WORKER_START_TIMEOUT` | How long to wait for a new worker to answer before giving up on it and quoting its last output; default `30` seconds |
+| `DATALAYER_MCP_WORKER_ENTRY_TTL_SECONDS` | How long a worker-directory entry lives after its last heartbeat; default `180`. A replica that is gone stops refreshing, its entries expire, and the caller gets a fresh worker rather than a dead address |
+| `DATALAYER_MCP_REPLICA_ADDRESS` | The address other replicas forward to. Defaults to `http://$POD_IP:4404`, or loopback when `POD_IP` is unset — see [the warning above](#no-affinity-at-the-edge) |
+| `DATALAYER_MCP_BINDING_TTL_SECONDS` | How long a handle lives after it was last used, refreshed on every use; default `86400` |
+| `DATALAYER_MCP_RESERVATION_TTL_SECONDS` | How long a *reservation* may sit before another caller may take the session back; default `300`. A reservation says "a launch is in flight", which is a question of seconds — it once inherited the binding's day-long lifetime, so a launch that never concluded blocked every later launch for that session for a day. `abandon()` returns it when the gateway sees the failure; this bounds the case where nothing sees it because the replica died mid-launch |
+| `DATALAYER_MCP_POLICY_TTL` | How long a policy layer is cached; default `30` seconds. Deliberately short: a policy is what somebody changes *in order to* stop an agent, and a revocation that takes ten minutes to arrive is one the person watching will assume did not work. See [Policy layers](#policy-layers) |
+| `DATALAYER_MCP_AUDIT_RETENTION_DAYS` | Per-plan audit retention, as `plan:days` pairs — `free:30,pro:365`. A malformed pair is skipped rather than raising, because this is read at import and a typo must not be a crash loop; a non-positive value is skipped too, since audit readable for no time at all can only be a mistake |
+| `DATALAYER_DURABLE_URL` | Where [Durable](/services/system/durable/) is, at its own public URL on the runtimes plane. Left empty the gateway falls back to an in-process workflow backend that reports `durable: false` — correct for a cluster that has not deployed it, and the thing not to mistake for one that has |
+| `DATALAYER_DURABLE_API_KEY` | What the gateway proves itself to Durable with. Falls back to `DATALAYER_JUPYTER_MCP_SERVER_API_KEY`, which is the name Durable knows this caller by |
+| `DATALAYER_MCP_CALLS_PER_MINUTE_PER_USER` | Tool calls one user may make in a minute; default `300`, `0` no limit. The refusal is a JSON-RPC error carrying `retry_after_ms`, and the windows live in `mcp-gateway` so the limit means the same thing however many pods answer |
+| `DATALAYER_MCP_CALLS_PER_MINUTE_PER_AGENT` | The same, per `client_id`; default `120` |
+| `DATALAYER_MCP_DEPENDENCY_TIMEOUT` | How long a call to a platform dependency may take before it is a timeout; default `10` seconds |
+| `DATALAYER_SANDBOX_ENVIRONMENT` | The Datalayer environment a sandbox is launched into; default `ai-agents-env`. Set it where a cluster offers different ones, such as a GPU environment — the environments differ per cluster, and picking one that does not exist fails at the first cell rather than at startup |
+| `JUPYTER_MCP_TOKEN_VERIFIER_CLASS` | How the worker authenticates clients; `datalayer_jupyter_mcp_server.verifier:DatalayerTokenVerifier`, which accepts OAuth access tokens and personal access tokens |
+| `DATALAYER_CORS_ORIGIN` | The browser origins allowed on the REST routes, **comma-separated**; default `*`. See below — this variable took the console down once |
+| `PORT` | The port uvicorn listens on inside the pod; default `4404`, and what the chart's `jupyterMcpServer.port` must agree with |
+| `LOG_LEVEL` | Accepted in either spelling; an unknown value falls back to `INFO` rather than stopping the service |
+| `DATALAYER_MCP_LOG_COLOR` | Whether the request log is coloured; default `true`, and `NO_COLOR` turns it off |
+| standard `DATALAYER_JWT_*` variables | `DATALAYER_JWT_SECRET`, `_ALGORITHM`, `_ISSUER`, `_CACHE_VALIDATE` — token verification, shared with IAM |
+| standard `OTEL_*` variables | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `DATALAYER_OTEL_API_KEY`, `OTEL_PYTHON_LOG_LEVEL`, `OTEL_SDK_DISABLED`. Validated and reported by health; see [Observability](#observability) for what is exported today |
+
+One variable is set **by** the gateway rather than read by it:
+`JUPYTER_MCP_STATEFUL=true` is put into every worker's environment. The open
+source server defaults to stateless Streamable HTTP; a worker holds one
+user's session and must not, so the gateway states it rather than relying on
+a default it does not own.
+
+Do not place the IAM API key, the JWT secret or the Solr password in chart
+values. Use `jupyterMcpServer.envValueFrom` with Kubernetes Secret references.
+
+### `DATALAYER_CORS_ORIGIN`, and how it fails
+
+The console reads this gateway from the browser, so every REST route is
+subject to CORS. When the origin is wrong the failure does not look like a
+CORS failure: the browser refuses the request *before sending it*, the fetch
+rejects with no status, and the page says **"The MCP server did not
+answer"** — while the gateway is up and answering.
+
+Set it to the origins that actually load the console, comma-separated:
+
+```yaml
+env:
+  - name: DATALAYER_CORS_ORIGIN
+    value: "https://datalayer.ai,https://prod1.datalayer.run"
+```
+
+Include every origin that loads the console, **the development server among
+them**. Working against a deployed plane from `http://localhost:3063` is the
+normal way to develop here, and that origin is as much a browser origin as
+the production one:
+
+```yaml
+DATALAYER_CORS_ORIGIN: "https://datalayer.ai,https://prod1.datalayer.run,http://localhost:3063"
+```
+
+:::warning A localhost origin on a production gateway
+It is a real widening: with `allow_credentials`, any page served from that
+port on any developer's machine may call this gateway with the caller's
+token. That is the trade for developing against a deployed plane, and it is
+worth making deliberately — on a plane with real customer data, prefer a
+separate development deployment to adding `localhost` to this list.
+:::
+
+:::caution An empty value is not an unset one
+`DATALAYER_CORS_ORIGIN: ""` is **not** the same as leaving it out. The
+default applies to a variable that is absent; a variable set to the empty
+string is a value, and it used to become an allow-list of one entry that
+matches no origin — refusing every browser there is.
+
+That is exactly what happened: `/api/mcp/healthz` answered `200`,
+`/api/mcp/v1/activity` answered a correct `401`, and every preflight answered
+`400 Disallowed CORS origin`. A blank value now falls back to the default
+instead, but a Helm value that renders empty is still worth spotting.
+:::
+
+:::note `*` turns credentials off, necessarily
+The CORS specification forbids a wildcard origin on a credentialed request,
+and Starlette honours it by answering the wildcard *without* the credential
+header — which the browser then drops. So a wildcard cannot be combined with
+`allow_credentials`, and the gateway turns credentials off when the wildcard
+is in force rather than sending a pair no browser accepts.
+
+For anything that has to carry credentials, name the origins.
+:::
+
+**To check a deployment from a terminal**, ask for the preflight the browser
+would:
+
+```bash
+curl -si -X OPTIONS https://mcp.datalayer.run/api/mcp/v1/activity \
+  -H 'Origin: https://datalayer.ai' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization' | head -3
+```
+
+`200` with an `access-control-allow-origin` naming your origin is right.
+`400 Disallowed CORS origin` is this variable.
+
+## Logs
+
+```bash
+plane logs datalayer-jupyter-mcp-server
+kubectl logs -n datalayer-api -l app=jupyter-mcp-server -f
+```
+
+The gateway logs one line per proxied call, naming the user and the agent that
+asked — a person may have several connected, and both matter when reading back
+why something was refused — plus a `⇢` line whenever a request is forwarded to
+another replica, and the reason for every refusal. A worker's stdout is relayed
+into the gateway's log as it arrives, with the last two hundred lines kept so
+that a worker which dies has its explanation quoted in the death message. The
+startup banner names the resource URL, the replica, where notebooks, sandboxes
+and Contents are, which store is in use and where telemetry is addressed.
+
+Log lines do not carry `trace_id` or a task id yet: the correlated structured
+logging of the plan is not implemented.
+
+## Observability
+
+The chart addresses the [OTEL collector](/services/system/otel/) with the
+standard `OTEL_*` variables, and the metric catalog is declared in one place —
+`datalayer_jupyter_mcp_server/telemetry.py` — with deliberately bounded labels:
+a tool, an outcome, a dependency, a refusal reason. A user, an agent, an
+organization or a sandbox is **never** a metric label; those belong in
+access-controlled spans and in the audit rows.
+
+**Every audit row names the trace its call ran in.** The row's `trace_id`
+is what the Observability view and `datalayer mcp trace` start from. It was
+read from the client's `traceparent` alone, and most MCP clients send none —
+so until 2026-09-05 their rows carried no trace id while the gateway's own
+spans for the same call were exported under a trace nothing named, and the
+view had an empty state for every one of them. A client's `traceparent`
+still comes first (its span is the parent of ours); without one, the row
+takes the server span the request is served in, which is the trace the
+worker's spans hang under too, since the call to the worker carries its
+context. A malformed header is no header, and outside any span — telemetry
+off, a test process — the row names nothing rather than inventing an id.
+
+**And the span is filed where the person can read it.** The OTEL service
+scopes every query to an account and files a span under its
+`usage_account_uid` attribute, else under the exporter's — this gateway's
+service account. So a person querying the trace their audit row names got
+`404` for spans that existed. `mcp.request` and `mcp.policy` now carry the
+organization the call was made in, else the person: a per-person value is
+fine on a span, which is one access-controlled record, where it is forbidden
+on a metric (see `account_labels` against `span_account_labels`). The ASGI
+root span, the `http send`/`receive` spans and the worker's stay under the
+gateway's account — the person sees the gateway and policy spans of their
+call, a platform administrator (`?account_uid=`) sees the whole trace.
+Measured on prod1: the row has its trace id within 4 s of the call, and the
+span is queryable under the person's account after 19–40 s, which is the
+collector's and the consumer's batching. The route is `/api/otel/v1/traces/{id}`
+**without a trailing slash** — with one it is a 404 for a trace the listing
+route just returned, which `datalayer-core`'s client sent until 2026-09-05.
+
+The table below is generated from `telemetry.CATALOGUE`, which a test holds
+against the instruments actually created — in both directions — and against
+the label values actually passed. It was hand-copied once and drifted three
+ways: it listed ten of these twenty, it called `mcp.calls` "declared, not
+written yet" after it had a call site, and it named five of the
+`mcp.refusals` reasons. A refusals panel built from that would have drawn
+scope and rate refusals, missed every policy, quota and capability refusal,
+and looked complete.
+
+`dependency` is one of (`audit`, `contents`, `iam`, `otel`, `runtimes`, `spacer`, `store`, `tasks`, `workflows`) everywhere it appears. `workflows` is where durable work goes — `datalayer-durable`, or the in-process fake — and it is the dependency that decides whether a long-running call survives anything at all.
+
+**The worker exports too, since 2026-09-05, and under the caller.** It
+exported nothing before: `jupyter-mcp-worker` was absent from
+`traces/services/list` under every account, so a trace showed the gateway's
+request and policy spans and stopped at the boundary where the work happens.
+The open source server already emits a span per tool call and per kernel
+execution through a hook handler — into a *file*, which is right for its own
+tests and useless here — so `worker_main` installs OTLP providers as
+`jupyter-mcp-worker` and registers that handler against them. The export
+credential is the platform's, so the supervisor names the account:
+`DATALAYER_USAGE_ACCOUNT_UID` on the worker's environment becomes the
+`datalayer.usage_account_uid` resource attribute the OTEL consumer files by.
+Without it every worker span lands under the gateway's service account,
+where the person whose call it was cannot read it.
+
+**And one call is one trace.** The gateway injects W3C `traceparent` from
+the `mcp.request` span into every forward, and the worker extracts it — the
+seam is the server's own `streamable_http_app`, whose app is wrapped once in
+the standard ASGI middleware, because this image has no global Starlette
+instrumentor and the open source `serve()` builds its own app. A single
+`list_notebooks` on prod1 is ten spans in one trace: `mcp.request` and
+`mcp.policy` from `jupyter-mcp-server`, `POST /mcp` and `tools/call
+list_notebooks` from `jupyter-mcp-worker`. Before this the view showed the
+gateway's two and then an orphan.
+
+**An organization reads its agents' work, not only its gateway's.** A worker
+is one process per *user*, so its exporter can only ever name the person —
+and a call made in an organization belongs to the organization, which is
+where the gateway files its own spans. The two disagreed, so the same trace
+had its halves under two accounts. The account now travels on the request,
+the only place it is known (`x-datalayer-usage-account-uid`), and a span
+processor stamps every span the worker makes: the OTEL service files each
+span on its own attributes, so stamping only the request would leave the work
+itself under the wrong account. Walked on prod1 with a service agent, whose
+token carries `org_uid`: one call, nine spans, all readable under the
+organization.
+
+The gateway exports with its service credential, so the OTEL service files
+every point under the gateway's own account. Five instruments carry one more
+label when the call was made **in an organization**: `usage_account_uid`,
+the organization's uid, which the OTEL service files that point under
+instead — so an organization owner reads their agents' calls, tasks and
+refusals on the OTEL service's "agents by organization" dashboard, and a
+platform administrator reads the platform's on the gateway's own account.
+Organizations only: a personal-scope call carries no account label. A
+per-person label would be a per-person time series, the one label these
+conventions forbid.
+
+| Instrument | Kind | Labels | What it says |
+| --- | --- | --- | --- |
+| `mcp.calls` | counter | `tool`, `method`, `outcome`; `usage_account_uid` when the call was made in an organization | Tool calls the gateway forwarded |
+| `mcp.call.duration` | histogram | `tool`; `usage_account_uid` when the call was made in an organization | How long a tool call took, end to end — the latency SLI |
+| `mcp.tasks` | counter | `status`; `usage_account_uid` when the call was made in an organization | Tasks that reached a terminal state — a rate, because an SLO is written against one |
+| `mcp.task.duration` | histogram | `tool`; `usage_account_uid` when the call was made in an organization | How long a task ran before reaching a terminal state |
+| `sandbox.launch_seconds` | histogram | `provider`, `environment` | How long a sandbox took to become usable |
+| `mcp.dependency.ready` | gauge | `dependency` | 1 or 0 per dependency, so an alert need not wait for a readiness scrape |
+| `mcp.refusals` | counter | `reason` — `access_check_failed`, `access_revoked`, `attribution_failed`, `capability_missing`, `environment_capability`, `grant_revoked`, `header_body_mismatch`, `item`, `policy_unavailable`, `relaunch_from_snapshot`, `runtimes_unavailable`, `sandbox_lost`, `scope`, `transport_direct`, `unknown_handle`, `policy:…`, `rate_limited:…`, `quota:…`; `usage_account_uid` when the call was made in an organization | Calls refused before they reached a worker |
+| `mcp.limit.unenforced` | counter | `limit` — `allowedProviders`, `environmentCapabilities`, `maxConcurrentSandboxes`, `maxCreditsPerDay`; `reason` — `incomplete`, `unreadable` | A limit **not** applied because the figure it compares against could not be read |
+| `mcp.workers` | gauge | `state` | Worker processes on this replica, set on every directory heartbeat |
+| `mcp.worker_start_seconds` | histogram | `provider` | How long a worker took to answer after being started |
+| `mcp.forwards` | counter | `outcome` | Requests forwarded to another replica |
+| `mcp.dependency.duration` | histogram | `dependency`, `outcome` | How long one call to a dependency took |
+| `mcp.dependency.timeouts` | counter | `dependency` | Calls to a dependency that ran out of time |
+| `mcp.readiness.failures` | counter | `dependency` | Readiness probes that found a required dependency down |
+| `mcp.sandbox.lost` | counter | `provider`, `then` | Sessions whose sandbox was found gone |
+| `mcp.audit.writes` | counter | `decision` | Audit rows written to the ledger |
+| `mcp.audit.write_failures` | counter | `decision` | Audit rows that could not be written — the one number that says the security record has a hole in it |
+| `mcp.audit.deleted` | counter | `reason` | Audit rows deleted past their retention |
+| `mcp.jobs` | counter | `job`, `outcome` | Periodic job ticks — `skipped` is the ordinary outcome on a replica without the lease |
+| `mcp.job.duration` | histogram | `job` | How long one periodic job took |
+
+:::info Exporting depends on one setting
+
+`telemetry.start_exporting` installs the SDK providers through
+`datalayer_common.instrumentation.instrument`, which also brings the ASGI
+server span — so a client's `traceparent` is continued rather than replaced,
+and the calls to IAM, Spacer, Contents and Runtimes hang under the request
+that caused them. The gateway registers as `jupyter-mcp-server` and a worker's
+relayed lines as `jupyter-mcp-worker`, which is why the Instrumented Services
+list shows two.
+
+Without `OTEL_EXPORTER_OTLP_ENDPOINT` it exports nothing, on purpose: the
+SDK's default is `localhost:4317`, which in a deployment with no collector is
+a closed port the exporter would retry against forever on a background thread.
+It says so once at startup — `📡 Telemetry is not exported` — rather than
+retrying quietly. `OTEL_SDK_DISABLED=true` turns it off explicitly.
+
+Nothing here can stop the gateway. An unreachable collector, a missing SDK or
+a provider that raises is logged and the gateway serves without telemetry;
+telemetry is never a readiness dependency. Which does mean a misconfigured
+endpoint looks identical to a healthy one from outside, so check the startup
+line rather than assuming.
+:::
+
+Still missing: the MCP dashboards and alert rules on the OTEL service, and a
+`PrometheusRule` in this chart. A gateway outage is caught today by the
+ordinary Kubernetes deployment and ingress alerts, not by an MCP-specific one.
+
+## Policy layers
+
+What an agent may do is decided by four layers, narrowest last. The gateway
+fetches the middle three from IAM on the way to a call and caches each for
+thirty seconds.
+
+| Layer | Written by | Applies to |
+| --- | --- | --- |
+| `platform` | nobody — it is the token's own scopes | Every call. No layer below can add a scope the grant did not carry |
+| `organization` | an organization owner | Tokens carrying that `org_uid` |
+| `team` | a team owner, or the owner of the organization above it | Tokens carrying that `team_uid` |
+| `personal` | the person themselves | Tokens with **no** `org_uid`. A person does not loosen or tighten what their organization decided about work done in its name |
+
+### Which organization an agent acts in
+
+`org_uid` on the token is what all of this keys on — the layers here, the
+quotas, the alerts and the audit scoping. It is **chosen at consent** and
+stamped by IAM into the access token as a top-level claim, beside `scope` and
+`client_id`.
+
+Chosen rather than inferred: somebody may belong to three organizations, and
+which one an agent acts in is a fact about *that grant*. A token naming none
+is personal scope — what a person with no organizations gets, and what every
+OAuth token was before IAM issued this claim.
+
+:::info The claim is earned, never taken
+IAM checks membership when the authorization code is issued, and a refused
+claim never reaches the store. A person who could name an organization they
+do not belong to would read its policy, spend against its budget and write
+rows into its audit.
+
+A **team** additionally needs membership of the team *and* must be inside the
+named organization — a team uid in a request is a claim about a team, not
+proof of which organization it is in.
+:::
+
+It rides on the grant, so a refresh mints the same scope: a refreshed token
+that quietly lost its organization would move an agent from its employer's
+policy to no policy at all, with nobody asked. The token exchange carries it
+for the same reason.
+
+**Where the choice is made**: the approval screen asks, above the scope list,
+whenever the person belongs to at least one organization — a single
+connection acts in one place, so connecting the same client twice is how
+somebody covers two. Personal scope is first and preselected, because acting
+in an organization applies its policy, spends its budget and writes its
+audit, which is a thing to opt into rather than be defaulted into. The list
+is fetched from IAM rather than read from the application's own store: this
+page is a surface for a decision IAM makes and checks.
+
+
+```bash
+# What is in force for this token, rule by rule, with who decided each
+curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://mcp.datalayer.run/api/mcp/v1/policy | jq '.rules'
+
+# Writing one, as an organization owner
+curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"toolDenylist": ["execute_cell"], "maxCallsPerMinute": 30}' \
+  https://iam.datalayer.run/api/iam/v1/mcp-policies/organization/$ORG_UID
+```
+
+The **team layer** is written on the console's Teams page — by a team owner
+for their own team, or by an organization owner for any of them, since an
+owner who could not narrow one of their own teams would have to remove the
+team to do it.
+
+The **personal layer** is written by each person at `/settings/policies`,
+over the same form and the same six rules. It only narrows: a personal value
+wider than an organization's changes nothing, and the page says so beside the
+field rather than refusing it — the same layer governs that person's
+personal-scope work, where no organization narrows anything, so a refusal
+would make their own policy unwritable because of their employer.
+
+Four rules are enforced. **Nothing else may be stored** — IAM refuses a rule
+the gateway does not act on, so a policy page cannot promise something that
+never happens, and `toolDenyList` is rejected as a typo rather than kept as a
+setting that does nothing.
+
+| Rule | Type | Combines by |
+| --- | --- | --- |
+| `toolDenylist` | list of tool names | Union — a layer may add a denial, never lift one |
+| `toolAllowlist` | list of tool names | Intersection. An empty list **as written** is not an allowlist; a half-filled setting must not refuse everything |
+| `allowedClients` | list of CIMD URLs or hostnames | Every layer's list must admit the client. An empty list is not an allowlist, same reason |
+| `maxCallsPerMinute` | whole number, **at least 1** | The smallest wins |
+| `maxCreditsPerDay` | a positive number of credits | The smallest wins |
+| `maxConcurrentSandboxes` | whole number, **at least 1** | The smallest wins *as a reported figure*; enforced per scope — see [A team's concurrency is counted against the team](#a-teams-concurrency-is-counted-against-the-team) |
+
+Owners write these on the **Policy** page of the organization's MCP tab, or
+through the API above. The page's fields are generated from the same rule
+list the gateway enforces, so it cannot offer a rule that would be thrown
+away at the write; a security auditor reads the page but does not get the
+form.
+
+A write carries the version that was read, so two owners editing at once get
+a `409` rather than one silently overwriting the other. The page shows that
+as a banner with a "read it again" button — the losing draft is still on
+screen, and a toast would vanish before it could be acted on.
+
+:::caution `maxCallsPerMinute: 0` is refused, and why
+The gateway reads a non-positive cap as *no cap*. A zero written to stop an
+organization's agents would lift its limit instead — the one value whose
+stored meaning is the opposite of its plain reading. To stop an agent, revoke
+its grant or deny the tools.
+:::
+
+### Service agents
+
+An agent that belongs to an organization rather than to a person: a nightly
+pipeline, a CI job, a bot. It holds its own key, spends the organization's
+budget under its own name, and appears in the audit as `agent_uid` rather
+than under whoever happened to create it.
+
+The reason to have them rather than telling people to use a personal token:
+an organization whose pipeline runs under an engineer's grant **loses the
+pipeline when the engineer leaves**, and its spend shows against somebody who
+was asleep. Naming the agent as itself makes revoking, budgeting and auditing
+it ordinary operations rather than archaeology.
+
+From the CLI, which is where an operator setting up a pipeline already is:
+
+```bash
+datalayer mcp service-agents create $ORG_UID \
+  --name "nightly ingest" --scopes "runtimes:read data:read"
+datalayer mcp service-agents list $ORG_UID
+datalayer mcp service-agents rotate $ORG_UID $AGENT_UID
+datalayer mcp service-agents revoke $ORG_UID $AGENT_UID
+```
+
+`rotate` and `revoke` confirm first (`--yes` to skip), because rotation
+breaks whatever holds the old key with no grace period. `--output json` puts
+the key in a field rather than in a sentence, for a pipeline that captures
+it. Or over HTTP:
+
+```bash
+# Create one. The key is in this answer and in no other.
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "nightly ingest", "scopes": "runtimes:read data:read"}' \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents
+
+# What acts in this organization, revoked agents included
+curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents \
+  | jq '.agents[] | {name: .name_t, scopes: .scopes_s, revoked: .revoked_b}'
+
+# Rotate. The previous key stops working with this call.
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents/$AGENT_UID/rotate
+
+# Revoke. The agent stays listed, for its audit.
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/organizations/$ORG_UID/mcp-service-agents/$AGENT_UID/revoke
+```
+
+:::warning The key is shown once and cannot be recovered
+IAM stores a SHA-256 of it and has no way back. Somebody who loses a key
+**rotates**; there is no read that returns it.
+
+That is deliberate. The alternative is a credential that spends an
+organization's budget sitting readable in a console for the life of the
+organization, liftable by anybody who can reach the page. One support
+conversation is the cheaper end of that trade.
+:::
+
+:::caution A team named on a service agent must be this organization's
+IAM checks it, and refuses a team it cannot read rather than admitting it —
+the opposite of the rule elsewhere in this system, where an unreadable
+dependency lets the work through.
+
+The reason for the inversion: nothing is running, nobody is blocked, and what
+is being decided is which organization a long-lived credential belongs to. An
+agent filed under another organization's team would *work*, while spending
+their budget and counting against their sandbox limit.
+:::
+
+**Who may manage them**: organization owners and `platform_admin`, and nobody
+else — not a team owner, unlike an [alert rule](#alert-rules) scoped to their
+own team. A rule watches; a service agent holds a credential that spends the
+organization's budget and carries its name, so delegating it is delegating
+the organization's authority rather than administration of a slice.
+
+**Organization members may read the list**, revoked agents included. An agent
+spending their organization's budget is one they will ask about, and a
+revoked agent hidden from the listing is invisible to whoever is deciding
+whether it is still needed while its audit rows still name it.
+
+**What an agent may be granted** is a subset of the OAuth scopes:
+`code:execute`, `notebooks:read`, `notebooks:write`, `runtimes:read`,
+`runtimes:write`, `data:read`, `sandboxes:manage`. The scopes about a
+*person* — reading their profile, acting as them — mean nothing for a
+principal that is not one, and accepting them would grant something that
+silently does nothing. An agent with no scopes is refused outright: it is a
+key that fails at its first call, issued as though it worked.
+
+The first three were missing until 2026-09-05. A service agent could be
+handed a sandbox — `sandboxes:manage` — and could not run a line on it,
+because `execute_code` is the one tool that costs `code:execute` and the
+gateway takes an agent's scopes as they are; a pipeline that runs a
+notebook with its own key, which is what a service agent is for, needs all
+three. Found by walking the shared-sandbox scenario on prod1 with a real
+service agent.
+
+#### How a key is checked, and what that costs
+
+The gateway cannot verify a key by itself the way it verifies a JWT, so every
+call carrying one is a lookup against IAM's
+`POST /api/iam/v1/mcp-service-agents/authenticate`. That endpoint is for the
+gateway alone — it takes a credential and answers who it is, so anything that
+may call it may test keys against it — and the gateway proves itself with
+`DATALAYER_SERVICE_API_KEY` in `X-API-Key` before the key in the body is
+looked at.
+
+| | |
+| --- | --- |
+| Successful lookups are cached | **60 seconds**. An agent in a loop would otherwise put IAM in its inner loop |
+| Refusals are cached | **Never**. A reinstated key, or one whose rotation raced a call, must not keep failing for a minute with nothing to say why — and a cached refusal makes the cache a place to park a negative answer for a real key |
+| IAM unreachable | **Refused.** Not the last good answer |
+
+:::caution A revocation takes effect within a minute, not instantly
+That is the honest cost of the cache, and it is why the window is a minute
+rather than an hour.
+
+Note the difference from the [policy cache](#policy-layers), which *does*
+keep its last answer through an IAM outage: an outage is not a policy change,
+and reading it as "no restrictions" would leave every agent briefly
+unconstrained. Authentication is the other way round. Serving a stale
+principal during an outage makes the revocation window as long as the outage
+— revoke a leaked key, IAM has a bad afternoon, and the key works all
+afternoon. A refusal is the failure somebody can see.
+:::
+
+:::info A principal missing its organization is refused
+An empty `org_uid` is *personal scope*, which is not what a service agent is:
+it would run under no policy, spend against nobody's budget and write its
+audit where nobody looks. The gateway refuses rather than running it that
+way.
+:::
+
+### The two sandbox quotas
+
+`maxCreditsPerDay` and `maxConcurrentSandboxes` bound different things, and
+an organization usually wants one of them: the first is what may be *spent*
+in a day, the second what may run at *once*. "Ten agents, each on a small
+box" is a sentence about the second.
+
+Both are checked **before a launch** and nowhere else. A call on
+a sandbox that already exists costs nothing new, and refusing every one would
+read as an outage rather than as "your agents are out of budget for today" —
+which is the one somebody can act on. A session that already holds a sandbox
+is answered it without the budget being consulted, since refusing there would
+stop an agent using what it is already paying for.
+
+At the budget, not over it: a budget of 100 that admits the launch taking you
+to 140 is a budget of 140.
+
+#### A team's concurrency is counted against the team
+
+The one place a quota does **not** behave like the rest of the policy. Every
+other rule narrows: the effective `maxCallsPerMinute` is the smallest any
+layer set, one number, checked once. A *counted* quota cannot work that way,
+because the count belongs to a scope.
+
+So both are checked, each against its own count:
+
+| Limit set by | Counted over |
+| --- | --- |
+| The organization | Every sandbox in the organization |
+| The team | Only that team's sandboxes |
+
+Taking the team's limit and the organization's count would refuse a team
+running *nothing* because other teams are busy — a refusal its owner can
+neither understand nor act on. Taking the team's count against the
+organization's limit would let ten teams of nine walk past a cap of ten.
+Checking both is what "a team has its own quota within the organization's"
+has to mean to be usable.
+
+The organization's answer comes first when both are full: it is the one that
+holds however the team is configured, and the one an owner rather than a team
+owner acts on.
+
+A sandbox with no team belongs to no team, and is counted only for the
+organization. Counting it would make the first team to launch carry the whole
+organization's teamless work against its own cap.
+
+The **daily credit budget works the same way**, and for the same reason: a
+budget is a sum, and a sum belongs to whoever is billed for it. A team is a
+billing entity with its own delegated wallet, so `agent_credits(team_uid)` is
+a real figure rather than a share of the organization's. Each scope's budget
+is weighed against that scope's own spend, organization first.
+
+:::info Both limits are checked at the reservation too
+The gateway checks them before a launch, and that is not the only door: a
+client reserving directly, or another service doing it, would otherwise walk
+past a limit an organization set — while the limit *looked* enforced, because
+it is, on the path most people take.
+
+IAM applies **`maxConcurrentSandboxes` and `maxCreditsPerDay`** when the
+reservation is made, reading its own policy and its own ledger with no round
+trip. Only to **agent** reservations, identified by the
+`client_id_s`/`agent_uid_s` dimension: both are rules about agents, and
+refusing a person launching their own runtime would refuse somebody under a
+rule that was never about them. Only the **organization's** layer, since both
+figures are per billing entity — a team's number against an entity-wide count
+or spend would refuse a team holding nothing, and the gateway, which knows
+which team a caller acts for, is where the team layer belongs.
+
+The count is asked **before** the spend: the count is a `rows=0` read and the
+spend reads the day's usage records, so an organization already at its
+sandbox cap does not pay for a lookup to learn what the count knew.
+
+A refusal at either is a `409` naming both numbers and who can raise the
+limit.
+:::
+
+:::warning The two doors have to agree
+Otherwise the same launch is refused at one and admitted at the other, and
+which one you hit is an implementation detail of the client you happen to be
+using. So the reservation follows the gateway exactly: at the budget rather
+than over it, and neither an unreadable budget nor an unreadable spend
+refuses.
+
+A **short** sum does not refuse either, and it is the sharper case. It always
+reads as under budget, so the tempting move is to enforce on a partial figure
+that is *already* over the limit — but that figure is not the number. The
+reason it is unknown is that rows were dropped, and the total could be
+anywhere above it. Both cases are logged, because a limit that is not being
+enforced looks exactly like one nobody set.
+:::
+
+:::note One unreadable count does not disable the other
+Each count that cannot be read is skipped with a line in the log, and the
+other still holds. A team at its cap is still at its cap when the
+organization's count times out.
+
+The daily **credit** budget is still organization-only: `agent_credits` sums
+a billing entity, and a team's share of a ledger is a different question from
+a team's count of running sandboxes.
+:::
+
+`GET /api/mcp/v1/organizations/{uid}/usage` puts the use beside the limit —
+spend from IAM's ledger, running sandboxes from `mcp-gateway`, the limits
+from the policy. It is the page for "are we near a limit, and which one".
+
+:::info Unknown is not absent
+A figure the page could not read is reported `unknown` by name rather than
+left out. Both render as no number beside a heading and they mean opposite
+things: one is "no limit set", the other is "we cannot tell you what your
+limit is". A reader who confuses them either relaxes about a quota they are
+close to, or chases one that does not exist.
+
+An unknown figure gets no `fraction` either — a share of a number nobody read
+is a number somebody will act on. And one unreadable figure does not lose the
+page: it is opened when something is already wrong.
+:::
+
+**No route on this gateway writes a quota.** Limits are policy rules and IAM
+owns that document; a second way to write it would be a second answer to what
+an organization is allowed. The usage page names where they are set.
+
+### Which agent spent it
+
+The same answer carries `byAgent`: the day's credits grouped by the principal
+that spent them, biggest spender first. A budget says *whether* to act. It
+does not say *what to turn off*, and that is the question an administrator at
+ninety percent of a limit is actually asking.
+
+It costs no extra query. IAM was already reading the per-agent usage records
+in order to sum them, and discarding the dimension that says who — so "what
+did this organization spend" had an answer and "which agent spent it" did
+not. The grouping happens over the rows the total is summed from, in the same
+read, so the two cannot disagree across the seconds between two queries.
+
+:::warning The key is `agent_uid`, then `client_id`
+Service agents reach Runtimes **through the gateway** and carry the gateway's
+client id. Grouped on that, every one of an organization's pipelines collapses
+into a single row costing the sum of all of them, with nothing to say which
+one to look at. So a row is keyed on `agent_uid` where there is one, and on
+`client_id` — `claude`, `cursor` — for a person's delegated agent.
+:::
+
+### Where the dimension shows up
+
+The same two keys answer three questions in three places, and they are worth
+knowing together because a report that disagrees with a table is usually one
+of them reading the pair in the other order:
+
+| Surface | Reads |
+|---|---|
+| `GET …/organizations/{uid}/usage` | `byAgent`, the day's credits grouped |
+| The console's **Usage** page | The same answer, biggest spender first |
+| The **Reservations** table in the web UI | A *Started by* column per running runtime |
+
+The reservations table gets it for free: IAM already puts the metadata on
+every usage record it serves, so the dimension was arriving in the browser
+long before anything displayed it.
+
+:::warning `agent_uid_s` is read before `client_id_s`, everywhere
+
+A service agent reaching Runtimes **through the gateway** carries the
+gateway's client id. Read the other way round, every one of an
+organization's pipelines is the same agent — one row costing the sum of all
+of them, with nothing to say which to look at.
+
+This holds in IAM's grouping, in the gateway's answer and in the table. If
+you add a fourth reader, read them in that order.
+:::
+
+:::note The runtimes table does not have this column
+
+`RuntimesTables` builds its rows from the runtime record, which the Operator
+assembles from **pod labels and annotations** — the reservation's metadata is
+not among them. A *Started by* column there needs the dimension propagated
+onto the pod at launch, across the gateway, Runtimes and the Operator.
+
+The reservations table has it because that view reads usage records, which is
+where the dimension lives.
+:::
+
+A reservation carrying **no** agent dimension is somebody's own work, not an
+agent's. It is skipped rather than filed under `unknown`, which reads in a
+table like an agent by that name; it stays in the organization's total, which
+is the bill.
+
+:::info An unreadable total carries no breakdown
+Where IAM summed fewer records than it holds, the total is `unknown` and
+`byAgent` is **empty** — not partial. The parts under an unreadable whole make
+every agent look cheap and the reader concludes the budget is fine, which is
+the one direction a short sum always errs in and the one nobody checks.
+:::
+
+The concurrency count is asked first. It is a Solr read this process already
+makes, where the budget is a round trip to IAM — so an organization at its
+sandbox limit does not pay for a spend lookup to be told what the count
+already knew. It is counted with `rows=0`, so an organization with two
+hundred sandboxes costs what one with two costs.
+
+The refusal carries its own JSON-RPC code and `retryable: false` — retrying
+tomorrow works, retrying now does not, and a client that cannot tell will
+loop. It names the layer that set the budget, so a team owner who set 20 is
+not sent to the organization's settings page to find out why.
+
+:::caution Neither quota refuses on a number it could not read
+The opposite of what a budget implies, and deliberate. An organization whose
+agents stop working because a billing lookup timed out is a worse failure
+than one that spends a little over on the day IAM was down.
+
+An *incomplete* spend figure is treated the same way and for a sharper
+reason: a sum missing rows always reads as under budget, so enforcing on one
+refuses launches somebody is entitled to or admits ones they are not — and
+which depends on rows nobody saw. A sandbox count that could not be read is
+the same trade.
+
+Both are logged. A budget that is not being enforced otherwise looks exactly
+like one nobody set.
+:::
+
+:::info Two allowlists that do not overlap admit nothing
+An organization allowing `read_cell` and a team allowing `execute_cell`
+between them allow no tool at all. Each reads fine alone. `GET
+/api/mcp/v1/policy` says so in the rule's `reason` rather than rendering an
+empty list, because the administrator is looking at two sensible settings.
+:::
+
+Reading is wider than writing on purpose: an organization **member** may see
+what their organization's policy is, because "why was my agent refused" is a
+question every member of it will ask, and an answer only owners can see is an
+answer nobody gets. Every change writes an IAM audit row naming who, when and
+which rules — by name, never by value.
+
+### A limit that stopped being enforced
+
+`mcp.limit.unenforced` is the one metric here that counts something *not*
+happening, and it is the one to alert on.
+
+The gateway does not refuse when it cannot read the figure a limit compares
+against: an organization whose agents stop launching because a billing lookup
+timed out is a worse failure than one that spends a little over. That is the
+right call, and it has a consequence — the limit is still on the Policy page,
+the refusals just stop, and **an organization whose budget is no longer being
+enforced looks exactly like one that never set a budget.**
+
+:::warning It is not `mcp.refusals`
+
+A refusal is the limit *working*. Folding the two together would make a
+gateway that refuses nothing because it can read nothing look like a gateway
+with nothing to refuse.
+:::
+
+The two reasons are different problems:
+
+| `reason` | What happened | What to do |
+|---|---|---|
+| `unreadable` | The lookup failed — IAM down, Solr down, a timeout | Look at the dependency; `mcp.dependency.ready` says which |
+| `incomplete` | The ledger holds more rows than one reading sums | The organization is busy enough to exceed the read bound, which is exactly the one the limit was set for |
+
+`incomplete` is the sharper of the two. A quota that fails open there fails
+open for the customers who bought it and holds for everybody else — a quiet
+failure of the worst shape, since the page still shows the limit.
+
+## Alert rules
+
+An `McpAlertRule` is an IAM organization setting: a condition, a comparison,
+a threshold and a window. The gateway evaluates every enabled rule on the
+platform once a minute, records a firing in `mcp_alert_event` and delivers it
+as an ai-agents notification.
+
+:::caution None of it worked on a deployment until 2026-09-05
+
+Driven end to end on prod1 for the first time, and it took three fixes —
+each of which left every test green:
+
+- **IAM could not store a rule at all.** It validated one by importing the
+  gateway's own `datalayer_jupyter_mcp_server.alerts.Rule`, and that package
+  is not in IAM's image: `POST /mcp-alert-rules/{org}` answered `500
+  ModuleNotFoundError`. The vocabulary lives in
+  `datalayer_common.mcp_alerts` now — both services read the same closed sets,
+  and IAM's suite fails if it imports any other service's package.
+- **`POST /api/mcp/v1/alerts/test` refused the caller's own organization.**
+  It used the token's organization and never the one asked about, so every
+  personal access token — an administrator's included — was told "this token
+  names none", while the listing route beside it accepted `?org=` from the
+  same caller.
+- **Every `sli.latency` rule read as unreadable.** The reading called a
+  window incomplete whenever the ledger answered a cursor, and Solr answers a
+  fresh `cursorMark` for any page that returned rows: eighteen rows were read
+  as "more than two thousand". The tick logged *could not evaluate 1 rules*
+  once a minute and nothing fired.
+
+With those three, the walk is: a service agent makes calls (its token carries
+`org_uid`; a personal one does not, and an alert is an organization's),
+`alerts/test` answers `readable, value 848 ms, would_fire`, and the tick
+raises the alert **within 42 s**.
+:::
+
+```bash
+# What this organization watches
+curl -sH "Authorization: Bearer $DATALAYER_TOKEN" \
+  https://iam.datalayer.run/api/iam/v1/mcp-alert-rules/$ORG_UID | jq '.rules'
+
+# Watching for more than 20 open tasks, told at most once an hour
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"condition":"tasks.open","operator":"gt","threshold":20,
+       "severity":"warning","window_seconds":3600}' \
+  https://iam.datalayer.run/api/iam/v1/mcp-alert-rules/$ORG_UID
+```
+
+| Field | Values |
+| --- | --- |
+| `condition` | `tasks.open`, `tasks.failed`, `audit.write_failures`, `spend.credits`, `spend.budget_fraction`, `sli.availability`, `sli.latency`, `sandbox.lost`, `dependency.down` |
+| `operator` | `gt`, `gte`, `lt`, `lte`, `eq` |
+| `threshold` | a real number — `nan` and `inf` are refused, since `nan > x` is false for every x and such a rule never fires |
+| `severity` | `info`, `warning`, `critical` — delivered as `info`, `warning`, `error` |
+| `window_seconds` | whole seconds. Also the most often this rule may fire |
+| `scope_kind` / `scope_uid` | `organization`, or `team` / `user` / `agent` with the uid of the thing. A scoped rule without a uid is refused: it would be measured over the whole organization under a name saying otherwise |
+| `enabled` | a rule switched off is kept, not deleted — silencing an alert for a migration should not lose the threshold somebody tuned |
+
+IAM refuses a rule the **evaluator** could not evaluate — through the closed
+sets both services read from `datalayer_common.mcp_alerts`, rather than by
+importing the evaluator (which it cannot: that package is not in its image)
+or by restating its rules (which would drift). A rule that cannot be
+evaluated is a condition nobody is watching, and that looks exactly like a
+condition that never happens.
+
+Before writing a rule, ask what it would see:
+
+```bash
+curl -X POST -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"org":"'$ORG_UID'","condition":"sli.latency","operator":"gt",
+       "threshold":500,"window_seconds":3600}' \
+  https://mcp.datalayer.run/api/mcp/v1/alerts/test
+# {"readable":true,"value":848.0,"would_fire":true,"detail":""}
+```
+
+`readable` is the answer worth having: a rule on something nothing can read
+never fires, and never firing is exactly what a correctly quiet rule looks
+like. The organization is the one named in the body — an owner or security
+auditor may name their own, a platform administrator any, and nobody else.
+
+:::note Every condition has a reader
+There is no longer a condition that validates and then reads `unreadable` on
+every tick. The `sli.*` pair read the **audit** rather than telemetry — the
+audit is never sampled, which makes it the more complete source, and it is
+already scoped by organization and bounded by time.
+
+A reading that could not be *taken* is still `unreadable` rather than zero: a
+reader answering zero would turn "nobody is watching this" into "this never
+happens". Read the tick's counters, not the empty alerts list — an evaluator
+whose `unreadable` is climbing looks exactly like a platform with no problems.
+:::
+
+#### The two platform conditions
+
+`sandbox.lost` and `dependency.down` watch what `mcp.sandbox.lost` and
+`mcp.dependency.ready` export. Those metrics go to OTEL, where a dashboard
+reads them; an exported counter cannot be read back inside the process that
+exports it, so a rule naming either used to be refused at the point of
+writing it — the two things an operator most wants to be paged about.
+
+`sandbox.lost` is counted in the shared store beside the audit write
+failures, and for the same reason: a session is lost on whichever replica held
+it, and a per-process count would report a third of the losses three times.
+
+:::warning Relaunched losses count
+A provider losing sandboxes steadily and quietly relaunching them is invisible
+from the outside **precisely because it recovers** — which is when an alert
+earns its keep. If you want only the losses somebody noticed, read the audit;
+the rule counts both.
+:::
+
+`dependency.down` is how many *configured* dependencies are not answering —
+the same set the `mcp.dependency.ready` gauge describes. One nobody configured
+is neither ready nor down, and counting it would page somebody for a
+deployment choice.
+
+It is a platform reading answered per organization, deliberately: the gateway
+is what an organization's agents talk to, and "Contents is down" is their
+outage whoever caused it. One probe serves the whole tick, so two
+organizations cannot disagree in the same pass about whether IAM is up, and
+four HTTP probes are not multiplied by the number of rules watching them.
+
+:::note A probe that raised is cached as the failure it is
+Retrying it per rule turns one outage into a burst of timeouts at the moment
+the platform can least afford them. And it reads `unreadable`, never zero — a
+failed probe read as "nothing is down" is an alert that goes quiet exactly
+when the platform is in trouble.
+:::
+
+Use `spend.budget_fraction` rather than `spend.credits` for a "tell me at
+80%" rule. Written as `spend.credits > 80` beside a `maxCreditsPerDay` of
+100, the threshold is a second copy of the budget that nothing keeps in sync
+— raise the budget to 500 and the rule now fires at 16%, with nothing saying
+so. The fraction's denominator is the budget in force, narrowed across the
+layers, so the rule follows the setting instead of shadowing it. An
+organization with no budget reads `unreadable`, because a fraction of no
+budget is not a number.
+
+`spend.credits` is asked of **IAM**, not counted here. The credits ledger is
+IAM's and there is exactly one of it; a count kept beside it would be a second
+answer to "what did this cost" that disagrees with the invoice. The query is
+windowed, restricted to the agent dimension — summing the organization's whole
+bill would alert on somebody running a notebook by hand — and bounded.
+
+:::caution A short spend sum is reported unreadable, never as a number
+If IAM summed fewer usage records than it holds, the figure is short, and a
+short spend figure always reads as *under budget*: 90 credits of an unknown
+larger number is under a threshold of 100, and the alert firing nothing is the
+alert working exactly as designed while the budget is blown. The gateway reads
+`complete: false` as "could not tell" and the tick counts it `unreadable`.
+:::
+
+`audit.write_failures` is the one worth understanding, because the gateway's
+audit is best-effort on purpose: a tool call must not fail because Solr did.
+What that buys is a notebook edit that works during an outage; what it costs
+is a ledger with a gap, and "the audit was not written" is the one failure
+the audit itself cannot record. A failed write bumps a counter in the shared
+store, per organization, which is what this condition reads. A store it
+cannot read is reported `unreadable` rather than zero — that store is the one
+whose outage produces the failures, so zero would say the audit is fine while
+it is being lost.
+
+`tasks.failed` counts over the **rule's own window**. Two rules on the same
+condition with different windows are two different questions, and a count
+taken over all of history only grows — so an alert on it would fire once and
+then every window for ever.
+
+Owners write rules on the **Alerts** page of the organization's MCP tab, or
+through IAM's API. The page's dropdowns are generated from the evaluator's
+own `CONDITIONS`, `OPERATORS` and `SEVERITIES`, so a rule written there
+cannot be one the evaluator refuses; a `422` from the API carries the
+evaluator's own words about what is wrong.
+
+`sli.latency` is listed and **not selectable**, because nothing reads it yet.
+A rule on a condition with no reader is stored, evaluated every minute,
+counted `unreadable` and never fires — which looks configured, and is the
+silence alerting exists to break. A test in the gateway's suite holds the
+console's list against `alerts.CONDITIONS` and `jobs.alert_readers()` in both
+directions, so adding a reader without offering it, or offering one without a
+reader, fails CI rather than shipping quietly.
+
+### Being told
+
+A firing is delivered as an **ai-agents notification**, POSTed to
+`alert_webhook_url` if one is set, emailed to `alert_emails` if any are, and
+posted to `alert_slack_webhook_url` if Slack is configured.
+
+Every copy is attempted independently. An organization that asked for a
+webhook and an email must not lose the email because the webhook was down —
+they are different people finding out — and the failure names which copy was
+lost.
+
+The notification goes **first and separately**. It is the delivery somebody
+will look for, and it must not be lost because a Slack workspace was down.
+The webhook follows; a failure is logged, counted `undelivered`, and does not
+undo the notification that already arrived.
+
+**Slack is its own destination**, not the generic webhook pointed at Slack.
+The transport is the same; the body is not. Slack renders a generic JSON POST
+as one grey line of `text`, with the reading, the threshold and the scope run
+together in a sentence somebody has to parse. Given Block Kit it renders a
+coloured attachment — `good`/`warning`/`danger` by severity, so a workspace's
+own theme applies — with the reading, the severity and the scope as separate
+fields. That is the difference between glancing at a phone and opening a
+laptop.
+
+Two fields rather than one, because an organization that runs a Slack channel
+*and* a PagerDuty endpoint wants each to get what it can render. IAM refuses
+a `alert_slack_webhook_url` that is not a `hooks.slack.com` or
+`hooks.slack-gov.com` URL: anything else sent Block Kit receives an
+`attachments` array it does not read and a `text` it might, so a URL pasted
+into the wrong field would "work", badly, and look configured.
+
+:::caution A `200` from Slack is not always a delivery
+Slack answers `200` with an error body for some failures — a webhook whose
+channel was archived among them. The response body is checked as well as the
+status, and anything but `ok` is counted `undelivered`.
+
+A channel nobody reads answering `200` is exactly the quiet failure alerting
+exists to avoid: the alert would be recorded as delivered, and the first
+anybody knew of the gap would be the incident it was meant to warn about.
+:::
+
+Email is sent **off the event loop**: SMTP is a synchronous conversation with
+somebody else's server, and this runs on the scheduler's tick, so a slow mail
+host would otherwise hold up every other organization's alert. It opts into
+`raise_on_failure` on the shared sender, which swallows by default — right
+for a signup confirmation, wrong for mail that *is* the delivery, since a
+send that failed and was swallowed is an alert reported as delivered and
+never received. That flag also fires when **no SMTP is configured**, which is
+the commonest failure and the one that looks most like success.
+
+The webhook is **not retried**, unlike audit forwarding. That is a copy of a
+record and this is a copy of a notice — retrying a notice against somebody
+else's endpoint turns their outage into a loop against them, while the thing
+that matters is already in the app and in the alerts list.
+
+The body leads with `text`, shaped as a sentence, because Slack and most chat
+relays render that field and ignore the rest. The structure is underneath for
+an endpoint that reads it. **No credential is in it**: this goes somewhere
+outside the platform, and nothing here should be usable from there.
+
+**Once per condition per window.** The idempotency key is the rule, the scope
+and which window we are in, so a condition true for an hour is one event and
+one notification, not sixty — and two replicas ticking together write one
+event between them and send one notification for it, because delivery follows
+the *record* rather than the firing.
+
+A delivery that fails is counted `undelivered` and logged; the event is in
+the alerts list either way. That log line is the only place the difference
+between an alert and a row shows up, since the list looks identical.
+
+## Audit settings
+
+How long an organization keeps its MCP audit, and where a copy goes. Both are
+IAM's to write and this gateway's to act on, on the two schedules above.
+
+```bash
+# Keep a year, and send a copy to the organization's SIEM
+curl -X PUT -H "Authorization: Bearer $DATALAYER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"retention_days": 365,
+       "destination_kind": "https",
+       "destination_url": "https://siem.example/datalayer"}' \
+  https://iam.datalayer.run/api/iam/v1/mcp-audit-settings/$ORG_UID
+```
+
+| Field | Meaning |
+| --- | --- |
+| `retention_days` | Between 7 and 3650. Rows past it are deleted by the hourly sweep, and rows a sweep deletes do not come back |
+| `destination_kind` | `https` or `s3` |
+| `destination_url` | An `https://` or `s3://` URL. `http` is refused: audit rows carry who did what for which organization, and that does not go on the wire in the clear |
+| `destination_secret_ref` | Names a signing secret in IAM's store. **Refused today** — see below |
+| `alert_webhook_url` | An `https://` endpoint a fired alert is POSTed to, beside the in-app notification. `http` is refused: an alert names the organization and what its agents did |
+| `alert_emails` | Who is emailed when a rule fires, comma-separated, at most 20. An alert list is people who want to know, not a mailing list |
+| `alert_slack_webhook_url` | A Slack incoming webhook. Must be a `hooks.slack.com` or `hooks.slack-gov.com` URL — anything else belongs in `alert_webhook_url`, which sends a generic body. Audited as set/unset, never the URL: an incoming webhook is a credential |
+
+Owners set the three alert destinations under **Where alerts go** on the
+console's Alerts page. The form sends **only the fields it owns and only
+those that changed**: IAM merges this document, and retention and SIEM
+forwarding are set elsewhere by other people, so a form that posted its whole
+shape would clear them.
+
+:::caution A PUT that clears forwarding used to drop the alert destinations
+Fixed in `be55d2b6`. `validate_settings` answered as soon as it saw
+`destination_kind` and `destination_url` both empty, so `alert_webhook_url`,
+`alert_slack_webhook_url` and `alert_emails` in the *same* request were
+discarded without a word — a `200` and "Audit settings updated." over a
+request that was half thrown away.
+
+It bit exactly the common case: an organization that forwards nothing to a
+SIEM and still wants to be told when a rule fires. If you configured alert
+destinations alongside a cleared forwarding destination before that commit,
+**re-apply them** — they were never stored.
+:::
+
+An organization owner writes them. Reading needs the role that reads the
+audit itself — owner or `organization_security_auditor` — because where an
+organization's audit is sent is part of its security posture. The auditor may
+read and not write: shortening a retention deletes rows, and changing a
+destination sends the audit somewhere else, which are decisions about the
+organization rather than observations of it.
+
+The two settings **merge**: they are set by different people at different
+times, and making somebody resend a destination in order to change a
+retention is how a destination gets resent wrong.
+
+:::caution An organization with no settings is neither swept nor forwarded
+This is deliberate and it is the whole reason both jobs sat unscheduled for a
+milestone. Retention is **not** derived from the plan catalogue: resolving
+every organization's plan means walking every organization and asking Stripe
+about each, and a sweep that deletes an enterprise customer's audit because a
+billing lookup timed out is the worst failure in this area.
+
+So the gateway acts on organizations that *decided*. Absent means untouched,
+and an organization with settings but no `retention_days` is skipped too —
+it configured forwarding and said nothing about deleting. Keeping too much
+audit is recoverable; deleting it early is not.
+:::
+
+:::warning Signed forwarding is not available yet
+`destination_secret_ref` is refused at the write. `GET /secrets/values`
+resolves the account from the caller, so the gateway asking with its own
+service key gets its own secrets rather than the organization's, and there is
+no service-side route yet.
+
+Stored, it would be worse than refused: the forwarder declines to deliver a
+batch it cannot sign, so an organization that set it would forward nothing
+for ever having configured forwarding. Leave it empty and forward unsigned
+over https, which works today.
+:::
+
+## Periodic work
+
+Some of what the gateway owes an organization has no caller: audit past its
+retention has to be deleted, and alert rules have to be evaluated. Every
+replica runs the scheduler, and a lease in `mcp-gateway` decides which one
+actually does each job.
+
+```
+curl -sH "Authorization: Bearer $DATALAYER_API_KEY" \
+  https://mcp.datalayer.run/api/mcp/v1/operations/jobs | jq
+```
+
+or `datalayer mcp jobs`.
+
+:::caution Read the counts per replica, never summed
+
+The answer is from **whichever replica served the request**, and its `skipped`
+is the ordinary outcome: only one replica holds a job's lease at a time, so
+every other replica skips every tick. A high `skipped` on one replica is the
+scheduler working exactly as designed.
+
+`skipped` climbing on *every* replica at once is the different thing worth
+finding — that is the lease store refusing everybody, and the jobs are not
+running anywhere. There is deliberately no aggregate view, because an
+aggregate is what would hide it.
+:::
+
+| Job | Every | What it does |
+| --- | --- | --- |
+| `audit-retention` | hour | Deletes `mcp-audit` rows past each organization's retention, never one an open export still holds. See [Audit settings](#audit-settings) for which organizations |
+| `task-reconciler` | 10 minutes | Makes `mcp-tasks` agree with the engine. `durable.reconcile` runs at startup too, which catches a gateway killed mid-projection; this catches a projection write that failed while the gateway stayed up, where the task says `working` until something looks |
+| `audit-forwarding` | 5 minutes | Ships each organization's audit to where it asked. The one job here that is **not** idempotent — two replicas forwarding is the customer's SIEM receiving every row twice — so the lease matters most for this one |
+| `alerts` | minute | Reads every enabled `McpAlertRule` from IAM in one call, evaluates each, records a firing and delivers it. See [Alert rules](#alert-rules) |
+
+Both are registered only where the records are in Solr. Standalone schedules
+neither and says so at startup, because a job that quietly does not run looks
+identical to one that runs and finds nothing.
+
+A job that fails is counted, named and left on its schedule; the lease is
+released either way, so one bad tick does not cost the next hour as well. A
+job that wedges is stopped after its timeout rather than holding the lease
+until the pod is replaced.
+
+## Conformance
+
+`@modelcontextprotocol/conformance` is the specification's own test suite,
+written by the people who define the protocol. It is the only test of this
+gateway that can say we misread the spec rather than that we disagree with
+ourselves.
+
+```bash
+npm install --no-save --prefix /tmp/conf @modelcontextprotocol/conformance
+CONFORMANCE_BIN=/tmp/conf/node_modules/.bin/conformance \
+  pytest tests/test_conformance.py -v
+```
+
+The fixture starts a standalone gateway on loopback, runs the suite against
+it and fails on any scenario that is not in `tests/conformance-baseline.yaml`.
+Without the npm package the tests skip, saying so.
+
+:::warning How the credential gets in, and what was refused
+
+The suite takes `--url`, `--scenario`, `--suite`, `--expected-failures`,
+`--output-dir`, `--spec-version` and `--verbose` — and **nothing that sends a
+header**. Every `/mcp` route needs a bearer token, so pointed straight at
+this gateway the suite fails every scenario including `ping`, which measures
+that authentication works. True, and not what conformance means.
+
+The obvious fix is a switch that turns authentication off for the test run.
+It was refused: that means shipping a mode in which this gateway serves
+unauthenticated, and that is the kind of switch which escapes into a
+deployment.
+
+Instead the fixture *starts* the gateway, so it holds `DATALAYER_JWT_SECRET`
+and mints a token — signature, issuer and expiry all verified by the ordinary
+code path, no bypass — and a small proxy in `tests/` attaches it. **The server
+under test is in exactly the configuration it is deployed in.**
+:::
+
+### What it finds
+
+At 2025-11-25, nine of thirty scenarios pass and twenty-one are baselined, in
+three kinds:
+
+| Kind | Why |
+|---|---|
+| Fixtures (12) | The scenario asks for `test_simple_prompt` or `test://static-text` by name — things only the suite's reference server has. Adding them would put a test fixture in a product |
+| Unimplemented (3) | `completion/complete` and the log notifications that follow `logging/setLevel` |
+| Client capabilities (4) | Elicitation and sampling are the server asking the *client* for something. A tool that stops to ask a question is one an agent cannot run unattended |
+
+:::note None of the twenty-one is this gateway claiming something it cannot do
+
+`initialize` advertises no `completions` capability. The suite runs those
+scenarios anyway, without gating on what the server said it supports — so a
+`-32601 Method not found` there is the honest answer to a request the client
+was told not to make.
+
+**`resources/subscribe` is no longer in that list.** Read against prod1 on
+2026-09-05, `initialize` answers `resources: {subscribe: true, listChanged:
+false}` and `logging: {}` — the baseline said the opposite of both, and a
+capability advertised as true is a promise the `-32601` defence does not
+cover. Subscribe and unsubscribe are implemented and, since the same day,
+actually deliver: see [A subscriber is told, or nobody
+is](#a-subscriber-is-told-or-nobody-is).
+
+Read the baseline before reading twenty-one failures as twenty-one bugs. Each
+entry names what it is waiting for; an entry is a debt with a name, not a
+silence, and a new failure outside the baseline blocks the release.
+:::
+
+The suite carries scenarios for 2025-03-26, 2025-06-18 and 2025-11-25 and
+**none for 2026-07-28**, which this gateway also serves. The harness asks for
+that version, gets no scenarios, and skips saying so — a run that executes
+nothing must not be read as a pass. When the suite ships them the skip becomes
+a run with no change here.
+
+## What is not here yet
+
+Named plainly, because an operator reading a route should know what stands
+behind it.
+
+:::note Most of this list is off in standalone anyway
+
+The deployment ships with `DATALAYER_MCP_STANDALONE=true`, which turns off
+the durable engine, the scheduled jobs and the policy fetch by design rather
+than by omission. The entries below describe the platform mode; check
+`readyz`'s `mode` before chasing any of them — and its `records` before
+believing the mode, since [turning the flag off](#turning-it-off) does not by
+itself move anything out of the process.
+:::
+
+- **Durable runs.** `mcp-tasks` is read and `/api/mcp/v1/tasks/*` is served,
+  but the engine that *creates* tasks — [Durable](/services/system/durable/)
+  — is deployed separately and is not required. Without it the gateway falls back to an
+  in-process workflow backend that reports `durable: false`, and a run does
+  not survive the pod. `GET /api/mcp/v1/operations/workflows` says which you
+  have; do not read an empty task list as "nothing is running" until it says
+  `durable: true`.
+- **The organization and personal policy layers.** `/api/mcp/v1/policy`
+  answers, and the platform layer in it is real — the tool table narrowed by
+  the token's scopes, which is what decides every refusal the gateway makes
+  today. The layers *are* enforced: a tool denylist or allowlist, a
+  client allowlist and a per-minute cap refuse the call and name the layer
+  that decided — and **IAM serves them now**, at
+  `/api/iam/v1/mcp-policies/{scope}/{uid}`. See
+  [Policy layers](#policy-layers) for what may be written and by whom.
+  A layer only ever narrows. A team cannot re-admit what its organization
+  denied, and a cap is taken as the smallest of the platform's, the
+  organization's and the team's — a layer that could raise a limit would be a
+  way to buy more of the platform by writing a setting.
+  Two empties are not restrictions: an empty tool allowlist and an empty
+  client allowlist admit everything, because a setting somebody created and
+  has not filled in would otherwise refuse every agent in the organization,
+  and the first conclusion anyone draws from that is that the gateway is
+  down.
+- **DPoP.** Not enforced, and deliberately not built ahead of the Agent
+  Identity WG's finalized profile.
+- **Signed audit forwarding.** Unsigned over https and to an S3-compatible
+  store both work and are scheduled. A signing secret cannot be resolved by
+  this gateway yet, so `destination_secret_ref` is refused rather than stored
+  — see [Audit settings](#audit-settings).
+- **Alert delivery beyond the app.** The rules exist, the evaluator runs on
+  its minute tick and a firing reaches ai-agents as a notification — see
+  [Alert rules](#alert-rules). Email, the organization's webhook and Slack
+  through it are not built. And four of the six conditions have **no
+  reader**: `audit.write_failures`, `spend.credits` and the two `sli.*` need
+  IAM's ledger and the OTEL service, so a rule naming one of those is counted
+  `unreadable` every tick and never fires. That is the honest outcome — a
+  reader answering zero would turn "nobody is watching this" into "this never
+  happens" — but it is not the same as being watched.
+- **The load test** that would state a per-replica capacity is not in the
+  repository, so the numbers behind the HPA targets are unmeasured.
+
+See [the CLI](#the-cli) for what `datalayer mcp` can answer today.
+
+:::note `/api/mcp/v1/executions/*` is gone
+It was an alias for the task routes while those were being built, backed by a
+per-process registry that lost its contents when a pod was replaced. Use
+`/api/mcp/v1/tasks/*`, which reads `mcp-tasks` and answers the same on every
+replica. Nothing hand-written called the alias.
+:::
+
+## The CLI
+
+`datalayer mcp` reads this gateway with the caller's own token, so an
+administrator sees what an administrator may and a user sees their own. It is
+the fastest way to answer most of the questions on this page without curl.
+
+| Command | Answers |
+| --- | --- |
+| `datalayer mcp setup <client>` | Writes an MCP client's configuration for this endpoint — `claude-code`, and the other registered clients |
+| `datalayer mcp agents` | The agents connected to your account |
+| `datalayer mcp bindings list` | The handles you hold: notebooks, toolsets, sandboxes — `lost` ones included, with why |
+| `datalayer mcp bindings terminate <uid>` | Ends one, terminating the sandbox through Runtimes |
+| `datalayer mcp tasks list` / `describe` / `cancel` / `input` | The runs the agents started, and answering one that is waiting on a person |
+| `datalayer mcp audit` | The rows: your own, or the organization's with the role for it |
+| `datalayer mcp policy` | The effective policy for your token, rule by rule, with the layer that decided each |
+| `datalayer mcp toolsets list` | The sources that lend tools, and which have a session open |
+| `datalayer mcp toolsets enable <source>` / `disable <session>` | Open or revoke a Contents MCP session, so an agent can call a source's tools |
+| `datalayer mcp sandboxes sharing <name>` | Who a sandbox of yours is shared with |
+| `datalayer mcp sandboxes share <name> --user/--team/--organization/--agent [--level]` | Share it; `--replace` makes the lists given the whole grant at that level |
+| `datalayer mcp sandboxes unshare <name> [--level]` | Take a share back; naming nobody revokes everybody at the level |
+| `datalayer mcp sandboxes permissions <name>` | What you may do with a sandbox, yours or somebody else's |
+| `datalayer mcp alerts list` / `ack` | The rules that fired. `ack` names **who** acknowledged rather than showing a tick — "who saw this" is the question |
+| `datalayer mcp activity` | What each connected client last did |
+| `datalayer mcp forwarding` | Whether the audit is reaching the organization's own system of record |
+| `datalayer mcp jobs` | The periodic work, per replica — read [Periodic work](#periodic-work) before the numbers |
+| `datalayer mcp trace` / `metrics` / `logs` | What the [OTEL service](/services/system/otel/) holds, which is everything the gateway exports |
+
+## Test after a deploy
+
+```bash
+# The gateway, its dependencies and its store
+curl -s https://mcp.datalayer.run/api/mcp/version
+# platform + solr, or standalone + memory; platform + memory is the silent one
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '{mode, records}'
+curl -s https://mcp.datalayer.run/api/mcp/readyz | jq '.dependencies[] | {name, required, ready}'
+curl -s https://mcp.datalayer.run/.well-known/oauth-protected-resource/mcp | jq
+curl -i -s https://mcp.datalayer.run/mcp | grep -i www-authenticate
+# Scaling: two replicas, a budget, a spread
+kubectl get deployment,hpa,pdb -n datalayer-api -l app=jupyter-mcp-server
+kubectl get pods -n datalayer-api -l app=jupyter-mcp-server -o wide   # on different nodes
+# As a user
+datalayer mcp setup claude-code                # writes the client configuration
+datalayer mcp bindings list                    # the handles you hold, sandboxes included
+# As a platform administrator
+curl -H "Authorization: Bearer ${DATALAYER_TOKEN}" \
+  https://mcp.datalayer.run/api/mcp/v1/operations/workers | jq '.items[] | {replica, user_uid}'
+```
+
+Then connect a real client and run one tool: `claude mcp add datalayer
+--transport http https://mcp.datalayer.run/mcp`, authenticate through the
+browser flow, and ask it to list your notebooks. A `401` that carries
+`WWW-Authenticate`, a consent screen, and a tool result is the whole
+authentication path exercised end to end.
+
+## Tear down
+
+```bash
+plane down datalayer-jupyter-mcp-server
+```
+
+Removing the release removes the Deployment, Service, Ingress, HPA, PDB and the
+`mcp.datalayer.run` Certificate. It does **not** delete the `mcp-gateway`,
+`mcp-tasks` or `mcp-audit` collections, their Solr backups, the OAuth grants
+IAM holds for the clients that connected, or any sandbox a session left running.
+
+Before tearing down a cluster that agents are connected to:
+
+- terminate the live sessions, or let their reservations expire — a sandbox
+  outlives the gateway, and the binding that named it goes with the release;
+- keep the `mcp` backup unit if the audit trail matters, and follow
+  [Continuity](/operations/continuity/) rather than deleting collections;
+- revoke the OAuth grants in IAM if the endpoint is not coming back, so a
+  client is refused rather than left retrying against a host that no longer
+  resolves.
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://mcp.datalayer.run/api/mcp/v1/docs).

@@ -1,0 +1,62 @@
+---
+title: Home
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🏠 Datalayer Home
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">Service</Label>
+</Stack>
+
+## Deploy Datalayer Home
+
+<Tabs groupId="k8s">
+  <TabItem value="plane-cert-up" label="Plane" default>
+```bash
+plane up datalayer-home
+```
+
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-home.sh
+```
+  </TabItem>
+</Tabs>
+
+## Tear Down Datalayer Home
+
+```bash
+plane down datalayer-home
+```
+
+## About
+
+The `Home` service handles the root URL redirect for the Datalayer platform. When a user navigates to the base domain (e.g. `https://<run-host>/`), this service redirects them to the main Datalayer website at [datalayer.ai](https://datalayer.ai). This provides a clean landing experience and ensures the root path is not left with an empty or unexpected response.
+
+The service is implemented as a lightweight Helm chart that deploys a Kubernetes Ingress resource matching the `/` path with an `Exact` path type. On clusters using Traefik as the ingress controller, a `redirect-root` middleware performs a permanent (301) regex redirect. For Nginx-based ingress controllers, the redirect is handled via the `nginx.ingress.kubernetes.io/permanent-redirect` annotation. No application container is deployed — the redirect is handled entirely at the ingress level. The ingress backend references the IAM service (`datalayer-iam-svc`) in the same namespace so that Traefik can register a valid route; the middleware intercepts the request before it ever reaches that backend.
+
+The Home chart was extracted from the IAM chart to follow a single-responsibility principle. This separation allows the root redirect to be deployed, updated, or removed independently of the IAM service. It also makes it possible to customise the redirect target via the `home.redirectUrl` value without touching any IAM configuration. The chart must be deployed in the same namespace as `datalayer-iam` (`datalayer-api`) since the ingress backend depends on the IAM service being reachable.
+
+## Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `home.clusterType` | Cluster type (`any` to enable the ingress) | `any` |
+| `home.ingressClass` | Ingress class to use | `datalayer-traefik` |
+| `home.certificateIssuer` | Cert-manager cluster issuer | `letsencrypt` |
+| `home.redirectUrl` | Target URL for the root redirect | `https://datalayer.ai` |
+| `home.env.DATALAYER_RUN_URL` | Platform run URL (host is derived from this) | `""` |

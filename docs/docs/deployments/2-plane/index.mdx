@@ -9,7 +9,13 @@ import TabItem from '@theme/TabItem';
 
 You will invoke plane `up` or `down` command to deploy or tear down a specific service.
 
-For example to deploy and undeploy the Datalayer IAM sevice, use the following commands.
+Before, make sure you have updated the needed helm repositories.
+
+```bash
+plane helm-repos-update all
+```
+
+Then, to deploy and undeploy the Datalayer IAM service for example, use the following commands.
 
 ```bash
 # Deploy datalayer-iam for example.

@@ -1,0 +1,838 @@
+---
+title: Solr
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🔎 Datalayer Solr
+
+## Apache Solr Operator
+
+To deploy Solr, you first need to deploy the [Solr Operator](https://solr.apache.org/operator).
+
+```bash
+helm repo add apache-solr https://solr.apache.org/charts
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-solr-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+nodeSelector:
+  role.datalayer.io/system: "true"
+zookeeper-operator:
+  nodeSelector:
+    role.datalayer.io/system: "true"
+EOF
+export RELEASE=datalayer-solr-operator
+export NAMESPACE=datalayer-solr-operator
+kubectl create \
+  -n $NAMESPACE \
+  -f https://solr.apache.org/operator/downloads/crds/v0.9.1/all-with-dependencies.yaml
+helm upgrade \
+  --install $RELEASE \
+  apache-solr/solr-operator \
+  --version 0.9.1 \
+  --create-namespace \
+  --namespace $NAMESPACE \
+  --values /tmp/values.yaml \
+  --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-solr-operator.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Solr CRDs.
+
+```bash
+kubectl explain solrcloud.spec.zookeeperRef.provided.config
+kubectl explain solrcloud.spec.zookeeperRef.provided.persistence
+kubectl explain solrcloud.spec.zookeeperRef.provided.persistence.spec
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Solr Operator Pods.
+
+```bash
+kubectl get pods -n datalayer-solr-operator -l control-plane=solr-operator
+```
+
+## Datalayer Solr Cluster
+
+Prepare a AWS S3 bucket for the Solr backups (the `DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME` environment variable should contain that name) and create a secret with write access to that S3 bucket.
+
+```bash
+kubectl create secret generic aws-creds \
+  --from-literal=access-key-id=$AWS_ACCESS_KEY_ID \
+  --from-literal=secret-access-key=$AWS_SECRET_ACCESS_KEY \
+  --namespace=datalayer-solr
+kubectl describe secret aws-creds -n datalayer-solr
+```
+
+Create a secret for the Solr authentication.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: solr-basic-auth
+  namespace: datalayer-solr
+type: kubernetes.io/basic-auth
+stringData:
+  username: ${DATALAYER_SOLR_USERNAME}
+  password: ${DATALAYER_SOLR_PASSWORD}
+EOF
+kubectl describe secret solr-basic-auth -n datalayer-solr
+# Secret for the datalayer-api namespace.
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: solr-basic-auth
+  namespace: datalayer-api
+type: kubernetes.io/basic-auth
+stringData:
+  username: ${DATALAYER_SOLR_USERNAME}
+  password: ${DATALAYER_SOLR_PASSWORD}
+EOF
+kubectl describe secret solr-basic-auth -n datalayer-api
+```
+
+You are now ready to create a Solr cluster. ensure the `DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME` and `DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION` variables with the name and region of the S3 bucket for the backups.
+
+You can also configure the size of the cluster, a 3 nodes replica cluster is what is defined in the following spec.
+
+> **Version compatibility note**
+> Use Solr `9.10.0` with Solr Operator `0.9.1` in this setup.
+> Solr `10.x` currently fails to start with the operator-generated `solr.xml` due to the
+> `genericCoreNodeNames` parameter in the `<solrcloud>` section, which causes startup probe failures and pod restart loops.
+> If you previously deployed with `10.x`, patch the `SolrCloud` back to `9.10.0` and wait for the StatefulSet rollout to complete.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+kubectl apply -f $PLANE_HOME/etc/specs/solr/datalayer-solr.yaml
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: solr.apache.org/v1beta1
+kind: SolrCloud
+metadata:
+  name: solr-datalayer
+  namespace: datalayer-solr
+spec:
+  dataStorage:
+    persistent:
+      reclaimPolicy: Retain
+      pvcTemplate:
+        spec:
+          resources:
+            requests:
+              storage: "200Gi"
+  replicas: 3
+  solrImage:
+    tag: 9.10.0
+  solrJavaMem: "-Xms1g -Xmx5g"
+  solrModules:
+    - s3-repository
+  additionalLibs:
+    - "/opt/solr/contrib/s3-repository/lib"
+  backupRepositories:
+    - name: s3
+      s3:
+        bucket: ${DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME}
+        region: ${DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION}
+        credentials:
+          accessKeyIdSecret:
+            name: aws-creds
+            key: access-key-id
+          secretAccessKeySecret:
+            name: aws-creds
+            key: secret-access-key
+  customSolrKubeOptions:
+    podOptions:
+      nodeSelector:
+        role.datalayer.io/solr: "true"
+      envVars:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: aws-creds
+            key: access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: aws-creds
+            key: secret-access-key
+      - name: AWS_DEFAULT_REGION
+        value: us-east-1
+      resources:
+        limits:
+          memory: "3G"
+        requests:
+          cpu: "65m"
+          memory: "1G"
+  zookeeperRef:
+    provided:
+      zookeeperPodPolicy:
+        nodeSelector:
+          role.datalayer.io/solr: "true"
+        resources:
+          limits:
+            memory: "1G"
+          requests:
+            cpu: "65m"
+            memory: "156Mi"
+      persistence:
+        reclaimPolicy: Delete
+        spec:
+          resources:
+            requests:
+              storage: "5Gi"
+      replicas: 3
+  solrOpts: "-Dsolr.autoSoftCommit.maxTime=10000"
+  solrGCTune: "-XX:SurvivorRatio=4 -XX:TargetSurvivorRatio=90 -XX:MaxTenuringThreshold=8"
+  solrSecurity:
+    authenticationType: "Basic"
+    basicAuthSecret: "solr-basic-auth"
+    probesRequireAuth: false
+EOF
+```
+  </TabItem>
+</Tabs>
+
+Check the creation of the Solr Cluster Pods. It may take multiple minutes to get a completely up-and-running Solr cluster, mainly due to the time to provision the required storage.
+
+```bash
+kubectl get solrclouds -n datalayer-solr -w
+# NAME             VERSION   TARGETVERSION   DESIREDNODES   NODES   READYNODES   UPTODATENODES   AGE
+# solr-datalayer   9.10.0                    3              3       3            3               79s
+kubectl get pods -n datalayer-solr -w
+kubectl describe pods -n datalayer-solr | grep Node
+```
+
+## Create Datalayer Solr Collections
+
+Solr collections are organized into three sets that can be initialized
+independently: **Core**, **AI** and **Runtimes**. Every collection belongs to
+exactly one of them — 18 / 6 / 8, 32 in total. A collection is never listed in
+two sets to make it visible from two planes.
+
+### Core Collections (18)
+
+Platform collections used by the main Datalayer services:
+
+| Collection | Purpose |
+|---|---|
+| `api-keys` | IAM authentication tokens |
+| `contacts` | Contact information |
+| `credits` | Usage credits |
+| `events` | Agent lifecycle and system event records |
+| `iam` | Identity and access management |
+| `inbounds` | Inbound integrations |
+| `invites` | User invitations |
+| `library` | Content library |
+| `notifications` | User-facing notifications records |
+| `oauth-clients` | OAuth client registrations |
+| `oauth-codes` | OAuth authorization codes |
+| `oauth-grants` | OAuth grants |
+| `outbounds` | Outbound integrations |
+| `schedules` | Scheduled jobs |
+| `secrets` | Encrypted secrets metadata |
+| `spaces` | Workspace spaces |
+| `success` | Success tracking |
+| `usage` | Platform usage metrics |
+
+Note: The `notifications` collection stores user-facing notifications, while `events` stores lifecycle and system events.
+
+### AI Collections (6)
+
+What the AI services own — `ai-agents` and the Jupyter MCP Server gateway:
+
+| Collection | Owner | Purpose |
+|---|---|---|
+| `ai-agents` | ai-agents | AI agents service records |
+| `evals` | ai-agents | Evaluation definitions and results |
+| `tool-approvals` | ai-agents | Tool approval requests and decision state |
+| `mcp-gateway` | Jupyter MCP Server | Handles (notebook, toolset and sandbox bindings), the worker directory, rate windows and fired alerts |
+| `mcp-tasks` | Jupyter MCP Server | Task projection (`mcp_task` roots, bounded `mcp_task_output` children) |
+| `mcp-audit` | Jupyter MCP Server | Immutable audit events, one per call and decision |
+
+These six were Core until 2026-08-28, placed by the rule that a service's
+collections live in the set initialized by the plane where that service runs —
+and both AI services do run on the platform plane. That rule answers *where a
+collection is created* and leaves *what it belongs to* unsaid. These arrive
+with the AI services, a cluster running without those services has no use for
+them, and they are recovered with each other rather than with `iam` and
+`spaces`. So they are their own set, and the deployment plane still decides
+routing while ownership decides placement.
+
+The set is the `ai` recovery scope (backup resource
+`datalayer-solr-ai-backups`). The three `mcp-*` collections form the narrower
+`mcp` scope inside it (`datalayer-solr-mcp-backups`), so the gateway can be
+recovered on its own and on a tighter schedule — the way the four Contents
+collections form the `contents` scope inside the Runtimes set.
+
+#### Retention
+
+`mcp-audit` is append-only and never updated in place; rows age out on the
+retention window the gateway reports in `GET /api/mcp/v1/audit`
+(`retention_days`). `mcp-gateway` holds short-lived, compare-and-set records
+with their own TTLs — bindings expire on `BINDING_TTL_SECONDS`, rate windows
+sooner — so it stays small and hot and must not contend with the other two.
+
+### Runtimes Collections (8)
+
+Collections specific to the runtimes plane, Contents included — the Contents
+service is deployed there, beside the NFS that backs the Home Folder and the
+Volumes:
+
+| Collection | Purpose |
+|---|---|
+| `ray` | Ray service records |
+| `runtime-registrations` | Runtime registrations |
+| `runtime-checkpoints` | Runtime checkpoint records (CRIU snapshots metadata) |
+| `sandbox-snapshots` | Runtime snapshot records, and the sharing record of each shared runtime (`type_s: runtime_sharing`, keyed on the runtime name, never carrying `account_uid` or `uid`) |
+| `contents` | Content sources, grants, revisions and attachments |
+| `content-objects` | Contents object/version and materialization metadata |
+| `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
+| `content-audit` | Immutable Contents audit and provenance events |
+
+The inventory is 18 Core plus 6 AI plus 8 Runtimes collections, 32 in total.
+Always verify the arrays and manifests rather than relying on these numbers
+alone (`scripts/check_solr_collections_parity.py` in the Services repository
+asserts them against both canonical lists, and refuses a collection that
+appears in two sets by naming it).
+
+All four Contents collections — `contents`, `content-objects`,
+`content-operations` and `content-audit` — belong to the **Runtimes** set, and
+together they form one operational recovery scope. The Contents service is
+deployed on the runtimes plane, beside the NFS that backs the Home Folder and
+the Volumes, so its collections initialize with that plane: a plane brought up
+with the Runtimes set has everything `datalayer-contents` reads and writes.
+Omitting one of them leaves the worker crashing at startup with
+`Unknown collection`, which is how `content-operations` was found missing. The
+`contents` scope stays available to backup, status, task cleanup and restore
+commands; it does not create duplicate collections.
+
+### The Contents mapping
+
+`datalayer_solr/contents_mappings.json` records every Contents document family:
+its `type_s`, the fields it writes, its nested children, the sorts it pages by
+and the fields carrying an expiry. It is generated from the DAO codecs and
+queries by `scripts/generate_contents_mappings.py` and verified by a test, so
+it describes what the code does rather than what it did when someone last
+updated a table by hand. Regenerate it in the same change that adds a field:
+
+```bash
+cd services/solr && python3 scripts/generate_contents_mappings.py
+```
+
+Cursor pagination follows Solr's rule: a `cursorMark` query must sort on the
+**uniqueKey** (`id`) as a tie breaker, or Solr answers HTTP 400. Contents sorts
+by public identity and appends `id asc` — `uid asc,id asc` for sources — so the
+page order stays meaningful and the cursor stays legal.
+
+The collections use the shared managed configset and its typed dynamic fields
+(`*_s`, `*_t`, `*_dt`, numeric and boolean variants). Application-facing UIDs
+are ULIDs stored in exact UID fields; Solr's internal `id` remains important
+for optimistic updates and nested blocks but is not the user-facing identity.
+Bounded grants and attachment status details may use nested documents.
+Unbounded revisions, objects, operations and audit events are independent root
+documents linked by exact `*_uid` fields.
+
+### The MCP mapping
+
+`datalayer_solr/mcp_mappings.json` is the same kind of record for the
+[Jupyter MCP Server](/services/jupyter-mcp-server/): every document family
+the gateway's three collections hold, its `type_s`, the fields it writes,
+the sorts it pages by and the fields carrying an expiry. It is generated
+from the DAO codecs by `scripts/generate_mcp_mappings.py` and a test
+regenerates it and fails when the checked-in copy disagrees with the code.
+
+Eight DAO modules write three collections. `mcp-tasks` and `mcp-audit` hold
+one family each; `mcp-gateway` holds the rest — bindings, the worker
+directory, rate windows, fired alerts, leases, policies, alert rules, audit
+settings, service agents and task grants — each a `type_s` in the one
+collection, so a new family there is **not** a new collection.
+
+Regenerate in the same change that adds a field, a sort or a family:
+
+```bash
+cd services/solr && python3 scripts/generate_mcp_mappings.py
+python3 -m pytest datalayer_solr/tests/test_mcp_solr.py -q
+```
+
+The mapping carries a version. `datalayer_solr/mcp_schema.py` records
+`MCP_MAPPING_VERSION` and the fingerprint of the generated mapping at every
+version, and the test holds the two together: a codec change that forgets to
+bump the version fails the build. So a change that alters what the mapping
+*means* is three edits — the codec, the version, and the new fingerprint the
+failing test prints, read from the regenerated file's `fingerprint` key —
+with a line saying what changed and whether it is additive. Every version so
+far has been additive: a document written under an older version reads back
+with the new field absent, which is what it meant.
+
+Two rules the generator enforces, because Solr does. A cursor query must
+sort on the uniqueKey as a tie breaker, so every paging sort ends in
+`id asc` or `id desc` — `created_at_dt desc,id desc` for task grants. And a
+domain field has one suffix: a field written as `task_uid` in one family
+cannot be `task_uid_s` in another.
+
+**Nothing is pushed to Solr for a mapping change.** The collections use the
+shared managed configset and its typed dynamic fields, so a new field is
+writable the moment a service writes it; the JSON is a record and a test,
+not a schema. What does need the cluster is a **new collection**: add it to
+the `SOLR_COLLECTIONS_AI` and `SOLR_COLLECTIONS_MCP` arrays below, to the
+table above, and run `plane solr-init` for the AI set — creating a collection
+that exists is skipped, so the set is safe to re-run.
+
+#### Mapping 15: a Pod name is not a uid
+
+Version 15 renames a sandbox binding's misnamed field. It stored the Pod
+name Runtimes knows the sandbox by, under the name `sandbox_uid` — and a
+sandbox's uid is a ULID, which that field never held. The binding stores
+`runtime_name_s` now, and the uid is derived from the binding's own handle
+rather than stored at all, because it is a function of it.
+
+**Not additive.** A binding written under version 14 has no
+`runtime_name_s`, so the gateway cannot reach that sandbox through
+Runtimes. Bindings are short-lived — they carry `BINDING_TTL_SECONDS` — so
+the old ones age out within the hour rather than being migrated. What a
+deployment loses is the sessions in flight at the rollout, which a gateway
+restart ends anyway.
+
+### Source of Truth
+
+The collection arrays are defined in `solr-collections.sh`:
+
+- `SOLR_COLLECTIONS_CORE` — Core platform collections
+- `SOLR_COLLECTIONS_RUNTIMES` — Runtimes collections
+- `SOLR_COLLECTIONS_CONTENTS` — Contents recovery set across both groups
+- `SOLR_COLLECTIONS` — All collections combined (union of the above two)
+
+The `solr-init` script prompts which collection set to create. This is how
+you add a set to a cluster that already has the others without issuing a
+create against every collection it already holds — bringing the Jupyter MCP
+Server up on an existing platform plane, say. Creating a collection that
+already exists fails and is skipped, so any set is safe to re-run; pick the
+narrowest one that covers what is missing.
+
+<Tabs groupId="solr">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane solr-init
+# Select:
+#   1) Core       - Platform collections (18 collections)
+#   2) Runtimes   - Runtimes collections (8 collections, Contents included)
+#   3) All        - All collections (32 collections)
+#   4) AI         - AI collections (6 collections: ai-agents, evals,
+#                   tool-approvals, mcp-gateway, mcp-tasks, mcp-audit)
+#
+# The init pod is created, logs are streamed, and the pod is auto-cleaned.
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+
+## Access Datalayer Solr
+
+To connect from you host to the Solr user interface, add the following entries in your `/etc/hosts` file.
+
+```bash
+# /etc/hosts
+127.0.0.1      solr-datalayer-solrcloud-0.solr-datalayer-solrcloud-headless.datalayer-solr solr-datalayer-solrcloud-1.solr-datalayer-solrcloud-headless.datalayer-solr solr-datalayer-solrcloud-2.solr-datalayer-solrcloud-headless.datalayer-solr
+
+127.0.0.1      solr-datalayer-solrcloud-zookeeper-0.solr-datalayer-solrcloud-zookeeper-headless.datalayer-solr.svc.cluster.local solr-datalayer-solrcloud-zookeeper-1.solr-datalayer-solrcloud-zookeeper-headless.datalayer-solr.svc.cluster.local solr-datalayer-solrcloud-zookeeper-2.solr-datalayer-solrcloud-zookeeper-headless.datalayer-solr.svc.cluster.local
+```
+
+Launch two kubectl port-forward to the Kubernetes cluster.
+
+```bash
+# open http://localhost:8983/solr
+# open http://solr-datalayer-solrcloud-0.solr-datalayer-solrcloud-headless.datalayer-solr:8983/solr
+kubectl port-forward -n datalayer-solr service/solr-datalayer-solrcloud-zookeeper-client 2181:2181 &
+kubectl port-forward -n datalayer-solr service/solr-datalayer-solrcloud-headless 8983:8983 &
+wait
+```
+
+You will need Java and [Apache Solr](https://solr.apache.org) available on your system as well as the configuration files.
+
+```bash
+export ZK_HOST=localhost:2181
+export SOLR_HOME=/opt/solr
+export SOLR_AUTH_TYPE="basic"
+export SOLR_AUTHENTICATION_OPTS="-Dbasicauth=solr:${DATALAYER_SOLR_PASSWORD}"
+export PATH=$SOLR_HOME/bin:$PATH
+export YELLOW='\x1b[33m'
+export RESET='\x1b[0m'
+
+for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
+do
+    echo
+    echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
+    echo
+    $SOLR_HOME/bin/solr create -c $COLLECTION -shards 3 -replicationFactor 3 -d $PLANE_HOME/etc/dockerfiles/datalayer-solr/config -p 8983
+done
+```
+  </TabItem>
+</Tabs>
+
+## Backup Datalayer Solr
+
+Solr collections are backed up to an AWS S3 bucket using the Solr Operator [`SolrBackup`](https://solr.apache.org/operator/articles/solr-backup.html) CRD. The backup relies on the `s3` repository configured in the `SolrCloud` spec (see [Datalayer Solr Cluster](#datalayer-solr-cluster) above).
+
+Six backup definitions are available. Contents, AI and MCP have distinct
+resource names so their coordinated schedules can run beside the full backup:
+
+| File | Scope | CR Name |
+|------|-------|---------|
+| `datalayer-backup-s3.yaml` | All 32 collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-ai.yaml` | The 6 AI collections | `datalayer-solr-ai-backups` |
+| `datalayer-backup-s3-core.yaml` | 18 Core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-runtimes.yaml` | 8 Runtimes collections, the four Contents ones included | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
+| `datalayer-backup-s3-mcp.yaml` | 3 Jupyter MCP Server collections | `datalayer-solr-mcp-backups` |
+
+All backups run every 10 minutes and retain up to 200 snapshots.
+
+### Prerequisites
+
+- The `aws-creds` secret must exist in the `datalayer-solr` namespace (see [Datalayer Solr Cluster](#datalayer-solr-cluster)).
+- The `DATALAYER_SOLR_BACKUP_S3_BUCKET_NAME` and `DATALAYER_SOLR_BACKUP_S3_BUCKET_REGION` environment variables must be set.
+
+### Apply the Backup Schedule
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Prompt for backup set (core / runtimes / contents / all).
+plane solr-backups-apply
+# Apply a specific backup spec directly.
+plane solr-backups-apply core
+plane solr-backups-apply runtimes
+plane solr-backups-apply contents
+plane solr-backups-apply all
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+# Example: All collections.
+cat <<EOF | kubectl apply -f -
+apiVersion: solr.apache.org/v1beta1
+kind: SolrBackup
+metadata:
+  name: datalayer-solr-collection-backups
+  namespace: datalayer-solr
+spec:
+  repositoryName: s3
+  solrCloud: solr-datalayer
+  collections:
+    - ai-agents
+    - contacts
+    - content-audit
+    - content-objects
+    - contents
+    - credits
+    - evals
+    - events
+    - iam
+    - api-keys
+    - inbounds
+    - invites
+    - library
+    - notifications
+    - oauth-clients
+    - oauth-codes
+    - oauth-grants
+    - outbounds
+    - schedules
+    - secrets
+    - spaces
+    - success
+    - tool-approvals
+    - usage
+    - content-operations
+    - ray
+    - runtime-registrations
+    - runtime-checkpoints
+    - sandbox-snapshots
+  recurrence:
+    schedule: "*/10 * * * *" # every 10 minutes
+    maxSaved: 200
+EOF
+```
+  </TabItem>
+</Tabs>
+
+### Inspect Solr Collection and Shard Health
+
+Use the Solr status command to inspect available collections and list shard and replica details directly from the Solr API (`localhost:8983`) through the Solr pod.
+
+```bash
+# Inspect all collections.
+plane solr-status
+
+# Inspect one collection.
+plane solr-status iam
+```
+
+### Monitor Backups
+
+```bash
+# List all backups.
+kubectl get solrbackups -n datalayer-solr
+# Describe a specific backup for detailed status.
+kubectl describe solrbackup datalayer-solr-collection-backups -n datalayer-solr
+# Plane summary command (analyzes command outputs and prints a summary).
+plane solr-backups-status
+# Inspect only the coordinated Contents backup resource.
+plane solr-backups-status contents
+```
+
+### Diagnose Failed Backups
+
+When a backup fails, `plane solr-backups-status` reports:
+
+- top-level backup status (`running`, `completed`, `failed`)
+- per-collection status (`running`, `successful`, `failed`)
+- per-collection S3 prefix (`s3Prefix`) to verify whether backup artifacts exist
+- a `failedProcessDebug` command to inspect Solr Operator logs
+
+In some runs, `SolrBackup` status does not expose a detailed root-cause message for failed collections. In that case the failure reason can remain generic even though the failure is real.
+
+Practical verification workflow:
+
+```bash
+# 1) Confirm failed collections in the backup summary.
+plane solr-backups-status
+
+# 2) Check whether expected S3 backup content exists for a failed collection.
+# Example for iam:
+aws s3 ls s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/
+
+# 3) Inspect Solr operator logs for additional context.
+kubectl logs -n datalayer-solr-operator $(kubectl get pods -n datalayer-solr-operator -o name | grep datalayer-solr-operator- | grep -v zookeeper | head -n 1 | sed 's#pod/##') --since=2h | grep -E 'datalayer-solr-collection-backups|error|failed|exception' -i
+
+# 4) Inspect collection/shard/replica state.
+plane solr-status iam
+```
+
+If the S3 path is empty for a failed collection (for example `datalayer-solr-collection-backups-iam/iam/index/`), that confirms the backup artifact was not produced, even when no explicit root-cause string is present in `SolrBackup.status`.
+
+### Clean Stale Backup Async Tasks
+
+When Solr Operator logs show `Task with the same requestid already exists` for a collection backup, clear the stored async task response for the affected collection(s).
+
+Use `plane solr-backups-clean-tasks` to clean request IDs for a selected scope
+(core, runtimes, contents, all, or a single collection).
+
+```bash
+# Prompt for scope (core / runtimes / contents / all / single collection).
+plane solr-backups-clean-tasks
+
+# Clean by predefined set.
+plane solr-backups-clean-tasks core
+plane solr-backups-clean-tasks runtimes
+plane solr-backups-clean-tasks contents
+plane solr-backups-clean-tasks all
+
+# Clean one collection.
+plane solr-backups-clean-tasks collection library
+# or shorthand:
+plane solr-backups-clean-tasks library
+```
+
+Equivalent direct Solr API command for a single collection:
+
+```bash
+COLLECTION=library
+kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -c solrcloud-node -- \
+  curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
+  "http://localhost:8983/solr/admin/collections?action=DELETESTATUS&requestid=datalayer-solr-collection-backups-${COLLECTION}&wt=json"
+```
+
+If needed, flush all stored async statuses:
+
+```bash
+kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -c solrcloud-node -- \
+  curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
+  "http://localhost:8983/solr/admin/collections?action=DELETESTATUS&flush=true&wt=json"
+```
+
+### Stop (Remove) Backup Schedules
+
+Use `plane solr-backups-stop` to delete the `SolrBackup` definitions with the
+same collection-set menu (core, runtimes, contents, all).
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Prompt for backup set to remove (core / runtimes / contents / all).
+plane solr-backups-stop
+# Remove a specific backup definition directly.
+plane solr-backups-stop core
+plane solr-backups-stop runtimes
+plane solr-backups-stop contents
+plane solr-backups-stop all
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+# Equivalent kubectl delete commands.
+kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-core.yaml --ignore-not-found
+kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-runtimes.yaml --ignore-not-found
+kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3-contents.yaml --ignore-not-found
+kubectl delete -f $PLANE_HOME/etc/specs/solr/backups/datalayer-backup-s3.yaml --ignore-not-found
+```
+  </TabItem>
+</Tabs>
+
+## Restore Datalayer Solr
+
+Restore Solr collections from an S3 backup using the `plane solr-restore` command. The restore calls the Solr [Collections API RESTORE action](https://solr.apache.org/guide/solr/latest/deployment-guide/collection-management.html#restore) asynchronously for each collection.
+
+When restoring multiple collections, the script prompts which collection set
+to restore (core, runtimes, contents, or all). Specifying a single collection
+on the command line bypasses the prompt.
+
+### Prerequisites
+
+- The `DATALAYER_SOLR_PASSWORD` environment variable must be set.
+- A valid backup must exist in the S3 repository (check with `kubectl get solrbackups -n datalayer-solr`).
+
+### Restore Collections
+
+Core, Runtimes and all-collection restores use
+`datalayer-solr-collection-backups`. The Contents scope automatically uses its
+independent `datalayer-solr-contents-backups` resource.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Restore collections (prompts for set: core / runtimes / contents / all).
+plane solr-restore
+# Restore the coordinated Contents set from its dedicated backup.
+plane solr-restore contents
+# Restore only a specific collection (no prompt).
+plane solr-restore datalayer-solr-collection-backups iam
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+# Restore a single collection via kubectl exec into a Solr pod.
+# The backup name per collection is: <backup-name>-<collection>
+kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -- \
+  curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
+  "http://localhost:8983/solr/admin/collections?action=RESTORE&name=datalayer-solr-collection-backups-iam&collection=iam&location=/&repository=s3&async=iam-restore"
+```
+  </TabItem>
+</Tabs>
+
+### Monitor Restore Progress
+
+Restore operations are asynchronous. Use the `solr-restore-status` script to
+check a selected collection set (core, runtimes, contents, or all), or query a
+single collection.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+# Prompt for status set (core / runtimes / contents / all).
+plane solr-restore-status
+# Check all four Contents restore requests.
+plane solr-restore-status contents
+# Check a single collection.
+plane solr-restore-status iam
+```
+  </TabItem>
+  <TabItem value="bash" label="Bash">
+```bash
+# Check the status of a single restore request.
+kubectl exec -n datalayer-solr solr-datalayer-solrcloud-0 -- \
+  curl -s -u "solr:${DATALAYER_SOLR_PASSWORD}" \
+  "http://localhost:8983/solr/admin/collections?action=REQUESTSTATUS&requestid=iam-restore"
+```
+  </TabItem>
+</Tabs>
+
+For the coordinated metadata and managed-object recovery procedure, validation
+steps and rollback rules, see [Continuity](/operations/continuity/).
+
+## Scale Datalayer Solr
+
+Scale Solr replicas if needed.
+
+```bash
+kubectl scale \
+  --replicas=5 \
+  solrcloud/solr-datalayer \
+  -n datalayer-solr
+```
+
+## Tear Down Datalayer Solr
+
+Tear down the created Solr Cloud if needed.
+
+```bash
+kubectl delete solrcloud solr-datalayer -n datalayer-solr
+kubectl get solrcloud -A
+```
+
+Tear down the Solr Operator if needed.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-solr-operator
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-solr-operator
+export NAMESPACE=datalayer-solr-operator
+helm delete $RELEASE --namespace $NAMESPACE
+kubectl delete \
+  -n $NAMESPACE \
+  -f https://solr.apache.org/operator/downloads/crds/v0.9.1/all-with-dependencies.yaml
+```
+  </TabItem>
+</Tabs>
+
+## Known Limitations
+
+- Solr Operator `SolrBackup.status` may mark collection backups as failed without exposing a concrete per-collection root-cause message.
+- In that case, treat `plane solr-backups-status` as the operational source of truth for failure detection and use the reported `s3Prefix` values to verify artifact presence in S3.
+- An empty prefix (for example `s3://datalayer-backups-solr/datalayer-solr-collection-backups-iam/iam/index/`) confirms artifact creation failed even when the CR status reason is generic.
+- For root-cause investigation, use the `failedProcessDebug` command from `plane solr-backups-status` and inspect collection health with `plane solr-status <collection>`.

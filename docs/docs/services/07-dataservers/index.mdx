@@ -1,0 +1,827 @@
+---
+title: Dataservers
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🛢️ Datalayer Dataservers
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Managed</Label>
+  <Label color="green">Outbound only</Label>
+  <Label color="yellow">mTLS identity</Label>
+</Stack>
+
+A **Dataserver** runs where the data is and answers queries routed to it by
+Contents. Today that is **this cluster**: Datalayer deploys and manages it,
+beside everything else on the runtimes plane.
+
+Its defining property is not where it runs but which way it connects: **a
+Dataserver only ever dials out.** It opens no port, has no Service and no
+ingress, and nothing connects *to* it. It registers with Contents,
+heartbeats, and long-polls for work.
+
+That is worth keeping even here, where both ends are ours, for two reasons.
+It is what lets a Dataserver sit next to data that must not be exposed — a
+private subnet, a network Datalayer does not route to — without any inbound
+rule at all. And it is what makes a Dataserver something a **user** can be
+given: a process that can only fetch work and post results is one that can
+run close to somebody's data without becoming a way into it.
+
+The user-facing side is under
+[Dataservers](https://datalayer.ai/docs/contents/dataservers); this page is
+for whoever deploys one.
+
+## How a query reaches the data
+
+~~~mermaid
+flowchart LR
+  user["Notebook or agent<br/>queries a Datasource"]
+  contents["Contents<br/>routes and holds the result"]
+  ds["Dataserver<br/>close to the data"]
+  data[("The data<br/>DuckDB · Athena · BigQuery · SQL")]
+  user -- "SQL over the Datasource" --> contents
+  ds -- "outbound: register,<br/>heartbeat, long-poll" --> contents
+  ds -- "runs the query" --> data
+  ds -- "outbound: uploads the result" --> contents
+  contents -- "the result" --> user
+~~~
+
+Contents never holds the connector credentials: the connectors file lives with
+the Dataserver, beside the data. What crosses is a query and a result, both
+through a connection the Dataserver opened.
+
+## Registering and deploying one
+
+<Tabs>
+<TabItem value="chart" label="Helm chart">
+
+~~~bash
+# 1. Register it with Contents, from anywhere with the owner's token.
+datalayer contents dataservers register --identity <name> ...
+
+# 2. On the Dataserver host, obtain its identity. The private key is made
+#    here and never leaves: `bootstrap` sends a CSR and gets a certificate.
+datalayer-data-server bootstrap
+
+# 3. Check before deploying: `check` validates the configuration and tests
+#    every connector, and prints no secret while doing it.
+datalayer-data-server check
+
+# 4. The two Secrets. Neither can be made by a deploy — the identity's
+#    private key was generated on the host and does not travel.
+kubectl create namespace datalayer-dataservers
+kubectl create secret generic datalayer-dataservers-api-key \
+  -n datalayer-dataservers --from-literal=api-key=<the dataserver service key>
+kubectl create secret generic datalayer-dataservers-identity \
+  -n datalayer-dataservers \
+  --from-file=tls.crt=identity/tls.crt \
+  --from-file=tls.key=identity/tls.key \
+  --from-file=ca.crt=identity/ca.crt
+
+# 5. Deploy.
+export DATALAYER_DATASERVERS_ENABLED=true
+export DATALAYER_DATASERVER_IDENTITY=<name>    # what step 1 registered
+plane up datalayer-dataservers
+
+# 6. From the Datalayer side, confirm it arrived.
+datalayer contents dataservers status <name>
+~~~
+
+The chart is a Deployment and a ConfigMap of connectors, with Secret
+references — **no Service, no ingress**, because there is nothing to expose.
+
+`plane up datalayer-dataservers` is off unless `DATALAYER_DATASERVERS_ENABLED`
+says otherwise, and refuses rather than guessing when the identity or either
+Secret is missing — a Dataserver deployed without them registers as nobody.
+This is the operator's path, for a Dataserver an administrator places
+deliberately. A Dataserver a **user** creates from a sandbox is a different
+route to the same component, and is not built yet — see
+[From a sandbox](#from-a-sandbox-not-built-yet).
+`plane down datalayer-dataservers` removes the release and **leaves the
+Secrets**: the identity cannot be regenerated from the cluster, so taking it
+away would turn a redeploy into a re-bootstrap.
+`datalayer contents dataservers revoke <name>` is what ends an identity.
+
+| Variable | Default | What it sets |
+| --- | --- | --- |
+| `DATALAYER_DATASERVERS_ENABLED` | `false` | Whether to deploy at all |
+| `DATALAYER_DATASERVER_IDENTITY` | *(required)* | The registration name it answers as |
+| `DATALAYER_DATASERVERS_NAMESPACE` | `datalayer-dataservers` | Where it runs |
+| `DATALAYER_DATASERVER_API_KEY_SECRET` | `datalayer-dataservers-api-key` | The Secret holding the `dataserver` service key |
+| `DATALAYER_DATASERVER_IDENTITY_SECRET` | `datalayer-dataservers-identity` | The Secret holding the mTLS identity |
+| `DATALAYER_DATASERVER_SELF_BOOTSTRAP` | `false` | Obtain the certificate at start instead of mounting one. Needs `DATALAYER_DATASERVER_REGISTRATION_UID`, and Contents issues only for a registration marked `managed` — the switch grants nothing by itself |
+
+`contentsUrl` comes from `DATALAYER_CONTENTS_URL` (or `DATALAYER_RUNTIMES_URL`).
+
+</TabItem>
+<TabItem value="process" label="As a process">
+
+For a host that is not Kubernetes:
+
+~~~bash
+export DATALAYER_CONTENTS_URL=https://<contents host>
+export DATALAYER_CONTENTS_DATASERVER_API_KEY=<the dataserver service key>
+datalayer-data-server check     # configuration and every connector
+datalayer-data-server run       # registers, heartbeats, serves
+~~~
+
+`run` needs the certificate and key from `bootstrap` and the connectors file.
+
+</TabItem>
+</Tabs>
+
+## What it does once it is running
+
+`run` registers (`POST /dataservers/register`, retrying an unreachable
+Contents with backoff — a refusal of the *identity* ends the process instead,
+since that will not fix itself), heartbeats every third of the lease, and
+long-polls `GET /dataservers/{uid}/jobs?wait=N` while it has capacity. Each
+job runs on its own thread, and a `query_uid` in the answer's `cancel` list
+stops it — the connector is told, so DuckDB is interrupted, an Athena
+execution stopped, a BigQuery job cancelled.
+
+A result is spooled to disk, shaped by the policy **as it is written**,
+hashed, and uploaded with `Content-SHA256`, `X-Rows`, and `X-Truncated` when a
+cap cut it short. Contents checks the row count against the stream and records
+the truncation on the query, so a partial answer is never stored as a whole
+one — a number that is the first ten thousand rows of more has to say so, or
+somebody quotes it as the total. A job that cannot run
+posts to `.../failed` with a code rather than a message: `OPERATION_DENIED`,
+`OBJECT_DENIED`, `POLICY_VERSION_MISMATCH`, `CONNECTOR_MISSING`,
+`QUERY_FAILED`, `LIMIT_SECONDS`, `CANCELLED`, `BUSY`, `INTERNAL`.
+
+## The states, and who moves it between them
+
+Contents holds the state and the Dataserver obeys it — there is no other way
+round, because Datalayer cannot reach in to change anything.
+
+| State | What the Dataserver does | Who sets it |
+| --- | --- | --- |
+| `registering` | Declared, waiting for the server to connect and heartbeat | The owner (`register`); expired if it never connects (see below) |
+| `ready` | Polls for jobs and runs them | Registration, and every heartbeat |
+| `degraded` | Still runs, but a lease was missed | Contents, one missed lease |
+| `draining` | Stops taking work; running jobs finish | The owner (`drain`), or SIGTERM on the host |
+| `unavailable` | The lease lapsed. Registers again with the same identity | Contents, when heartbeats stop |
+| `revoked` | Stops. The identity is finished | The owner (`revoke`) |
+
+A 404 on the registration means the same as `unavailable`: register again.
+SIGTERM drains rather than killing — no new work, then
+`DATALAYER_DATASERVER_DRAIN_SECONDS` for what is running, then cancellation.
+
+A registration that **never** connects does not sit `registering` for ever. Only
+a heartbeat leaves `registering`, so one that is declared and never deployed
+would linger `pending` in the catalog — so past a grace window
+(`DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS`, default 24 h) Contents
+archives it: the source leaves every listing (kept for the audit as
+`dataserver.expired`) and the registration reads `unavailable`. The window is
+generous, so a slow deploy still connects in time — a heartbeat at any point up
+to it makes the server `ready` and the expiry never fires. A server that was
+ever live is `degraded`/`unavailable`, not `registering`, and stays recoverable
+as before: only a registration that never became anything is archived.
+
+## Identity
+
+A Dataserver authenticates with **mTLS**, and the certificate is issued per
+registration:
+
+- `bootstrap` makes the key and a CSR on the host and calls
+  `POST /dataservers/{uid}/identity` with the owner's token. **The private key
+  never leaves the host**, which is the property worth protecting: an identity
+  that could be copied off a host is an identity that can be used from
+  anywhere.
+- `GET /dataservers/ca` publishes the CA the certificates chain to.
+- The gateway routes — register, heartbeat, jobs, result — take the
+  `dataserver` service key plus the identity the ingress forwards in
+  `X-Client-Cert-Subject` and `X-Client-Cert-Serial`. The owner's routes —
+  status, drain, resume, revoke, identity — take the owner's IAM JWT. Tickets
+  are validated with the `flight` key.
+
+`revoke` is what to reach for if a host is lost: it ends the identity at
+Contents, and no certificate on any disk is worth anything afterwards.
+
+## What Contents holds, not this
+
+A Dataserver is half of a pair, and the half that decides most of its
+behaviour is on the other side. Reaching for a lever here that turns out to be
+a Contents setting is the usual way to lose an hour, so:
+
+| What | Where | Why it is there |
+| --- | --- | --- |
+| The **lease** — how long a heartbeat holds `ready`, and how many misses make it `degraded` then `unavailable` | `DATALAYER_CONTENTS_DATASERVER_LEASE_SECONDS` on [Contents](/services/contents/#configuration) | Contents decides a Dataserver is gone; a Dataserver cannot report its own absence |
+| The **registration grace** — how long a registration may stay `registering` before it is archived as never-connected | `DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS` (default 24 h) on [Contents](/services/contents/#configuration) | Contents holds the registration and runs the sweep that expires an abandoned one |
+| The **CA** that signs its certificate, and how long an issued one lasts | `DATALAYER_CONTENTS_DATASERVER_CA_CERT` / `_CA_KEY` / `_IDENTITY_DAYS` | The issuer is Contents. A Data Server holds a key, never the authority |
+| The **service key** it authenticates with | `DATALAYER_CONTENTS_DATASERVER_API_KEY` | It is Contents' key, given to a Dataserver |
+| The **metrics and the alert** on it | `contents_dataserver_lease_sweeps_total`, `contents_dataserver_refusals_total`, `ContentsDataserverUnavailable` | The sweep that degrades a lease runs in Contents' worker |
+| **Arrow Flight** | Contents' own process — see below | |
+
+### Why Flight is not here
+
+Query results stream to a caller over Arrow Flight, and it is easy to assume
+that is something a Dataserver does. It is not: the Flight gateway is a
+**Contents** process, on a Contents host, in the Contents chart, and this
+package contains no Flight code at all.
+
+The path is worth being exact about. A Dataserver runs the query and uploads
+the result to Contents over ordinary HTTPS, hashed. Contents then serves those
+bytes — over Flight when the gateway is enabled and the ticket names it, over
+HTTPS otherwise. Flight is downstream of every Dataserver and is not reached
+by one, so it is configured, deployed and debugged as
+[Contents](/services/contents/#arrow-flight).
+
+## Where it lives
+
+| Piece | Where |
+| --- | --- |
+| Service | `services/dataservers` — `datalayer_dataservers`, with its own [README](https://github.com/datalayer/services) |
+| CLI | `datalayer-data-server` — `run`, `check`, `bootstrap` |
+| Image | `plane/etc/dockerfiles/datalayer-dataservers` |
+| Chart | `plane/etc/helm-private/charts/datalayer-data-server`, released as `datalayer-dataservers` |
+| Plane | `plane up datalayer-dataservers`, `plane down datalayer-dataservers` — off unless `DATALAYER_DATASERVERS_ENABLED=true`, since most clusters have no Dataserver in them |
+| Contents routes | `/api/contents/v1/dataservers/*` — see [Contents](/services/contents/) |
+
+## From a sandbox (not built yet)
+
+The route above places a Dataserver deliberately, with an administrator
+naming its connectors in a file. The one being built next is the opposite: a
+**user**, in a sandbox, turns something they already have into a Dataserver
+that other people can query — a dataframe they just assembled, or a live
+object in the kernel.
+
+The shape it will take is decided: **a snapshot by default, live as an
+opt-in.**
+
+- `publish(df)` writes the object to the shared filesystem and a managed
+  Dataserver serves it. It outlives the sandbox and the query load is off the
+  user's runtime — but it is a snapshot, and a later change in the kernel is
+  not seen until it is published again.
+- `publish(df, live=True)` also lets the sandbox answer while it is up, so
+  every query sees the current value. When the sandbox stops, the source falls
+  back to the last snapshot rather than disappearing, and says that is what it
+  is serving.
+
+Both, rather than one, because a snapshot that silently goes stale and a
+source that silently vanishes are each a way to mislead somebody reading a
+number. Falling back is the combination where neither happens.
+
+### What is built
+
+The snapshot path's machinery is in, and it is the half that assumed a human
+placed the Dataserver:
+
+- **A `table` connector.** DuckDB over Parquet on the shared filesystem, and
+  its own type rather than a setting on `sql` — because `sql` opens a database
+  an administrator named, while this serves files Contents wrote. A `table`
+  names a **relation**, never a path: the path is derived from the root the
+  Dataserver was given, so publishing cannot become a way to read any file the
+  Dataserver can reach, and it holds every other connector's credentials.
+- **Connectors that arrive at runtime**, on the heartbeat. The set is no
+  longer fixed when the pod starts, which is what lets a user publish to a
+  Dataserver that is already up. Contents may add a `table` and nothing else:
+  an instruction from outside that could add an `athena` connector is an
+  instruction that names a role to assume. A published connector never shadows
+  a configured one, and Contents replaces only the published set — so the
+  connectors file stays the administrator's.
+- **Self-registration.** With `selfBootstrap`, a Dataserver obtains its own
+  identity at start rather than waiting for somebody to run `bootstrap`. The
+  key is generated in the pod and never travels — what crosses is a signing
+  request — and the identity volume is a memory-backed `emptyDir`, so the key
+  never touches a disk and goes with the pod.
+
+### Publishing, in two calls
+
+1. `POST /published-tables` reserves one and answers with the directory the
+   parts will go in.
+2. `PUT /published-tables/{relation}/parts/{part}` writes each part, streamed.
+   A part is written under a dot name and renamed into place, so a part still
+   arriving is never one the Dataserver can read — it lists `part-*.parquet`,
+   and a half-written file with that name is rows nobody published.
+3. `POST /published-tables/{relation}/complete` checks they landed, **creates
+   the Datasource record**, and answers with it — its configuration and its
+   `datasource_uid`.
+
+A client makes all three as one call: `contents.publish(frame, name="sales")`.
+
+Step 3 is where the record comes from, and there is nowhere else it can come
+from — which is what makes the sequence a round trip rather than three writes.
+Two consequences worth knowing when reading the catalog:
+
+- **Republishing does not make a second record.** The existing one is found by
+  the relation inside its configuration, not by its name, so an owner who
+  renames their Datasource still gets one record for one table rather than a
+  second pointing at the same files.
+- **A completion retried after a timeout is not a second record either.** The
+  idempotency key is `published-table:{owner_uid}:{relation}`, derived rather
+  than generated, and a completion that loses the race answers with what the
+  winner created instead of failing a publication whose bytes are on disk.
+
+**The record is not written until the files are there.** A Datasource whose
+parts never arrived answers `CONNECTOR_UNAVAILABLE` to everyone who finds it,
+and reads as a platform fault rather than as an upload that stopped half way —
+so completing with nothing written is `409 NO_PARTS_WRITTEN`, and only
+`part-*.parquet` counts: a `_SUCCESS` marker is not data.
+
+For the same reason a published table **cannot be created by hand**. `POST
+/sources` refuses a `datasource` with `connector_type: table`
+(`422 PUBLISHED_TABLE_MANAGED`): the record and the files have to come into
+being together, or you get one without the other — a Datasource nobody can
+query, or bytes on the shared filesystem nothing will ever remove.
+
+Every directory is derived from the caller's own uid, so completing somebody
+else's publication reaches your own empty area rather than their parts.
+
+### The publishing root
+
+`DATALAYER_CONTENTS_PUBLISHED_TABLES_SUBPATH` (default `published`), under
+`DATALAYER_SHARED_FS_MOUNT_PATH` — so the root is
+`/mnt/shared-fs/published` unless a deployment moves either. It is **derived**
+rather than configured on its own: a root that could drift from the shared
+filesystem is a root a Dataserver would read and Contents would not write.
+
+A deployment with no shared filesystem has no publishing root, and
+`POST /published-tables` answers `503 PUBLISHING_NOT_CONFIGURED` rather than
+failing later — the caller asked for something reasonable and this deployment
+has nowhere to put it. The same answer covers a deployment with no Dataserver
+to serve published tables:
+`DATALAYER_CONTENTS_PUBLISHED_TABLES_DATASERVER_UID` names it, and there is
+one per deployment — a table is published to the platform, not to a gateway a
+user picked, and asking them to choose would be asking about a thing they
+should not have to know exists.
+
+### Switching publishing on
+
+Publishing is off until a deployment has both halves, and the failure is
+silent in the sense that matters: everything else about Contents works, and
+`publish()` is the only call that refuses. On a cluster with the services up
+but this never done, `contents.publish(frame, name="sales")` answers
+`503 PUBLISHING_NOT_CONFIGURED` and a user has no way to tell that apart from
+a fault.
+
+Two settings, and the second cannot be chosen before the first exists:
+
+~~~bash
+# 1. Somewhere for the files, on the shared filesystem. `published` is the
+#    default sub-path; the root is derived from the claim, never from a
+#    caller.
+export DATALAYER_CONTENTS_PUBLISHED_TABLES_SUBPATH=published
+
+# 2. The Dataserver that serves them, by the **uid of its content source** —
+#    not its identity name. Register and deploy one as above, then read the
+#    uid back:
+datalayer contents dataservers list
+export DATALAYER_CONTENTS_PUBLISHED_TABLES_DATASERVER_UID=01...
+
+plane up datalayer-contents
+~~~
+
+One per deployment, deliberately: a table is published to the platform, not to
+a gateway a user picked. That Dataserver reads the publishing root, so it
+needs the same shared claim mounted as Contents — which is why the managed
+route (`selfBootstrap`, a registration marked `managed`) is the one that fits
+here, and an operator-placed Dataserver beside somebody else's warehouse is
+not.
+
+Check it took:
+
+~~~bash
+kubectl exec -n datalayer-api deploy/datalayer-contents -- \
+  printenv DATALAYER_CONTENTS_PUBLISHED_TABLES_DATASERVER_UID
+~~~
+
+Empty output is publishing off, whatever else the deployment looks like.
+
+### Live tables
+
+A table published `live` has **two** possible answerers: the sandbox that
+holds the object, and the managed Dataserver holding its last snapshot.
+
+The `live` connector queries a Python object in the memory of the process it
+runs in — so it only makes sense in a Dataserver running *inside* a sandbox.
+Two properties define it:
+
+- **The object is re-read on every query, never captured.** The registry holds
+  a way to *get* the object, not the object; otherwise "live" would mean "live
+  as of registration", which is a snapshot with a misleading name. Registering
+  a value rather than a callable is refused.
+- **A schema may change between two queries.** A column dropped in the kernel
+  is a column gone from the next answer. Nothing prevents that, because
+  preventing it would mean holding a copy — the thing this is not.
+
+One table, **two answerers of different connector types**: a `table`
+connector on the managed Dataserver reading the snapshot, and a `live`
+connector in the sandbox reading the object. They share one **name** —
+`<owner uid>.<relation>` — and a job names it, because the job's
+`connector_type` is the Datasource's, which is the snapshot's. A Dataserver
+therefore matches a named connector **before** it matches a type: insisting on
+the type would send a query to the live answerer and have it find nothing on a
+Dataserver holding exactly the table it asked for.
+
+Contents chooses the answerer per query: **live when the sandbox is `ready`,
+the snapshot otherwise**, and the answer says which. `degraded` falls back
+deliberately — it means a lease was missed, so the sandbox may answer and may
+not, and a live table's whole promise is currency: waiting on a maybe is worse
+than reading the snapshot and saying so.
+
+That distinction is carried into the result rather than left implicit. A value
+from a live object and a value from a snapshot are not the same claim, and a
+query that cannot tell them apart is how somebody quotes a stale number.
+
+A `live` connector is publishable over the wire for the same reason a `table`
+is: it reaches nothing the process did not already have. An instruction from
+outside can ask for a live table **by name** and gets `CONNECTOR_UNAVAILABLE`
+unless the sandbox registered one — so the wire can select among live tables
+and never create one.
+
+### A published table is a Datasource
+
+The design decision worth knowing, because it decides how much of this is new:
+**publishing does not create a new kind of thing.** What a user gets back is a
+Datasource, routed through the managed Dataserver, with `connector_type:
+table` and the relation as its database.
+
+Everything about querying it therefore already exists — `POST
+/sources/{uid}/queries`, the operation allowlist, the limits, the result
+transfer, tickets, Arrow Flight. Nothing about *reading* a published table is
+new code, which is why publishing is a small amount of it.
+
+Three properties fall out of that configuration rather than being enforced
+separately:
+
+- **No credential.** The Dataserver already has the publishing root, so a
+  published table adds no secret for anyone to hold, rotate or leak.
+- **Read-only.** `allowed_operations` is `select` alone: it is somebody's
+  dataframe, and there is no statement that should be able to change what it
+  holds.
+- **The Dataserver is told a relation, never a path.** It derives the
+  directory from the root it was configured with, so a connector arriving over
+  the wire cannot be pointed at another table's files.
+
+The one thing to tell a user who is confused: inside the SQL the relation is
+`t`, whatever the table was published as. The connector opens an in-memory
+DuckDB with a single view over the Parquet parts, and that view is named `t`;
+the published name selects the *Datasource*, not a table within it. `SELECT *
+FROM sales` on a table published as `sales` is answered `Table with name sales
+does not exist!`, which reads like a missing table rather than a naming
+convention.
+
+### How a published table reaches its Dataserver
+
+On the heartbeat, and **derived from the catalog** rather than stored.
+
+The set of published tables *is* the set of Datasources routed to this
+Dataserver with a `table` connector. Contents recomputes it on every beat and
+sends the whole set; the Dataserver replaces its published set with what
+arrives. So a table published a moment ago is servable within a lease third,
+and a table that is deleted stops being served because it stopped existing —
+not because something remembered to withdraw it. There is no second list to
+keep in step.
+
+Two details that matter more than they look:
+
+- **Connector names are owner-scoped** (`<owner uid>.<relation>`). A
+  Dataserver looks a connector up by name, so two people publishing `sales`
+  must not arrive as one name twice — the second would be dropped as a
+  collision and somebody would silently lose their table.
+- **A record that cannot be served is left out**, not sent broken. A
+  publication with no owner, or a relation that no longer passes the name
+  rule, would otherwise make the Dataserver log a refusal every lease third
+  for something nobody can fix from there.
+
+Nothing is pushed. A Dataserver only dials out, so the beat it already keeps
+is the only channel there is — which is why the connector set travels on it
+rather than on an endpoint of its own.
+
+### The sandbox as a Dataserver
+
+A live table is served by a Dataserver that is a **thread in the kernel**, not
+a deployment — because the thing it serves is a Python object in that kernel's
+memory, and no separate process can reach one.
+
+That inverts a property worth being explicit about. A deployed Dataserver
+outlives the queries it answers; this one lives exactly as long as the sandbox,
+and its going away is **normal rather than a fault**. Contents already models
+that: the lease lapses, the registration reads `unavailable`, and queries fall
+back to the last snapshot. So the shutdown path is deliberately quiet — a
+sandbox stopping is not an incident, and should not page anybody.
+
+Three rules keep it from becoming a nuisance:
+
+- **Nothing runs until a table is served.** A sandbox that never publishes
+  live holds no registration, no lease and no thread. A process that registers
+  on the chance it might be useful is one Contents has to sweep later.
+- **One per process.** A second would register a second identity for the same
+  sandbox, and Contents would see one sandbox claiming to be two Dataservers.
+- **The last table out stops it.** A sandbox with nothing live left should not
+  keep a registration alive, or the lease says a Dataserver is ready and every
+  query routed to it finds nothing.
+
+A runner that raises does not take the kernel with it. The kernel is the
+user's, and a Dataserver thread raising into it would look like their own code
+failing; the registration lapses on its own and queries fall back. **Building**
+the runner is guarded the same way and for a stronger reason: it registers and
+obtains a certificate, so it reaches the network and can fail for every reason
+a network call can — and by then the table's snapshot is already written.
+A sandbox that cannot register publishes its snapshot and reports
+`live: False`.
+
+#### What it registers, and what you will see
+
+Each sandbox serving a live table registers as an ordinary Dataserver, under
+an identity derived from its **hostname** — `sandbox-<pod>`, unless
+`DATALAYER_DATASERVER_IDENTITY` names one. It is the registration's identity,
+so a restart of the same sandbox resumes rather than leaving a second one
+behind, and two sandboxes are never one.
+
+Two credentials are involved, and they are not interchangeable:
+
+- The **owner's token** creates the registration and obtains its certificate.
+  Both are owner operations, and the sandbox already holds the token.
+- The **`dataservers` service key** (`DATALAYER_CONTENTS_DATASERVER_API_KEY`)
+  is what the runner presents to `register` and on every heartbeat. Those
+  routes are gated on a service scope a person's token does not carry, so a
+  sandbox that tried the owner's token there answered
+  `401 Service authentication required` on every beat and never registered.
+
+That division is the right one rather than an inconvenience: `register` is how
+the platform knows which Data Servers exist, and a credential that let anybody
+register one would let anybody claim to be one. The practical consequence is
+that only a sandbox **Datalayer runs** can serve live tables — a process
+started outside the platform has no service key, publishes its snapshot, and
+reports `live: False`.
+
+The registration is **not** `managed`: the owner is present, so none of the
+self-bootstrap path applies. Anyone auditing which registrations Datalayer may
+mint identities for should expect to see none of these.
+
+What this means operationally is that a busy cluster accumulates one
+registration per sandbox that has published a live table, each with a lease
+that lapses when the sandbox stops. That is by design — the lapse is what
+makes queries fall back — but it is the reason the sweep matters, and the
+reason `dataservers list` on such a cluster is longer than the list of
+Dataservers anybody deployed.
+
+### Who may obtain an identity
+
+The **owner**, always: they created the registration and they run it.
+
+And the **platform**, but only for a registration marked `managed` — a
+Dataserver Datalayer deploys, or one a sandbox runs for its own live tables.
+There is no person at the keyboard in either case, and a pod that cannot start
+until somebody runs `bootstrap` by hand does not scale to a user publishing a
+table.
+
+`managed` is a field on the registration, **false by default**, and only its
+owner can set it — marking a registration managed is opting out of the
+property below, so it is theirs to opt out of.
+
+**`managed` is the whole boundary.** Without it the `dataserver` service
+credential would be a skeleton key: it would obtain an identity for *any*
+registration, including one somebody deployed on their own hardware — whose
+entire security argument is that its key was made there and never travelled.
+So the flag is checked before the credential is, and a service key presented
+against an unmanaged registration is refused exactly as a stranger's request
+is.
+
+The credential is compared the way every service credential is: constant time,
+never a match when unset, and another service's key does not open this door.
+
+The plan is Milestone 10 in `CONTENTS.md`.
+
+## Verify
+
+~~~bash
+datalayer contents dataservers status <name>     # ready, with its lease
+datalayer contents dataservers test <name>       # Flight and HTTPS reachability
+~~~
+
+Then run a query against a Datasource created with `--dataserver <name>`: the
+Dataserver detail page reports what the connector answered, and a query that
+never arrives is the difference between a registration problem and a connector
+problem.
+
+### What `connectors` answers
+
+`datalayer contents dataservers connectors <uid>` prints the set the Data
+Server reported on its **last heartbeat**, not the set it registered with. The
+two differ constantly: published tables are adopted between beats, so a table
+published a moment ago appears here within a lease third without anything
+being restarted, and an unpublished one disappears the same way.
+
+Until recently this was not true — the heartbeat body was accepted and
+discarded, so the catalog described the moment of registration for as long as
+the process ran. Nothing broke, because queries are routed from the Datasource
+rather than from this record; what was wrong was the only view an operator has
+of what a Data Server is actually serving. Worth knowing if you are reading an
+older cluster: a `connectors` list that never changes is that bug, not a Data
+Server that has stopped adopting.
+
+## The smoketest
+
+`plane dataservers-smoketest` runs the whole publishing path against a live
+cluster — register, obtain an identity, deploy, wait for `ready`, switch
+publishing on, publish a table, query it back, clean up — and fails on the
+first step that does not work. It exists because none of the unit suites can
+see this path: every defect it has found was a join between two processes that
+each passed its own tests.
+
+~~~bash
+source ~/.datalayer/datalayerrc-r1
+plane dataservers-smoketest
+~~~
+
+### What it needs
+
+One credential, on whatever runs it — a laptop, CI:
+
+~~~bash
+export DATALAYER_API_KEY=...        # the owner's token
+~~~
+
+Everything else it derives or makes. The service key Contents uses to answer
+heartbeats is read from the running deployment rather than passed in, and the
+run refuses to start if the two do not match — a mismatch there fails later as
+an authentication error on a heartbeat, which reads like a Dataserver problem
+and is not.
+
+### Two credentials, two different things
+
+Worth keeping straight, because they fail in ways that look alike:
+
+- **The owner's token** registers the Dataserver and obtains its identity.
+  Obtaining an identity is an *owner* operation: a service credential is
+  refused there, deliberately.
+- **The service key** (`DATALAYER_CONTENTS_DATASERVER_API_KEY`) is what the
+  Dataserver presents on every heartbeat. Contents must be deployed with the
+  same value, and the smoketest checks this before it does anything else.
+
+### It must run where the claim is
+
+The smoketest deploys into `datalayer-api`, and not by preference. A
+PersistentVolumeClaim does not cross a namespace: there are two claims named
+`datalayer-shared-filesystem`, in `datalayer-api` and `datalayer-runtimes`,
+bound to **different** volumes. A Dataserver serving published tables reads
+the Parquet Contents wrote, so it has to run where Contents' claim is. Deploy
+it elsewhere and it comes up healthy, registers, goes `ready`, and reports
+every published table as missing — a message about a file, from a process that
+could not have seen it whatever anybody published.
+
+### The three modes
+
+| Mode | What it adds |
+| --- | --- |
+| `DATALAYER_DATASERVER_SMOKETEST_MODE=identity` | The default. A certificate obtained here, as the owner, and mounted from a Secret. |
+| `DATALAYER_DATASERVER_SMOKETEST_MODE=self-bootstrap` | A pod with **no** identity Secret obtains its own — and an unmanaged registration is refused the same thing. |
+| `DATALAYER_DATASERVER_SMOKETEST_MODE=live` | The run becomes the sandbox: a table served out of memory, followed as it changes, and lost when the process stops. |
+
+Each is a superset of the deployment the default performs; they differ in how
+the Data Server gets its identity and in what is asked of it afterwards.
+
+### The self-bootstrap mode
+
+~~~bash
+DATALAYER_DATASERVER_SMOKETEST_MODE=self-bootstrap plane dataservers-smoketest
+~~~
+
+The default mode mounts a certificate somebody obtained with `bootstrap`. This
+mode deploys a pod with **no identity Secret at all** and lets it obtain its
+own at start — the path a managed Data Server takes, where there is nobody at
+a keyboard to bootstrap it. It registers with `--managed`, deletes any
+identity Secret left by an earlier run (a stale one would be mounted and the
+pod would never need to bootstrap, so the test would pass without testing
+anything), and reports the certificate serial Contents recorded.
+
+It then does the half that matters: the **same** request, with the **same**
+service credential, against a registration that is *not* marked `managed`,
+which Contents must refuse. That refusal is what keeps "Datalayer manages some
+gateways" from meaning "Datalayer can impersonate any of them", and it is
+checked here with the credential and on the route a pod really uses — a unit
+test can only ask a fake whether it would refuse.
+
+The credential goes in as both `X-API-Key` and the `Authorization: Bearer`
+token, because the move being tested is precisely the service key standing in
+for the owner's. Send only the first and the request is refused for the wrong
+reason, and the check passes without checking anything.
+
+### If a managed Data Server logs `Contents answered 401`
+
+~~~
+cannot obtain an identity: Contents answered 401: Authentication failed
+~~~
+
+This is a Contents that predates the fix, not a misconfigured pod, and no
+amount of checking the service key will help — the key was right. The identity
+route used to resolve its caller as a **user**, and a service credential is not
+one, so the request was refused before the check that would have allowed it for
+a `managed` registration. The permission existed and was documented; nothing
+could reach it.
+
+Upgrade Contents. The symptom from the pod's side is a Data Server that stays
+in `registering` and never reaches `ready`, which reads like a network or
+credential problem and is neither.
+
+### If `bootstrap` says the owner lacks owner access
+
+~~~
+Contents answered 403: Content source owner access required
+~~~
+
+Said to the person who owns the registration, which is why it reads as
+nonsense. A Data Server's client sends its **service key on every request**,
+and `bootstrap` adds the **owner's token** to that one, so this call carries
+both — and a Contents that resolved the service key first treated it as the
+platform, which must then pass a `managed` check the owner never had to pass.
+
+Upgrade Contents; the person is resolved first now, and the platform's context
+is reached only where there is no user credential at all. If you cannot
+upgrade, marking the registration `--managed` also clears it, but that grants
+the platform the right to mint identities for it — a real change, not a
+workaround, and not one to make for a Data Server somebody deployed on their
+own hardware.
+
+### How long a stopped sandbox keeps being routed to
+
+A live table's fallback is driven by the **lease**, read at routing time. A
+query against a live table checks the sandbox's last heartbeat against its
+lease when the query is created, so once one lease (90 seconds) has passed
+with no heartbeat, queries go to the snapshot — whether or not the lease sweep
+has run yet.
+
+It used to depend on the sweep. Routing read the registration's *stored*
+state, and only the sweep wrote a lapsed lease into it, on its own interval
+(`DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS=300`): a stopped sandbox went on
+receiving queries for up to five minutes, and each of those was accepted,
+never picked up, and counted against its owner's concurrency. Both halves are
+fixed — routing reads the lease directly, and a `query-expiry` sweep ends any
+query that outlives its own `max_seconds`. The sweep still records the state
+transition for the catalog and the audit trail; nothing waits for it.
+
+If you are reading a report of "queries hanging after a notebook was shut
+down" on a cluster running an older Contents, that is the five-minute window,
+and the relief is upgrading.
+
+Verified on r1: a live table answered `live` while its process ran, followed a
+change made in that process, and after the process stopped and the sweep
+marked the registration `unavailable`, answered from the snapshot with
+`answered: snapshot` and a reason in words.
+
+### The live mode
+
+~~~bash
+DATALAYER_DATASERVER_SMOKETEST_MODE=live plane dataservers-smoketest
+~~~
+
+Deploys the snapshot Data Server exactly as the default mode does, and then
+adds the half no deployment can check: **the run itself becomes the sandbox**.
+It publishes a table it holds in memory with `live=True`, queries it and
+asserts the answer came back `live`, changes the object and asserts the next
+query follows it, then stops serving and asserts the query falls back to the
+snapshot — two rows where the live table had three — and says why.
+
+A Data Server only ever dials out, which is what makes this possible: the
+process holding the object is the process serving it, wherever it runs. No
+Code Sandbox is needed to check a sandbox's behaviour.
+
+It needs `DATALAYER_CONTENTS_DATASERVER_API_KEY`, because the sandbox's Data
+Server registers with the platform's credential rather than the owner's token,
+and it refuses to start without it rather than registering something that
+would answer `401` on every beat.
+
+The fallback is the slow part: it waits for one lease of silence (90 seconds)
+before queries go to the snapshot, so this mode takes a lease longer than the
+others. `DATALAYER_DATASERVER_SMOKETEST_FALLBACK=false` stops after the live
+half when you want a quick check of the serving path alone.
+
+### Queries left behind by a Data Server that went away
+
+A query routed to a Data Server that has stopped is **accepted** and then
+never picked up. It is not refused and it does not time out at the transport;
+it simply stays `pending`.
+
+The worker's `query-expiry` sweep ends those: a query that has outlived its
+own `max_seconds` (with a grace multiple, so a query allowed five minutes is
+not killed at four minutes fifty-nine) is failed as `QUERY_EXPIRED`. The code
+is deliberately not a timeout — "nobody ever started this" usually means a
+Data Server went away, and that is a different thing to tell somebody than
+"this ran too long".
+
+Without it the queries accumulate against the caller's **concurrency limit**,
+and the refusal they eventually get says `you have 8 queries pending or
+running; the limit is 8. Wait for one to finish` — about queries that cannot.
+If you see that on an older cluster, the fix is the sweep, and the immediate
+relief is cancelling the pending queries.
+
+### After a failed run
+
+The run cleans up after itself when it completes. When it fails partway, two
+things are left:
+
+~~~bash
+helm uninstall datalayer-dataservers -n datalayer-api
+~~~
+
+and the published table's Datasource, which is a normal content source and can
+be archived like one. Revoked registrations stay in the catalog by design —
+revocation keeps the record — so a cluster that has run the smoketest often
+accumulates `smoketest-*` registrations in `revoked`. They are inert.

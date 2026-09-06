@@ -1,0 +1,1073 @@
+---
+title: Datalayer Contents
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 💼 Datalayer Contents
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+`Datalayer Contents` owns the catalog and lifecycle of content sources used by
+Notebooks, Agents and Code Sandboxes. It stores control-plane state in Solr,
+resolves credential references through Vault and coordinates Runtimes,
+Operator, Library and provider adapters. File bytes remain in managed or
+provider storage; credentials never become catalog fields.
+
+## What a Content Source is
+
+A **Content Source** is a thing in the catalog somebody can attach or query.
+Its `kind` says what it is:
+
+| Kind | What it is | Reached by |
+| --- | --- | --- |
+| `files` | A Home Folder — a person's, a team's or an organization's | Mounting it |
+| `dataset` | A published, versioned set of files | Mounting or downloading a revision |
+| `volume` | A block volume with its own claim | Mounting it at creation |
+| `cloud-storage` | An object-store bucket and prefix | Mounting it, or an object client |
+| `datasource` | A database or warehouse | Querying it |
+| `data-server` | A [Dataserver](/services/dataservers/) registration | Routing queries through it |
+| `mcp` | An MCP server | Calling its tools |
+| `environment` | What an Environment brings to every sandbox of it | The Environment, at launch |
+
+An **attachment** joins a source to a sandbox, and carries its own `delivery`
+— `mount`, `local-bridge`, `materialize`, `client` or `environment` — which
+says *how* it gets there. So a bucket attached as `cloud-storage` +
+`delivery: mount` becomes a filesystem, and the same bucket with
+`delivery: client` becomes a scoped object client instead.
+
+:::note[A source kind is not a gateway mount kind]
+
+The [Node Mount Gateway](/services/system/node-mount-gateway/) also has
+`kind`s — `files`, `shared-folder`, `nfs`, `git`, `local-bridge`,
+`cloud-storage` — and they are a different taxonomy that happens to share two
+spellings. A source kind says *what a thing is*; a gateway kind says *what the
+node agent mounts*. Most sources are never mounted, and several gateway kinds
+are not sources at all.
+
+The mapping between them is on
+[that page](/services/system/node-mount-gateway/#these-kinds-are-not-content-source-kinds),
+along with the same warning about the word `delivery`, which is also used by
+both for different things.
+
+:::
+
+## Processes and ports
+
+| Process | Purpose | Default port |
+| --- | --- | --- |
+| API | REST, OpenAPI, catalog and operation control | `9400` |
+| Worker | Durable operations (transfers, Volume provisioning, queries, acquisitions), the lease, bridge and synchronization sweeps, retention, the scheduled reconciliation; its own `/health` and `/ready` | `9403` (probes) |
+| Flight Gateway | Arrow Flight `DoGet` of query results under a capability ticket, validated once; Flight SQL is not served yet and says so; enabled with `processes.flight.enabled` and routed by `flightHost` | `9401` (Flight), `9404` (probes) |
+| Local bridge relay | Pairs the two ends of a local mount — the person's computer and the sandbox — and forwards frames it cannot read; enabled with `processes.bridge.enabled` | `9402` |
+
+All four run from the one image (`datalayer-contents-worker`,
+`datalayer-contents-flight`, `datalayer-contents-bridge` are its console
+scripts). The chart enables the API and the worker; Flight and the relay are
+switches in `values.yaml` (`processes.flight.enabled`,
+`processes.bridge.enabled`) with the settings each needs listed under
+*Configuration* — a switch on without its secret refuses to start rather than
+serve unsigned tokens. The Prometheus rules ship with the chart and are their
+own switch (`alerts.enabled`).
+
+## Routes and authentication boundaries
+
+| Surface | Route | Authentication boundary |
+| --- | --- | --- |
+| REST API | `/api/contents/v1/*` | IAM user JWTs for user operations; scoped service identities for internal callers |
+| Capabilities | `/api/contents/v1/capabilities` | IAM user JWTs; the answer is per caller and has no anonymous form |
+| Synchronization | `/api/contents/v1/sync/*` | IAM user JWTs; a session belongs to the principal that opened it and is invisible to any other |
+| Arrow Flight | dedicated HTTP/2 route on `9401` | Short-lived, audience-bound capability issued by the REST API |
+| Local bridge | dedicated relay route on `9402` | One-session, one-sandbox bridge capability; never a stored provider credential |
+| Dataservers | `/api/contents/v1/dataservers/*` | Two boundaries on one prefix. The **gateway's** routes (register, heartbeat, jobs, result) take the `dataserver` service key plus the identity the ingress forwards in `X-Client-Cert-Subject` / `X-Client-Cert-Serial`; the **owner's** (status, drain, resume, revoke, identity) take the owner's IAM JWT. Tickets are validated with the `flight` key. See [Dataservers](/services/dataservers/#identity) |
+
+`ping`, `health` and dependency-aware `ready` are Kubernetes probe surfaces.
+Catalog, operation and capability endpoints are protected. Runtimes, Operator,
+Library and workers use service identities with only their required scopes;
+they do not forward a reusable end-user token to a sandbox. Keep Flight and
+bridge listeners private until their protocol implementations and network
+policies are enabled.
+
+## Sharing a source with an agent
+
+A content source is shared with a `principal_kind` of `user`, `team`,
+`organization` — or, since 2026-09-05, **`agent`**. Spacer has shared items
+with agents since the day before, and Contents did not: an organization could
+let one service agent read a *notebook* and had no way to let it read the
+*source* that notebook queries.
+
+The rule is the same on both, deliberately. A grant naming an agent is
+matched on the token's own `agent_uid` and never on the person behind it, so
+sharing with one service agent does not share with that owner's other agents,
+or with the owner. An empty `agent_uid` — a browser session — matches no
+grant, which is why the emptiness is checked rather than compared away: a
+grant stored with an empty uid would otherwise admit every session.
+
+IAM stamps `agent_uid` only on a token that *is* an agent principal:
+`client_credentials` for a service agent, `jwt-bearer` for a registered
+client with no person behind it. An ordinary OAuth client acting for somebody
+carries `client_id` instead and matches no agent grant — so sharing with an
+agent cannot widen into "everyone who uses that client", which is what it
+would mean if the claim were the client id.
+
+## Dependencies
+
+- SolrCloud with `contents`, `content-objects`, `content-operations` and
+  `content-audit` collections;
+- IAM JWT and service identities;
+- Vault for credential references;
+- managed object storage for User Folders, Dataset revisions and staging;
+- [Runtimes](/services/runtimes/#contents-attachments) (prepare, the launch
+  gates, external sandboxes) and the
+  [Operator](/services/operator/#contents-attachments) (Volumes, the mounts,
+  the status reports) for Code Sandbox attachments;
+- the [Node Mount Gateway](/services/system/node-mounts/) node agent for
+  local mounts (and every other mount) on Datalayer runtimes; and
+- Library for publication of selected immutable Dataset revisions.
+
+Initialize and protect the Solr collections before enabling production writes.
+See [Solr](/services/system/solr/) and
+[Continuity](/operations/continuity/).
+
+## Deploy
+
+Contents' charts — `datalayer-contents`, `datalayer-dataservers` and the
+storage under them — are **not public**. Plane reads them from
+`$PLANE_HOME/etc/helm-private/charts`, in the Services repository; the public
+charts stay at `$PLANE_HOME/etc/helm/charts`. The two trees have the same
+shape, so the path is the only thing that distinguishes them — see
+[Helm Registry](/cluster/registries/helm-registry/).
+
+The service imports the synchronization engine and the local-bridge protocol
+from the **published** `datalayer-core` — both ends of a sync or a bridge run
+one implementation — and `common/pyproject.toml` pins the version that
+carries them. Publish that `datalayer-core` to PyPI first; the image build
+fails on the pin otherwise, which is the point.
+
+Build and push the current service image from the Services repository (the
+base is Debian: `pyarrow` and `duckdb` have no Alpine wheels):
+
+```bash
+cd plane/etc/dockerfiles/datalayer-contents
+make build-dev
+make push
+```
+
+Deploy with Plane, then run the reindex — first as a dry run, then for
+real — so the documents already in Solr are brought to the mapping version
+the new code writes. Why this is a step of every deploy, what the dry run
+tells you and what makes the real run safe is under
+[The reindex](#the-reindex-datalayer-contents-reindex) below.
+
+```bash
+plane up datalayer-contents
+kubectl rollout status deployment/datalayer-contents -n datalayer-api
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex --dry-run
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex
+```
+
+The public REST ingress is `/api/contents`. The Flight Gateway gets its own
+Service and a Traefik `IngressRouteTCP` with TLS passthrough on `flightHost`
+(a host of its own — a passthrough router on the API's host would swallow the
+API's TLS); the relay is reached at `DATALAYER_CONTENTS_BRIDGE_URL`. Two
+things deploy beside Contents when their workflows are wanted: the Node Mount
+Gateway node agent for local mounts on Datalayer runtimes
+([Node Mounts](/services/system/node-mounts/)), and the
+Dataserver for Datasources, managed on the runtimes plane
+(`plane/etc/helm-private/charts/datalayer-data-server`, outbound only, its README
+covers the identity bootstrap).
+
+### Local development
+
+Start Contents with the same local supervisor used by the other services:
+
+```bash
+plane pf-solr
+plane local --services iam,spacer,contents --logs contents
+```
+
+Or, to try a change to the service against a real SolrCloud and a real
+object store with nothing port-forwarded from a cluster, the service's own
+stack — Solr 9 with the cluster's configset, the four collections and MinIO:
+
+```bash
+make -C contents local-stack       # up, wait for the collections
+make -C contents local-stack-env   # the variables to export for the API and the worker
+make -C contents local-stack-down  # down, keeping the data volumes
+```
+
+The API listens on `http://localhost:9400`. `plane local` exports
+`DATALAYER_CONTENTS_URL=http://localhost:9400` to locally launched clients and
+services, validates `/api/contents/v1/health`, prefixes its logs and terminates
+the process during normal cleanup. The production client default is `https://r1.datalayer.run` — the runtimes
+plane, not the IAM one, because the NFS that backs the Home Folder and Volumes
+is deployed there and the service has to sit beside the storage it serves. The
+ingress follows: `up.sh` sets `contents.runHost` from `DATALAYER_CONTENTS_URL`,
+falling back to `DATALAYER_RUNTIMES_URL`. Set `DATALAYER_CONTENTS_URL`
+explicitly whenever the service runs on a host of its own.
+
+## Verify
+
+```bash
+kubectl get pods,service,ingress -n datalayer-api -l app=contents
+kubectl port-forward -n datalayer-api service/datalayer-contents-svc 9400:9400
+curl http://localhost:9400/api/contents/v1/ping
+curl http://localhost:9400/api/contents/v1/health
+curl http://localhost:9400/api/contents/v1/ready
+```
+
+`health` reports process liveness. `ready` separately probes required Solr and
+Vault dependencies and returns `503` without including credentials when a
+required dependency is unavailable.
+
+The worker answers the same two questions on a port of its own, because a
+loop that has wedged looks exactly like a loop that is idle unless it says so
+itself:
+
+```bash
+curl http://localhost:9403/health
+curl http://localhost:9403/ready
+```
+
+`health` is the worker's loop coming round — the loop marks it, not a thread
+beside it, so a wedged worker reports `stalled` and its liveness probe
+restarts it. `ready` is the same dependency report the API gives, so a worker
+that cannot reach Solr is taken out of service rather than left to process
+nothing. The chart probes both over HTTP; nothing but the kubelet talks to
+that port.
+
+### Operations that gave up
+
+An operation the worker has retried to exhaustion is failed with
+`RETRY_EXHAUSTED`, its compensation runs — a Volume whose claim never bound
+is released, so nothing is left that nobody owns — and it appears in the dead
+letter. Reading it, quarantining an operation while it is looked at, and
+requeuing it once the cause is fixed are platform-administrator actions,
+audited:
+
+```bash
+datalayer contents operations dead-letter
+datalayer contents operations quarantine OPERATION_UID --reason "..."
+datalayer contents operations requeue OPERATION_UID
+```
+
+### The backup drill, on one machine
+
+Before a change to what Contents stores goes anywhere near a cluster, the
+whole loop runs on the local stack: seed a source and a version, back the
+four collections up and write the object manifest beside them, drop the
+collections, restore them, verify the store against the manifest, and
+reconcile the catalog against the object store. The drill exits non-zero if
+a collection comes back with a different document count, if the store no
+longer holds what the manifest says, or if the reconciliation finds a
+discrepancy:
+
+```bash
+make -C contents local-seed
+make -C contents local-backup-drill
+```
+
+One thing the first drill found, kept here because it holds in a cluster
+too: **a Solr backup holds the committed index, not the transaction log.** A
+document written a moment ago under a soft commit answers a query and is
+absent from the backup. The drill hard-commits before backing up; the
+cluster's configset does so on its own schedule (`autoCommit` every 15 s), so
+a scheduled backup can be missing at most the last 15 s of writes.
+
+### The catalog against the store
+
+After a restore, or when a bucket has been touched by hand, compare what the
+catalog names with what the store holds. The command writes nothing and exits
+`1` on any discrepancy, so a restore drill has a pass/fail:
+
+```bash
+datalayer-contents-reconcile --verify --json report.json
+datalayer-contents-reconcile --sample 1000     # a thousand versions, and no orphan search
+```
+
+The worker runs the same comparison as a production check, every
+`DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` (six hours by default; `0`
+turns it off), a minute after it starts and then on the interval — sizes
+only unless `DATALAYER_CONTENTS_RECONCILE_VERIFY` is `true`, every version
+unless `DATALAYER_CONTENTS_RECONCILE_SAMPLE` says how many. The last report
+is served to a platform administrator, from every API replica alike:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:9400/api/contents/v1/operations/reconcile
+```
+
+`404 RECONCILE_NOT_RUN` means the first run has not finished. The counts by
+kind are the `contents_reconcile_discrepancies` gauge, and the
+`ContentsReconcileDiscrepancies` and `ContentsReconcileStale` rules fire on
+them (see *Observability*). A full walk reads every version's size from the
+store; on a large catalog sample it, or keep
+`DATALAYER_CONTENTS_WORKER_STALL_SECONDS` above what a walk takes, because
+the worker's liveness tick comes after it.
+
+### The object store, backed up with the catalog
+
+The Solr backup is the catalog's half. The bytes are the bucket's, and a
+manifest of the store — every published object, its size, its checksum —
+written beside the backup is what lets a restore say whether the store it
+found is the store the catalog expects, before the catalog is trusted:
+
+```bash
+# On the shared filesystem, not in the pod. The drill's next step stops the
+# worker, and a manifest written to the pod's /tmp goes with it.
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest write /mnt/shared-fs/backups/objects.json
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest verify /mnt/shared-fs/backups/objects.json
+```
+
+`verify` exits `1` for a key that is missing, of another size or of another
+checksum, and lists as `extra` what the store holds that the manifest does
+not name (`--strict` makes those a failure too). The local drill does the
+whole loop — backup, manifest, drop, restore, verify, reconcile — and the
+[Continuity](/operations/continuity/) page says what the bucket must be
+configured with for the cluster.
+
+## Enabling the optional processes
+
+Three things run beside the API and the worker only when a cluster wants the
+workflow. Each is a switch, a secret and a verification; none is on by default.
+
+### Attaching a mount to a running sandbox
+
+`POST /api/contents/v1/attachments` records the attachment, and for a
+`mount` into a Datalayer runtime it then asks Runtimes to bind it **now** —
+`POST /api/runtimes/v1/runtimes/{runtime}/mounts` with the attachment uid and
+the caller's own credentials, so the mount is made the same way, and checked
+the same way, as at launch. A `files` folder or a bucket under `/home/jovyan`
+is bound into the running pod and reads `ready` (the Node Mount Gateway exists
+to mount into a pod that is already up). A **Volume** cannot: its claim is
+fixed at pod creation, so the Operator answers `422` and Contents relays it as
+`409 ATTACHMENT_NOT_MOUNTABLE` — the attachment is not left `requested` for
+ever; create a runtime with the Volume instead. A sandbox that is **not up
+yet** answers `404`, and the attachment is carried by the launch as before. A
+local mount takes its own route (see [Ending a local mount](#ending-a-local-mount)),
+mounting only once its relay session exists.
+
+### Revoking a mount that is in a running sandbox
+
+`DELETE /api/contents/v1/attachments/{uid}` moves a mount attachment to
+`revoking`. For a mount the node gateway holds in a Datalayer runtime — a
+`files` folder or a bucket bound under `/home/jovyan` — Contents then makes
+the revoke reach the sandbox: it calls Runtimes'
+`DELETE /api/runtimes/v1/runtimes/{runtime}/mounts/{target}` **with the
+caller's own credentials** (`DATALAYER_RUNTIMES_URL`), so ownership is checked
+where it always is. The Operator unmounts, waits for the node agent to
+confirm, and reports the attachment `revoked` itself, after the mount is
+gone and never before; a `404` from Runtimes means nothing carries the mount
+any more and the attachment is `revoked` at once; anything else — Runtimes out
+of reach included — leaves `revoking` standing, with the mount, for the
+runtime's deletion to settle as it always did. A Volume is not asked of the
+gateway: its claim is fixed at creation and stays until the runtime is
+deleted. An attachment at `/home/jovyan` itself is the Home Folder capability
+and is left alone.
+
+### Ending a local mount
+
+`datalayer contents unmount`, the Unmount button and `DELETE
+/api/contents/v1/bridges/{uid}` are one route, and it takes the folder out of
+the sandbox as well as ending the session: Contents asks Runtimes to detach
+the target, as the caller, and the Operator reports the attachment `revoked`
+once the node agent confirms the unmount. Ending the session alone would
+leave the sandbox holding a filesystem whose far end is gone — an
+`Input/output error` at the path until something noticed — and the attachment
+in `revoking`, which counts as attached and refuses the same folder to that
+sandbox again. `DELETE /attachments/{uid}` does the same thing from the other
+side. A Local Mount lands at `/home/jovyan/<name>`, and only there: a path outside
+the home folder is refused at creation (`LOCAL_MOUNT_PATH_UNSUPPORTED`). The
+inline CSI volume that once served an arbitrary absolute path is retired
+(audit 82); the Node Mount Gateway is the sole path now.
+
+### Local mounts: the relay and the Node Mount Gateway
+
+A local mount is a folder of a person's computer, served over an encrypted
+channel into a sandbox. Two pieces make it: the **relay** (a Contents
+process that pairs the two ends and forwards frames it cannot read) and, for
+Datalayer runtimes, the **Node Mount Gateway** agent on the runtime nodes,
+which runs the bridge filesystem as a grant and binds it under
+`/home/jovyan`. (The inline `local.csi.datalayer.io` CSI volume that used to
+do this at pod creation is retired — audit 82.) External sandboxes need no
+node agent — the sandbox runs the mount itself when its environment lists the
+`fuse` feature.
+What a person does with it is the user manual:
+[datalayer.ai/docs/contents/local-mounts](https://datalayer.ai/docs/contents/local-mounts).
+
+**Who asks the sandbox.** A Datalayer runtime's end of the bridge is the node
+agent's filesystem, started from a grant the Operator writes when asked
+through Runtimes' `POST /runtimes/{name}/mounts`. Contents makes that call
+itself, as the caller, the moment it opens a bridge session for a Datalayer
+sandbox — the session is what the mount token comes from, so no earlier
+moment would do — and reads the answer for what it is: `404` is a sandbox not
+launched yet (the launch carries the attachment), `409` a pod without the
+gateway (rendered at creation instead), anything else a warning with the
+session left standing. An external sandbox is never asked; it runs the mount
+itself.
+
+**When a mount never becomes readable.** The client's log is the place to
+look, and one line has a specific meaning: `Relay connection lost (the peer's
+hello is not an X25519 public key)`, followed by connecting and disconnecting
+in a loop, is the two ends failing to exchange keys rather than anything about
+the folder or the pod. The relay forwards a binary frame only to a peer that
+is **already connected** — one sent before the pairing is dropped — so both
+ends wait for the relay's `paired` event before sending their hello. An end
+that sends early has its hello dropped, and the other waits for one that never
+comes again.
+
+That was live until node agent image `0.2.1` (audit 70), and it depended on
+which end dialled first, so it appeared as a mount that had worked yesterday
+failing today — most often right after a restart of the relay, which makes the
+node agent's end reconnect in a loop and win the race. If you see it, check
+the agent's image before anything else:
+
+~~~bash
+kubectl get daemonset datalayer-node-mounts -n datalayer-runtimes \
+  -o jsonpath='{.spec.template.spec.containers[*].image}'
+~~~
+
+**What has to be deployed for it — the runtimes plane only.** Nothing on the
+core plane takes part in a local mount: IAM, Spacer, the Library, OTel, the
+AI agents and inference services, growth, support, the scheduler and the
+manager need no rebuild for this. On the runtimes plane (`datalayerrc-r1`):
+
+| Image | Why | How |
+| --- | --- | --- |
+| `datalayer-contents` | the relay process, the bridge sessions and tokens, the `local-mount` capability | `make build-dev push && plane reup datalayer-contents` after publishing `datalayer-core` (the pin) |
+| `datalayer-operator` | renders a `local-bridge` attachment as a Node Mount Gateway grant and its token Secret (no inline CSI volume — audit 82) | `make build-dev push && plane reup datalayer-operator`, then re-apply the Runtime Contents and Environments — see [After the upgrade](/services/operator/#after-the-upgrade-re-apply-the-runtime-contents-and-the-environments): an Environment left in the by-name shape spawns no pool pod |
+| `datalayer-runtimes` | refuses a local mount before launch on an environment that cannot carry it; hands the manifest to external sandboxes | `make build-dev push && plane reup datalayer-runtimes` |
+| `datalayer-node-mounts` | the Node Mount Gateway agent on the runtime nodes (gateway-only; the CSI driver is retired — audit 82) | `make build-dev push`, then step 5 |
+| `agent-runtimes` (runtime image) and the environment images of external sandboxes | the sandbox side: `code-sandboxes` with `fusepy` runs the FUSE mount where there is no CSI — an external sandbox's environment must install them, have `/dev/fuse`, and list the `fuse` feature | rebuild the runtime image (`plane/etc/dockerfiles/agent-runtimes`) and any Daytona/E2B/Modal environment that should mount |
+
+And two things that are not images: the landing application (the Mounts
+card, the sandbox's Contents tab) and the published `datalayer` CLI
+(`datalayer contents mount|mounts|unmount`, core ≥ 1.1.62).
+
+1. **Give the relay its secrets.** In the Contents release values, through
+   `contents.envValueFrom` and a Kubernetes Secret (never in plain values):
+   `DATALAYER_CONTENTS_BRIDGE_SECRET` (at least 32 random bytes; it signs the
+   tokens both ends present) and `DATALAYER_CONTENTS_BRIDGE_API_KEY` (the
+   relay's own key to Contents, the `bridge` identity).
+2. **Deploy**: `plane up datalayer-contents`. The Secret *is* the switch —
+   `up.sh` sets `contents.processes.bridge.enabled: true` and wires both keys
+   when `datalayer-contents-bridge` exists in the namespace, and says so; with
+   no Secret it says how to make one and deploys without the relay. It used to
+   be a value to set by hand, and a reinstall put the release back to the
+   chart's default with nothing said — every Local Mount then failed at the
+   relay (audit 74). The chart then runs the
+   `datalayer-contents-bridge` pods, publishes them on the API's host at
+   `wss://<runHost>/bridges`, and tells the API and the worker
+   (`DATALAYER_CONTENTS_BRIDGE_ENABLED`, and `DATALAYER_CONTENTS_BRIDGE_URL`
+   set to the **host**, `wss://<runHost>` — the API appends `/bridges/<uid>`
+   itself for both ends; a value that already ends in `/bridges` sends every
+   client to `/bridges/bridges/<uid>`, which the relay refuses). The relay's own pods also get
+   `DATALAYER_CONTENTS_URL`, the in-cluster API service: that is where they
+   report which ends are connected, and the code's fallback —
+   `http://localhost:<api port>` — is a single-process development setup, so
+   without it every state report fails and no session leaves `pending`.
+3. **Check the relay is there.** `curl -s https://<runHost>/api/contents/v1/capabilities | jq '.operations[] | select(.name=="local-mount")'`
+   must say `available: true`; the Mounts card on the Contents page says the
+   same thing in words. Until this is true, `datalayer contents mount`
+   refuses with the reason.
+4. **Build the driver image** (once per version), from the Services
+   repository: `cd plane/etc/dockerfiles/datalayer-node-mounts && make build-dev push`.
+   The image installs Clouder's `csi` extra, `code-sandboxes` (the FUSE
+   filesystem) and `fuse3`.
+5. **Install the driver on the runtime nodes.** Either with Plane —
+   ```bash
+   DATALAYER_NODE_MOUNTS_ENABLED=true \
+   DATALAYER_LOCAL_CSI_RELAY_CIDR=<ingress address>/32 \
+   plane up datalayer-node-mounts
+   ```
+   — which installs the `datalayer-node-mounts` chart in `datalayer-runtimes`
+   with `relay.host` taken from `DATALAYER_CONTENTS_URL` (the driver refuses
+   a relay on any other host) and, with the CIDR, a NetworkPolicy that lets
+   the driver reach nothing but the relay; or during cluster setup with
+   `clouder kubeadm setup --node-mounts --local-csi-relay-host <runHost>`
+   (step 7b, after the storage provider). Nothing is run on the nodes by
+   hand: the chart is a DaemonSet running the node agent `--node-mount-gateway-only`
+   (`driver.gatewayOnly: true`, the default). The inline CSI driver is retired
+   (audit 82), so there is no registrar sidecar and no `CSIDriver` object; the
+   agent watches runtime pods and binds each grant it finds. The nodes need
+   `/dev/fuse` (the stock `fuse` kernel module) and are selected with
+   `role.datalayer.io/runtime: "true"`.
+6. **Check the agent is running.**
+   ```bash
+   kubectl get daemonset -n datalayer-runtimes datalayer-node-mounts
+   clouder node-mounts status
+   # No CSIDriver any more — this is expected to be NotFound:
+   kubectl get csidriver local.csi.datalayer.io || true
+   ```
+7. **Mount something.** From a computer with the `datalayer` CLI:
+   `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/jovyan/local`,
+   then `datalayer contents mounts` shows the bridge `connected`, and the
+   sandbox's Contents tab and the Mounts card show the same state. The
+   Operator has rendered the attachment as an inline `csi:` volume; the node
+   plugin mounted the far end into the pod. A revoked bridge
+   (`datalayer contents unmount <bridge uid>`) makes the volume report
+   abnormal within a heartbeat, never stale data.
+
+### Arrow Flight
+
+Query results stream over Arrow Flight under a capability ticket; without
+the gateway, the same bytes are served over HTTPS (`GET /queries/{uid}/results`),
+so Flight is an optimization, not a requirement.
+
+1. `contents.processes.flight.enabled: true` and `contents.flightHost: flight.<runHost>`
+   — a host of its own, because the route is a Traefik `IngressRouteTCP` with
+   TLS passthrough and a passthrough router on the API's host would swallow
+   the API's TLS.
+2. The gateway's certificate and key for that host through
+   `contents.envValueFrom`: `DATALAYER_CONTENTS_FLIGHT_TLS_CERT` and
+   `DATALAYER_CONTENTS_FLIGHT_TLS_KEY` (PEM text or a path). Without them the
+   gateway serves plain gRPC and must not be exposed.
+3. `plane up datalayer-contents`; then `kubectl get pods -n datalayer-api -l app=contents-flight`
+   and, from a client, `datalayer contents datasources query <source> "select 1" --wait`
+   followed by the query's `ticket` — the SDK's `Query.to_arrow()` uses the
+   gateway when the ticket names it and falls back to HTTPS otherwise.
+
+### A runtime pod that stays after its deletion
+
+`clouder node-mounts verify` reporting no leaked mounts while deleted runtime
+pods pile up as `Failed` with a `deletionTimestamp` is not the gateway. Look
+at what the kubelet still holds for one of them, from the node agent:
+
+~~~bash
+kubectl exec -n datalayer-runtimes <node-mounts pod on that node> -c driver -- \
+  ls /var/lib/kubelet/pods/<pod uid>/volumes/
+~~~
+
+Only `kubernetes.io~csi` left means the pod is waiting on a CSI driver's
+`NodeUnpublishVolume` — on r1 the datasets' `csi-s3` (`goofys`), whose
+unmount signals the FUSE daemon, waits, and then runs `umount` on a path the
+daemon has already released: `umount: ... Invalid argument`, an error, and
+the kubelet retrying forever while the `goofys` process stays alive (audit
+75; the plugin pods on r1 held 861–1680 of them each). The gateway's own
+binds are gone by then; nothing of Contents is holding the pod. Force-remove
+the object (`kubectl delete pod <pod> --grace-period=0 --force`) to stop the
+retries; the lasting fix is retiring Datashim itself (audit 83) — the
+gateway's Mountpoint mount has no such leak, and removing `csi-s3` takes the
+failure mode with it.
+
+### An MCP source that cannot be reached
+
+`GET /sources/{uid}/mcp/tools` answers `502 MCP_SERVER_UNAVAILABLE` with the
+transport's own words — `could not connect to the MCP server: [Errno -2] Name
+or service not known`, a refused connection, a TLS failure. The message is the
+diagnosis; the usual cause is an `endpoint` naming a Service in a namespace or
+cluster this deployment cannot resolve.
+
+Contents dials the server **itself**, from the API Pod, so in-cluster
+addresses must resolve there and not merely from a workstation. Check it the
+way Contents does:
+
+~~~bash
+kubectl exec -n datalayer-api deploy/datalayer-contents -- python3 -c \
+  "import httpx; print(httpx.post('http://<host>:<port>/mcp', \
+   json={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'p','version':'0'}}}, \
+   headers={'Accept':'application/json, text/event-stream'}, timeout=10).status_code)"
+~~~
+
+A `500 INTERNAL_ERROR` here is not a wrong endpoint, and should be treated as
+a bug in this service: reaching an MCP server is refused with a code and a
+reason, always. It answered 500 until audit 68, because a streamable-HTTP
+connect that fails does not raise its failure — the transport cancels the
+caller instead, and the reason only appears when the connection is torn down.
+
+`datalayer contents mcp test <source>` is the same check with the source's own
+configuration and credential, and answers `reachable over streamable-http: N
+tools`.
+
+### A Dataserver
+
+A Dataserver is a governed gateway that runs close to data and answers queries
+Contents routes to it. It is registered as a `data-server` source and holds
+its own connector credentials. Everything about deploying and running one —
+registration, identity, states, connectors, publishing — is on its own page:
+**[Dataservers](/services/dataservers/)**.
+
+What stays here is Contents' half: the routes a Dataserver calls, the lease
+that decides whether it is `ready`, the CA that signs its certificate, and the
+metrics and alert on it. Those are [settings](#configuration) of *this*
+service, and they are listed with the rest of them.
+
+## Before a deploy: the generated artifacts
+
+Three things are generated from the contract models and checked in: the
+OpenAPI document, the JSON schemas, and `datalayer-core`'s TypeScript types.
+Each has a `--check` mode, and a stale one is a field the UI cannot read or an
+endpoint the SDK does not know exists.
+
+~~~bash
+cd services/contents && make openapi-check schemas-check
+cd tech/datalayer/core && npm run check:contents-generated
+~~~
+
+Regenerate with `make openapi schemas` and
+`python scripts/generate-contents-types.py`. Worth running before a deploy
+rather than after: drift here is silent, and it is detectable at the moment it
+is introduced by anyone who looks.
+
+This page itself is held to the code by `services/scripts/check_contents_docs.py`
+— the Solr collections it names, the `plane` commands, the settings — and that
+checker has its own tests (`contents/tests/test_doc_checker.py`), which plant
+a fault for each check and assert it is caught. A check that cannot fail is
+not protecting anything.
+
+## Test after a deploy
+
+What to run, in the order the plan's milestones stack, from a machine with
+`datalayer` installed and logged in (`DATALAYER_API_KEY` or `datalayer login`).
+Each line is a workflow the documentation promises; a failure names the
+service and the step.
+
+```bash
+# The service, the worker, the store
+curl -s https://$RUN_HOST/api/contents/v1/ready | jq '.dependencies[] | {name, ready}'
+datalayer contents list                                  # the catalog: one row per source you reach
+datalayer contents home-folder list                      # the Home Folder, listed from the shared filesystem
+# Transfers and synchronization
+datalayer contents upload ./report.csv home-folder:///reports/report.csv
+datalayer contents download home-folder:///reports/report.csv ./report.copy.csv
+datalayer contents transfer status TRANSFER_UID           # the uid an upload prints; parts verified, then succeeded
+datalayer contents sync ./folder home-folder:///folder --direction push
+datalayer contents sync-list
+# Datasets and Volumes
+datalayer contents datasets create --name "Climate"
+datalayer contents datasets capture ./report.csv Climate results/report.csv
+datalayer contents datasets create-revision Climate --file results/report.csv
+datalayer contents volumes create --name models --size 5
+datalayer contents volumes list                          # `ready` once the Operator bound the claim
+# Cloud Storage, Environments, Code Sandboxes
+datalayer contents cloud-storage test BUCKET_SOURCE
+datalayer contents cloud-storage objects BUCKET_SOURCE --prefix data/
+datalayer contents environment list
+datalayer contents environment verify python-cpu --provider daytona
+datalayer contents sandbox attach models --sandbox SANDBOX_UID --path /home/jovyan/volumes/models
+datalayer contents sandbox list --sandbox SANDBOX_UID
+# Local mounts (the relay and, on Datalayer runtimes, the Local CSI driver)
+datalayer contents mount ./folder --sandbox SANDBOX_UID --path /home/jovyan/local
+datalayer contents mounts
+# MCP sources
+datalayer contents mcp tools EARTHDATA_SOURCE
+datalayer contents mcp call EARTHDATA_SOURCE search_earth_datasets --arg search_keywords=sea-ice --wait
+datalayer contents mcp approvals list --status pending
+# Datasources (a routed one needs its Dataserver ready: /services/dataservers/#verify)
+datalayer contents datasources test WAREHOUSE
+datalayer contents datasources schema WAREHOUSE
+datalayer contents datasources query WAREHOUSE "select 1 as one" --wait
+# What gave up, and the catalog against the store
+datalayer contents operations dead-letter
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reconcile --verify
+```
+
+The user documentation under `/docs/contents` on the web application walks
+the same workflows from the browser; `datalayer contents --help` lists every
+group, and every command in this page and in that documentation is held to
+what ships by the documented-examples test.
+
+## What synchronization compares
+
+The remote side of a synchronization is the folder on the shared filesystem —
+what Contents wrote and what a notebook wrote — hashed under the folder and
+prefix the remote URI names. A catalog entry with no file behind it stays in
+the comparison rather than being read as a deletion, and a file only the
+folder has is fetched by path (`/sources/home-folder/files/content`), since it
+has no object version to ask for. A deployment without
+`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` has no folder to read, and the catalog
+is the whole account of the remote side.
+
+## The reindex: `datalayer-contents-reindex`
+
+```bash
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex --dry-run
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex
+```
+
+### What it is for
+
+Contents stores its documents in four Solr collections, in a **mapping** —
+which document families exist, which fields each writes, with which Solr
+suffix — that is generated from the DAO codecs into `contents_mappings.json`
+and carries a **version** (`CONTENTS_MAPPING_VERSION`, today `8`) and a
+fingerprint. The mapping says what the code means *now*. The cluster holds
+documents written by whatever the code meant *then*: an attachment recorded
+under version 1 has no `access_mode_s`, because version 1 had no such field.
+
+New code does not rewrite old documents by itself, and nothing at runtime
+refuses to serve them. That is exactly the problem: a query written for the
+new mapping — a filter on a field, a sort on a suffix that changed type — does
+not see the documents still in the old shape, and they drop out of listings
+silently rather than with an error. The reindex is what finishes a mapping
+change: it walks every family, applies the migrations from the version the
+family is on to the version the code writes, and writes each document back.
+Each family then records the version it is on, as a
+`content_migration_state` document **inside the collection it describes** —
+not a fifth collection: the four are `contents`, `content-objects`,
+`content-operations` and `content-audit`, and each carries its own state
+document. So a restored backup of any one collection carries its own migration
+state and knows where it stands, and a page that listed a separate
+migration-state collection (as this one did) described something that does
+not exist on any cluster.
+
+CI enforces the other half: the mapping is regenerated on every build, and a
+codec change whose fingerprint moved without a new version, a migration with
+both directions and its fingerprint recorded, fails the build. A field cannot
+be renamed in the code alone, leaving the documents in the cluster addressed
+by a name nothing writes any more.
+
+| Version | What changed |
+| --- | --- |
+| 2 | attachments carry `access_mode_s` and `fallback_reason_t`: how a Cloud Storage source is reached in the sandbox, and why a fallback was taken |
+| 3 | attachments carry `filesystem_primitives_ss`: what a client inside the sandbox may do to the files without asking Contents |
+| 4 | `content-operations` gains the `mcp_session`, `mcp_call` and `mcp_approval` families |
+| 5 | `content-operations` gains `content_bridge`: the session a local-bridge attachment holds |
+| 6 | `content-operations` gains `datasource_query`, `data_server_registration` and `capability_ticket` |
+
+### Why after every deploy, and why the dry run first
+
+Run the dry run after **every** Contents deploy, not only the ones you
+remember as changing the mapping: it is the cheapest way to learn whether
+this image raised the version. A family already on the target version is
+reported as such and nothing is scanned; the command is harmless when there
+is nothing to do. When there *is* something to do, the dry run says — per
+family, without writing a byte — the version it is on, the version it would
+go to, and how many documents would be scanned, migrated or left unchanged.
+That is where you catch the things you would rather not learn from the real
+run: Solr unreachable from the pod, a family with far more documents than
+expected, a version step no migration covers.
+
+Even a migration that only *adds* families (versions 4 to 6 do) is worth
+running for real: the documents it meets are left unchanged, but the family's
+recorded version moves up, and that recorded version is what the **next**
+migration — the one that renames a field — starts from. A family whose state
+says version 3 while the code writes 6 will be walked through three steps
+when version 7 arrives, and any of them may have been written against a
+mapping the documents are no longer in.
+
+### Why on the pod
+
+The tool needs the Solr ZooKeeper host and the Solr credentials, which the
+Contents pods have and your laptop does not. It also needs the code whose
+mapping version is the target: run from the image just deployed, the target
+is by construction the version that image writes — there is no way to reindex
+to a version the running service does not agree with. The API pod and the
+worker pod carry the same package; either works.
+
+### What makes the real run safe
+
+- **Compare-and-set.** Every write is conditional on the version the document
+  was read at, so a service writing the same document at the same moment is
+  never overwritten. The loser is reported as a **conflict**, and the batch
+  that held it is walked again by the next run. Nothing has to be quiesced.
+- **Resumable.** Progress is the per-family state document: the version and
+  the cursor the last batch reached. A run that is killed resumes where it
+  stopped; `--restart` walks each family from the beginning instead.
+- **Idempotent.** Every migration is safe to re-apply; running the command
+  twice is the same as running it once.
+- **Reversible.** Every migration carries both directions.
+  `--to-version N` below the current version rolls the documents back one
+  step at a time — do it *before* rolling the image back, while the code that
+  knows the newer shape is still there to read it.
+- **Honest exit code.** The command exits `1` when it left conflicts behind
+  (the summary's `complete` is `false`). A deployment step must treat that as
+  "run it again", not as done.
+
+### Reading the output
+
+One JSON line per family, then a summary:
+
+```json
+{"family": "content_attachments.attachment", "from_version": 5, "to_version": 6, "dry_run": false, "scanned": 1284, "migrated": 0, "unchanged": 1284, "conflicts": [], "complete": true}
+{"summary": {"families": 21, "scanned": 40213, "migrated": 0, "unchanged": 40213, "conflicts": 0, "complete": true}}
+```
+
+`migrated` counts documents whose stored shape changed, `unchanged` the ones
+a migration met and left as they were; `from_version` equal to `to_version`
+means the family was already there. Other switches: `--list` prints the
+families and their collections, `--family NAME` (repeatable) restricts the
+walk — a name that exists in no family is refused rather than migrating
+nothing and reporting success — and `--batch` sets the documents per Solr
+page (default `200`).
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DATALAYER_CONTENTS_API_PORT` | REST listener port; default `9400` |
+| `DATALAYER_CONTENTS_FLIGHT_PORT` | Flight listener port; default `9401` |
+| `DATALAYER_CONTENTS_BRIDGE_PORT` | Local bridge listener port; default `9402` |
+| `DATALAYER_CONTENTS_BRIDGE_ENABLED` | Whether this deployment offers local mounts. The chart sets it from `processes.bridge.enabled`, which also runs the relay process; with it off, `capabilities` reports `local-mount` unavailable and a `local-bridge` attachment is refused up front with `CAPABILITY_UNAVAILABLE` rather than accepted and left waiting |
+| `DATALAYER_CONTENTS_BRIDGE_SECRET` | Signs the tokens both ends of a bridge present to the relay (HMAC-SHA256); at least 32 bytes, the service refuses to start with less. The API mints with it and the relay verifies with it alone — no callback, no state a relay restart loses — so both must hold the same value, from one Kubernetes secret |
+| `DATALAYER_CONTENTS_BRIDGE_URL` | The relay address both ends dial, as the person's computer and the sandbox reach it — `wss://bridge.example.com`, the dedicated route for port `9402`. Local mounts are offered only when the switch, the secret and this are all set |
+| `DATALAYER_CONTENTS_BRIDGE_API_KEY` | The relay's key to Contents, for reporting which ends of a session are connected. One identity (`bridge`, scope `bridges:report`) like the others, so it rotates on its own and the audit trail says the relay acted |
+| `DATALAYER_CONTENTS_BRIDGE_HEARTBEAT_GRACE_SECONDS` | How long a bridge session survives without a heartbeat from the person's client before the worker marks it `disconnected` and the attachment `degraded`; default `120`. The client beats every thirty seconds, so this forgives a stall and still ends a dead session before a sandbox reads much from a mount that is not there |
+| `DATALAYER_CONTENTS_BRIDGE_SESSION_SECONDS` | How long a bridge session lives at all; default `43200` (twelve hours). Past it the worker marks the session `expired` and the attachment `revoking`, and the person runs `datalayer contents mount` again. `DATALAYER_CONTENTS_BRIDGE_CLIENT_TOKEN_SECONDS` (at most twelve hours, renewed by the heartbeat) and `DATALAYER_CONTENTS_BRIDGE_MOUNT_TOKEN_SECONDS` (at most one hour, renewed by whoever prepared the attachment) bound the two tokens; neither outlives the session |
+| `DATALAYER_CONTENTS_REQUIRE_SOLR` | Make Solr mandatory for readiness |
+| `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves its own `/health` and `/ready`; default `9403` |
+| `DATALAYER_CONTENTS_DEPENDENCY_TIMEOUT_SECONDS` | Timeout for each readiness probe |
+| `DATALAYER_CONTENTS_STORAGE_BACKEND` | Where the managed bytes — uploads, transfers, captured versions — are published. `local` (default): under `DATALAYER_CONTENTS_STORAGE_ROOT` inside the container, ephemeral, lost when the pod is replaced; `plane local` and tests only. `shared-fs`: under `objects/` and `staging/` on the shared filesystem claim (`DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME`, at `DATALAYER_SHARED_FS_MOUNT_PATH`) — the same RWX volume the Operator mounts into runtimes; refuses to start without the claim, because writing managed bytes into the container looks like it worked until the pod is replaced. `s3`: the bucket `DATALAYER_CONTENTS_STORAGE_BUCKET`, through `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` (empty for AWS S3, set for MinIO or another S3-compatible store); credentials come from the workload environment, never from the catalog. All three are versioned object stores keyed by source, path and version — the immutable copy. On completion a transfer also writes its file, as the working copy, into the Home Folder tree (`home/{users\|organizations\|teams}/{uid}/{path}`) on the shared filesystem, where sandboxes mount it and `/sources/home-folder/files` lists it; the staged parts are removed at that point. Without a shared filesystem there is no working copy and the catalog is all. Switching does not move bytes: change it before the first upload, or migrate the objects with it |
+| `DATALAYER_CONTENTS_STORAGE_ROOT` | Root used by the `local` backend; default `/tmp/datalayer-contents` |
+| `DATALAYER_CONTENTS_STORAGE_BUCKET` | S3 bucket for User Folder versions and transfer staging |
+| `DATALAYER_CONTENTS_STORAGE_ENDPOINT_URL` | Optional S3-compatible endpoint |
+| `DATALAYER_CONTENTS_STORAGE_REGION` | Optional S3 region |
+| `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_BYTES` | Per-user User Folder byte limit reserved before upload |
+| `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
+| `DATALAYER_CONTENTS_VERSION_RETENTION_DAYS` | Retention period for superseded object versions |
+| `DATALAYER_CONTENTS_OPERATION_RETENTION_DAYS` | How long a finished durable operation is kept before the worker deletes it; default `30`. Covers every finished record kind in the `content-operations` collection — the operation jobs (volume provisioning, query acquisition), transfers (with their part rows), synchronization sessions (with their conflict rows), ended (revoked or expired) bridge sessions and datasource queries. Long enough to answer an idempotent retry and to triage a failure — past it the row is debris. A quarantined failure is held for a person and is never swept, and a record still awaiting its audit event is left for the reconciler |
+| `DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS` | Worker cleanup/reconciliation interval |
+| `DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` | How often the worker compares the catalog against the object store; default `21600` (six hours), `0` never. `DATALAYER_CONTENTS_RECONCILE_VERIFY` (default `false`) hashes every object rather than checking sizes; `DATALAYER_CONTENTS_RECONCILE_SAMPLE` (default `0`, every version) looks at that many versions and not for orphans. The last report is `GET /operations/reconcile` |
+| `DATALAYER_CONTENTS_MAX_CONCURRENT_QUERIES` | How many queries one actor may have pending or running at once; default `8`, `0` no limit. One more answers `429 QUERY_LIMIT`; cancelling a query makes room |
+| `DATALAYER_CONTENTS_QUERY_MAX_ROWS` / `_BYTES` / `_SECONDS` | The most rows, bytes and seconds any query runs under, whatever its Datasource allows; defaults `1000000`, `1073741824`, `600`, `0` no ceiling. A Datasource's own ceilings are cut to these, never raised; a request above them is cut, not refused |
+| `DATALAYER_CONTENTS_MCP_CALLS_PER_MINUTE` | How many tool calls one MCP session may make in a minute, refused ones included; default `60`, `0` no limit. One more answers `429 MCP_RATE_LIMIT` |
+| `DATALAYER_CONTENTS_MAX_BRIDGES` | How many bridge sessions one person may hold open; default `10`, `0` no limit. One more answers `429 BRIDGE_LIMIT`; reopening the session an attachment already holds is not one more |
+| `DATALAYER_CONTENTS_MAX_TRANSFER_BYTES` | The largest single transfer accepted; default `0`, no limit beyond the quota. A larger one is refused up front with `413 TRANSFER_TOO_LARGE`. The quota (`DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_BYTES`) is charged for every transfer, Dataset destinations included, and for query results and MCP acquisitions the worker lands |
+| `DATALAYER_CONTENTS_URL` | Public/client base URL; production defaults to `https://r1.datalayer.run` (the runtimes plane, where the NFS lives), local Plane uses `http://localhost:9400` |
+| `DATALAYER_IAM_URL` | IAM endpoint used to resolve the caller's memberships and to read credentials. The chart default is the in-cluster service, correct only where Contents is co-located with IAM; on the runtimes plane `up.sh` overrides it with the platform plane's public endpoint |
+| `DATALAYER_SPACER_URL` | Spacer endpoint used to resolve accessible spaces, overridden the same way as `DATALAYER_IAM_URL` |
+| `DATALAYER_RUNTIMES_URL` | Runtimes endpoint a revoke of a mounted folder is forwarded to, as the caller (`DELETE /api/runtimes/v1/runtimes/{name}/mounts/{target}`). The chart sets the in-cluster service (`datalayer-runtimes-svc.datalayer-api:9500`); left unset, the common default is the public prod1 URL — another plane, whose `404` for a runtime it has never heard of is not "nothing to unmount", which is why a `404` settles a revoke only in the Operator's own words. |
+| `DATALAYER_SOLR_ZK_HOST` | ZooKeeper ensemble the Solr DAOs connect through; required by the API and the worker |
+| `DATALAYER_SOLR_URL` | Internal Solr HTTP endpoint, polled by the readiness probe. Address the `-solrcloud-common` service **without a port** — it listens on 80, while only the `-solrcloud-headless` service listens on 8983. Pointing the common service at 8983 leaves readiness reporting Solr `unreachable` while the worker, which goes through ZooKeeper, stays healthy |
+| `DATALAYER_SOLR_USERNAME` / `DATALAYER_SOLR_PASSWORD` | Solr identity, supplied through Kubernetes secrets in production |
+| `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | The shared filesystem claim, mounted into the API and the worker at `/mnt/shared-fs` exactly as the Operator mounts it into runtimes. `up.sh` passes it through `contents.sharedFsPVC` |
+| `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
+| `DATALAYER_CONTENTS_SYNC_HEARTBEAT_GRACE_SECONDS` | How long a `--watch` synchronization session survives without a heartbeat from its client before the worker closes it as failed with `SYNC_CLIENT_LOST`; default `900`. Long enough for a laptop's sleep to come back, short enough that a dead client is not reported as running all day. The next `datalayer contents sync` of the folder resumes from the last accepted manifest |
+| `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
+| `DATALAYER_CONTENTS_MCP_CONNECT_TIMEOUT_SECONDS` | How long connecting to an MCP server — and one round trip on it — may take before the server is reported unavailable; default `30`. Discovery, health and a tool call all wait this long at most |
+| `DATALAYER_CONTENTS_MCP_CONTENT_CAP_BYTES` | The most a tool may answer *inline* — the JSON kept on the call — before the call is refused as `MCP_RESULT_TOO_LARGE`; default `262144`. Bytes belong in an artifact, which the worker lands through a transfer under the source's own `max_result_bytes`; this keeps a manifest from becoming the download |
+| `DATALAYER_CONTENTS_MCP_SESSION_SECONDS` | How long a minted MCP session lives when the request does not say; default `3600`. `DATALAYER_CONTENTS_MCP_SESSION_MAX_SECONDS` (default `86400`) is the most a request may ask for; a longer `expires_in` is cut to it, not refused |
+| `DATALAYER_CONTENTS_MCP_APPROVAL_SECONDS` | How long a call under an `explicit` source waits for the owner's decision before the approval expires and the call is denied with `MCP_APPROVAL_EXPIRED`; default `86400`. An approval binds to the arguments it was given, so a long wait is safe; it is the stale request nobody is waiting on that this ends |
+| `DATALAYER_CONTENTS_CAPABILITY_SECRET` | Signs the capability tickets a sandbox redeems for a query result — at the Flight Gateway, or over HTTPS (HMAC-SHA256, at least 32 bytes; the service refuses to start with less). Unset, no ticket is minted (`CAPABILITY_UNAVAILABLE`) and results are read with the caller's own token. `DATALAYER_CONTENTS_CAPABILITY_TICKET_SECONDS` (default `900`) is a ticket's life when the request does not say; `DATALAYER_CONTENTS_CAPABILITY_TICKET_MAX_SECONDS` (default `3600`) the most a request may ask for |
+| `DATALAYER_CONTENTS_FLIGHT_URL` | Where a sandbox dials the Arrow Flight Gateway, as it reaches it — `grpc+tls://flight.example.com:9401`. Empty, `capabilities` reports `flight: false` and every result is read over HTTPS from `DATALAYER_CONTENTS_URL` |
+| `DATALAYER_CONTENTS_DATASERVER_LEASE_SECONDS` | How long a Dataserver's heartbeat holds its lease; default `90`. One missed lease and the worker marks it `degraded`, three and `unavailable` — never deleted; the next heartbeat with the same identity makes it `ready` again. A Datasource routed through a server that is neither answers `503 DATASERVER_UNAVAILABLE` naming the state |
+| `DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS` | How long a registration may stay `registering` — declared but never having heartbeated — before the worker archives it as never-connected; default `86400` (24 h). The source leaves every listing (kept for the audit as `dataserver.expired`) and the registration reads `unavailable`. Generous, so a slow deploy still connects first; a server that ever heartbeated is not `registering` and is never touched |
+| `DATALAYER_CONTENTS_DATASERVER_CA_CERT` / `DATALAYER_CONTENTS_DATASERVER_CA_KEY` | The internal CA that signs Dataserver client certificates: PEM, or a path to PEM, from one Kubernetes secret, set together. Absent, the API generates one at startup that no replica shares and no restart keeps — `GET /dataservers/ca` reports it `ephemeral` — which is right for `plane local` and wrong anywhere else. `DATALAYER_CONTENTS_DATASERVER_IDENTITY_DAYS` (default `30`) is how long an issued certificate lasts; rotation overlaps the previous serial |
+| `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves `/health` and `/ready`; default `9403`, set by the chart from `contents.workerProbePort` so the port and the probes cannot drift apart |
+| `DATALAYER_CONTENTS_WORKER_STALL_SECONDS` | How long the worker's loop may go without coming round before `/health` reports `stalled`; default `120`. It must outlast the slowest turn of the loop — a full batch of operations — or a busy worker is restarted for being busy |
+| `DATALAYER_RUNTIMES_API_KEY` | The Runtimes service's key to Contents, for attaching sources to a sandbox. One identity per calling process, so a key can be rotated for one without touching the others and the audit trail says which acted |
+| `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for reporting Volume claims |
+| `DATALAYER_CONTENTS_API_KEY` | The Contents worker's own key, for running operations |
+| `DATALAYER_CONTENTS_FLIGHT_API_KEY` | The Flight server's key, for redeeming tickets |
+| `DATALAYER_CONTENTS_DATASERVER_API_KEY` | A Dataserver's key, for publishing results |
+| `DATALAYER_SPACER_API_KEY` | Spacer's key, for releasing a space's sources — revoking their attachments and returning them to their owners — before the space is deleted; Spacer refuses the deletion when this fails |
+| `DATALAYER_CONTENTS_REQUIRE_IAM` | Whether IAM must be reachable for the API to report ready. `true`: Contents resolves every request's access context against IAM, and reaches credentials through IAM's API, so without it the service cannot authorize anything |
+| `DATALAYER_CONTENTS_REST_TOKEN_SECRET` | The secret the API signs its own pagination cursors and ETags with; at least 32 bytes. Unset, the local development value is used — never in a cluster, where every cursor would then be forgeable |
+| `DATALAYER_CONTENTS_PUBLIC_URL` | The URL clients are told to use for the HTTPS results fallback and in Flight metadata; defaults to `DATALAYER_CONTENTS_URL` |
+| `DATALAYER_CONTENTS_MAXIMUM_UPLOAD_PART_BYTES` | The largest part a transfer accepts in one request; default 16 MiB. A client cuts a file into parts no bigger than this |
+| `DATALAYER_CONTENTS_QUERY_MAX_BYTES` | The deployment's ceiling on a query result's bytes (a Datasource's own limit may be lower, never higher); default 1 GiB |
+| `DATALAYER_CONTENTS_QUERY_MAX_SECONDS` | The deployment's ceiling on a query's running time; default 600 |
+| `DATALAYER_CONTENTS_WORKER_UID` | How the worker names itself on the leases it claims; default the host name and a ULID, so two workers never share a name |
+| `DATALAYER_CONTENTS_WORKER_POLL_SECONDS` | How often an idle worker looks for operations; default `1` |
+| `DATALAYER_CONTENTS_WORKER_BATCH_SIZE` | How many operations one turn of the worker's loop claims; default `25` |
+| `DATALAYER_CONTENTS_WORKER_LEASE_SECONDS` | How long a claimed operation stays the worker's before another may take it over; default `30`. It must outlast the longest handler turn, or a slow attachment is run twice |
+| `DATALAYER_CONTENTS_FLIGHT_HOST` | The address the Flight Gateway binds; default `0.0.0.0` |
+| `DATALAYER_CONTENTS_FLIGHT_PROBE_PORT` | Where the Flight Gateway serves its own `/health` and `/ready`; default `9404` |
+| `DATALAYER_CONTENTS_FLIGHT_STALL_SECONDS` | How long the gateway's loop may go without coming round before `/health` reports `stalled`; default `60` |
+| `DATALAYER_CONTENTS_FLIGHT_TLS_CERT` / `DATALAYER_CONTENTS_FLIGHT_TLS_KEY` | The gateway's TLS certificate and key, PEM text or a path; both or neither. With them the Traefik route is TLS passthrough on `flightHost`; without them the gateway serves plain gRPC and must not be exposed |
+| `DATALAYER_CONTENTS_FLIGHT_VALIDATE_TIMEOUT_SECONDS` | How long the gateway waits for Contents to validate a ticket before answering unavailable; default `10` |
+| `DATALAYER_CONTENTS_FLIGHT_INFO_HOLD_SECONDS` | How long a ticket validated at `get_flight_info` stays good for the `do_get` that follows, since a ticket validates once; default `300`, bounded by the ticket's own expiry |
+| standard `DATALAYER_JWT_*` variables | IAM token verification |
+| standard `OTEL_*` variables | Logs, traces and metrics export |
+
+Do not place Vault tokens, provider credentials or signing material directly
+in chart values. Use `contents.envValueFrom` and Kubernetes Secret references.
+The Solr identity comes from the `solr-basic-auth` secret this way; `up.sh`
+must not also `--set contents.env.DATALAYER_SOLR_USERNAME/PASSWORD`, which
+would write the credential into the release values and leave two env entries
+of each name in the pod.
+
+## Credentials
+
+A source stores a `credential_uid`, never a secret. Resolving it goes through
+**IAM's API** — the same path `datalayer_core` uses — rather than through
+Vault directly: `datalayer_vault` speaks hvac to a Vault in the same cluster,
+and Contents runs on the runtimes plane while Vault is deployed on the
+platform one. Going through IAM works across clusters and keeps the read
+subject to IAM's own authorization.
+
+The caller's own credentials are forwarded rather than a service token, so
+Contents cannot become a way to read a secret IAM would refuse to hand over
+directly. `401`, `403` and `404` are collapsed into one answer, because
+telling them apart would tell a caller which uids exist. The value is returned
+to the caller and never stored, logged, or included in a `repr`.
+
+The value is returned exactly as IAM stored it — not decoded. `datalayer_core`
+base64-encodes on create and the web application does not, and nothing on the
+record says which happened; the caller that knows how a credential was written
+is the one that can decode it.
+
+### Contents does not vend bucket credentials to a caller
+
+Worth stating because people ask for it: there is no route that hands a client
+process short-lived, bucket-scoped credentials for a Cloud Storage source. The
+client-facing surface is five routes — `objects`, `objects/stat`,
+`objects/content`, `objects/presign` and `test` — and reads go **through** the
+service, which applies the source's prefix and mode. `datalayer_core`'s
+`storage.filesystem()` is an `fsspec` filesystem over exactly those routes,
+and asking it for a provider-native `s3fs` is refused rather than answered.
+
+Credentials that expire *are* issued, but to the **node**, not to a caller: a
+mount is a filesystem that lives for days, so `mount_role_arn` gives the node
+an STS session instead of the stored key. That is the mount path, described in
+[Node Mounts](/services/system/node-mounts/). A process that wants a real
+filesystem over a bucket gets one by having the bucket attached to its
+sandbox — not by asking Contents for a key.
+
+## The shared filesystem
+
+The Home Folder and the Volumes live on the NFS-backed claim the Operator
+mounts into runtimes. Contents mounts the **same claim at the same path**, so a
+file it writes is the file a runtime reads — not a copy that has to be kept in
+step. This is why the service belongs on the runtimes plane, and why its four
+Solr collections initialize with the Runtimes set.
+
+Readiness reports the mount rather than the variable: it answers whether this
+process can write where the runtimes read.
+
+`GET /sources/user-folder/files` browses that filesystem. It lists every folder
+the caller reaches — their own, plus one per organization and team they belong
+to — under the same names the Operator mounts them by, which come from
+`datalayer_common.home_folders` so the two services cannot name a folder
+differently. Which folders those are is resolved from IAM with the caller's own
+credentials and held per caller for a short window; the first path segment
+selects one of them, and a segment outside the resolved set is refused.
+
+| `shared-filesystem` detail | Meaning |
+| --- | --- |
+| `not configured` | No claim was passed. Required only when the managed backend is `shared-fs`; otherwise the service is ready without it |
+| `mount path missing` | The claim did not mount. The path is absent |
+| `mount path not writable` | Mounted read-only, or owned by another user |
+| `ready` | Mounted and writable |
+
+A failed mount otherwise leaves the path present and empty, and the service
+would write managed bytes into the container's own filesystem until the pod is
+replaced and they vanish.
+
+### The one way a home folder can be deleted by accident
+
+The same claim reaches a running sandbox two ways: as a `subPath` mount
+rendered when the Pod was created, and — where the
+[Node Mount Gateway](/services/system/node-mount-gateway/) is deployed —
+as a bind the node agent makes into a Pod that is already running. The second
+carries a hazard the first does not, and it is the reason the gateway volume
+is what it is.
+
+When a Pod goes away, kubelet tears its volumes down. For a **disk-backed**
+`emptyDir` that teardown is a recursive delete of the node directory, and a
+recursive delete removes a directory's children *before* it removes the
+directory. A bind mount of this claim left standing underneath would be walked
+into, and the delete would land on a user's home folder — real bytes, on the
+shared filesystem, from a delete nobody wrote and nothing would report.
+
+A **memory-backed** `emptyDir` is a tmpfs, so kubelet must unmount it first,
+and unmounting a mount that still has children fails with `EBUSY`. The failure
+mode of a leaked mount becomes a Pod stuck in `Terminating` — visible,
+alertable and recoverable by hand — instead of silent data loss. That is why
+the gateway volume is `emptyDir: {medium: Memory}`: not because a tmpfs is
+fast, but because it refuses to disappear while something is mounted inside
+it.
+
+Two consequences follow, and both are visible from this service:
+
+- the gateway holds mount points and nothing else, since a byte written into a
+  tmpfs is a byte of the Pod's memory. It carries a 1 MiB size limit;
+- it therefore cannot be `/home/jovyan`, which a sandbox writes to all day.
+  The folders are bound at `/mnt/datalayer/{handle}` and reached at
+  `/home/jovyan/{handle}` through a symlink made inside the sandbox. Both
+  names come from `datalayer_common.home_folders`, so the path this service
+  reports for a file is the path the sandbox reads it at.
+
+`/home/jovyan` is deliberately not a volume either, for a different reason: a
+CRIU checkpoint captures the container's writable layer, so a home directory
+moved onto a volume would not survive a checkpoint and restore. The symlink
+lives in the writable layer, and points at a mount the restored Pod is granted
+again.
+
+Never `rm -rf` a Pod's gateway directory under `/var/lib/kubelet/pods` while a
+bind is standing in it. Unmount first — the recovery is on the
+[Local CSI driver](/services/system/node-mount-gateway/#watching-it) page — and treat
+the `datalayer_mount_gateway_leaked_total` alert as an alert about **this
+service's data**, not about a node.
+
+## Logs and scaling
+
+```bash
+plane logs datalayer-contents
+kubectl logs -n datalayer-api -l app=contents -f
+kubectl scale deployment/datalayer-contents -n datalayer-api --replicas=2
+```
+
+Scale API and worker independently. Keep Flight and bridge disabled until their
+readiness and protocol implementations are available in the selected image.
+
+## Observability
+
+Every Contents process — the API, the worker, the Flight Gateway, the bridge
+relay — exports logs, traces and metrics through the standard `OTEL_*`
+settings to the observer's collector; `OTEL_SDK_DISABLED=true` silences all
+four. Logs and spans never contain JWTs, Vault values, provider credentials,
+signed URLs or Flight tickets: a UID goes on a span, a credential goes
+nowhere.
+
+The instruments are named once, in `datalayer_contents/metrics.py`, with
+bounded labels — a kind, an outcome, a state, a reason — and reach
+Prometheus through the collector's exporter as:
+
+| Metric | Labels | What it says |
+| --- | --- | --- |
+| `contents_operations_total`, `contents_operation_duration_seconds` | `kind`, `outcome` (`succeeded`, `retry`, `refused`, `failed`, `compensated`) | Every operation the worker ran, and how long |
+| `contents_operations_dead_letter` | | Operations that gave up, as the worker last counted them |
+| `contents_transfer_bytes_total`, `contents_transfers_total` | `direction`; `outcome` | Bytes moved by parts, transfers brought to an end |
+| `contents_queries_total`, `contents_query_rows_total`, `contents_query_bytes_total`, `contents_query_duration_seconds` | `outcome`, `connector` | What the query executor produced |
+| `contents_ticket_validations_total` | `reason` (`valid`, `expired`, `invalid`, `consumed`, `revoked`, `unknown`…) | Tickets presented to `POST /tickets/validate` and to the gateway |
+| `contents_mcp_calls_total`, `contents_mcp_acquisitions_total` | `outcome` | Tool calls run, artifacts fetched |
+| `contents_bridge_sessions_total` | `state` (`connected`, `paired`, `disconnected`, `unauthorized`, `refused`, `ended`) | What the relay saw of each end |
+| `contents_dataserver_lease_sweeps_total`, `contents_dataserver_refusals_total` | `state`; `code` | Dataservers the sweep degraded, queries refused for want of one |
+| `contents_limit_refusals_total` | `limit` (`query-concurrency`, `mcp-rate`, `bridges`, `transfer-size`, `quota`) | Requests a limit refused |
+| `contents_readiness_failures_total` | `process`, `dependency` | Readiness probes that found a required dependency down |
+| `contents_worker_loops_total`, `contents_worker_sweeps_total` | ; `task` | The worker's loop coming round, and what its sweeps moved |
+| `contents_worker_sweep_failures_total` | `task` | Housekeeping sweeps that raised and were isolated — one failing sweep no longer starves the rest, so a rising count here is where to look when a sweep's work stops happening |
+| `contents_reconcile_runs_total`, `contents_reconcile_discrepancies`, `contents_reconcile_last_run_timestamp_seconds` | `outcome`; `kind` | The scheduled reconciliation |
+
+Spans: one per operation (`contents.operation`, with kind, UID, attempt and
+outcome), per transfer part and completion, per query the executor runs,
+per MCP call and acquisition, per connection the relay pairs, per
+reconciliation.
+
+### Alerts
+
+The chart renders a `PrometheusRule` when `contents.alerts.enabled` is set
+(the CRD comes with the observer chart); the thresholds are
+`contents.alerts.*` in its values, and `reconcileIntervalSeconds` there must
+match `DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS`:
+
+| Alert | Fires when |
+| --- | --- |
+| `ContentsWorkerStalled` | the worker exports but its loop stopped coming round — the same wedge `/health` reports as `stalled` |
+| `ContentsWorkerAbsent` | no worker reports at all: operations are accepted and nothing runs them |
+| `ContentsDeadLetterGrowing`, `ContentsDeadLetterDeep` | operations are giving up, or more than the threshold have |
+| `ContentsReadinessFailing` | a readiness probe keeps finding a required dependency down, by process and dependency |
+| `ContentsBridgeDisconnects` | bridge ends drop off the relay in a burst |
+| `ContentsDataserverUnavailable` | a Dataserver missed three leases, or a routed query was refused `DATASERVER_UNAVAILABLE` |
+| `ContentsReconcileDiscrepancies`, `ContentsReconcileStale` | the catalog and the store disagree, or nobody has checked in two intervals |
+| `ContentsLimitsRefusing` | a limit refuses more than the threshold in fifteen minutes |
+
+`contents/tests/test_alert_rules_chart.py` renders the rules and refuses one
+that names a metric the code does not write; `contents/tests/test_telemetry.py`
+reads every instrument back through an in-memory reader.
+
+## Tear down
+
+```bash
+plane down datalayer-contents
+```
+
+Removing the deployment does not delete Solr collections, managed objects,
+Vault credentials or Solr backups. Archive or delete content through the API
+and follow the recovery/retention runbooks instead of deleting storage from
+the Helm release.

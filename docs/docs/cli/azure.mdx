@@ -1,6 +1,6 @@
 ---
 title: clouder azure
-sidebar_position: 2
+sidebar_position: 3
 ---
 
 # clouder azure
@@ -25,7 +25,7 @@ The interactive flow:
 1. Clouder asks if you want to use `az login` credentials
 2. Fetches available subscriptions from your Azure account
 3. Displays a table and lets you select one
-4. Saves the subscription ID and tenant ID to `~/.clouder/azure/azure.yaml`
+4. Saves the subscription ID and tenant ID to `~/.clouder/clouds/azure/azure.yaml`
 
 ### Method 2: Service Principal (recommended for production/CI)
 
@@ -86,7 +86,7 @@ clouder azure configure \
 | `--client-secret` | | Azure client secret |
 | `--interactive / --no-interactive` | | Enable/disable interactive prompts (default: interactive) |
 
-Configuration is stored in `~/.clouder/azure/azure.yaml` with `chmod 600`.
+Configuration is stored in `~/.clouder/clouds/azure/azure.yaml` with `chmod 600`.
 
 ---
 
@@ -110,7 +110,15 @@ List all available Azure regions/locations.
 clouder azure regions
 ```
 
-Output columns: Name (e.g., `eastus`), Display Name, Regional Name.
+Output columns: Name (e.g., `eastus`), Display Name, Regional Name, Latitude, Longitude.
+
+Example output:
+
+| Name | Display Name | Regional Name | Latitude | Longitude |
+|------|--------------|---------------|----------|-----------|
+| eastus | East US | (US) East US | 37.3719 | -79.8164 |
+| westeurope | West Europe | (Europe) West Europe | 52.3667 | 4.9000 |
+| southeastasia | Southeast Asia | (Asia Pacific) Southeast Asia | 1.2830 | 103.8330 |
 
 ---
 
@@ -166,7 +174,19 @@ clouder azure vm-sizes --region westeurope
 |--------|-------|-------------|
 | `--region` | `-r` | Region to list VM sizes for (interactive if omitted) |
 
-Output columns: Name, vCPUs, Memory (GB), Max Data Disks, OS Disk (GB).
+Output columns: Name, Family, vCPUs, Memory (GB), Max Data Disks, Temp Disk (GB), OS Disk (GB), Arch, GPU, GPU Count, GPU Type, GPU Mem (GB).
+
+Notes:
+- `GPU` is `Yes` when Azure SKU capabilities advertise GPU/accelerator support.
+- `GPU Type` and `GPU Mem (GB)` are shown when provided by Azure capability metadata; otherwise they appear as `N/A`.
+
+Example output:
+
+| Name | Family | vCPUs | Memory (GB) | Max Data Disks | Temp Disk (GB) | OS Disk (GB) | Arch | GPU | GPU Count | GPU Type | GPU Mem (GB) |
+|------|--------|-------|-------------|----------------|----------------|--------------|------|-----|-----------|----------|--------------|
+| Standard_B2s | standardBSFamily | 2 | 4.0 | 4 | 8.0 | 32 | x64 | No | 0 | N/A | N/A |
+| Standard_D4s_v5 | standardDSv5Family | 4 | 16.0 | 8 | 75.0 | 32 | x64 | No | 0 | N/A | N/A |
+| Standard_NC6s_v3 | standardNCSv3Family | 6 | 112.0 | 12 | 736.0 | 32 | x64 | Yes | 1 | NVIDIA Tesla V100 | 16.0 |
 
 ---
 
@@ -291,6 +311,69 @@ clouder azure vm-delete my-vm --resource-group my-rg --force
 | `NAME` (required) | | VM name to delete |
 | `--resource-group` (required) | `-g` | Resource group containing the VM |
 | `--force` | `-f` | Skip confirmation prompt |
+
+---
+
+### `clouder azure helm-values`
+
+Generate a JSON values file containing all Azure credentials required by the `datalayer-operator` Helm chart:
+
+- `operator.cloudCredentials.azure.tenantId`
+- `operator.cloudCredentials.azure.clientId`
+- `operator.cloudCredentials.azure.clientSecret`
+- `operator.cloudCredentials.azure.subscriptionId`
+- `operator.cloudCredentials.azure.resourceGroup`
+
+```bash
+# Generate from configured Azure + kubeadm cluster metadata
+clouder azure helm-values --cluster my-cluster -o datalayer-operator-azure.json
+
+# Print JSON to stdout
+clouder azure helm-values --cluster my-cluster --output -
+
+# Disable service principal auto-creation (fail if client credentials are missing)
+clouder azure helm-values --cluster my-cluster --no-create-sp
+
+# Strict reuse mode (never creates an SP; fails if credentials are missing)
+clouder azure helm-values --cluster my-cluster --reuse-sp-only
+
+# Fully explicit mode
+clouder azure helm-values \
+    --tenant-id <TENANT_ID> \
+    --client-id <CLIENT_ID> \
+    --client-secret <CLIENT_SECRET> \
+    --subscription-id <SUBSCRIPTION_ID> \
+    --resource-group <RESOURCE_GROUP> \
+    -o datalayer-operator-azure.json
+```
+
+Default output behavior:
+
+- If `--cluster` is set (or inferred from current kube context), output defaults to `~/.clouder/kubeadm/<cluster>/datalayer-operator-azure.json`.
+- If no cluster can be resolved, output defaults to `~/.clouder/kubeadm/datalayer-operator-azure.json`.
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cluster` | | Kubeadm cluster name (reads `~/.clouder/kubeadm/<name>/kubeadm.json` for subscription/resource group) |
+| `--output` | `-o` | Output JSON file path (`-` prints to stdout) |
+| `--tenant-id` | | Override tenant ID |
+| `--client-id` | | Override client ID |
+| `--client-secret` | | Override client secret |
+| `--subscription-id` | | Override subscription ID |
+| `--resource-group` | `-g` | Override resource group |
+| `--create-sp / --no-create-sp` | | Auto-create scoped Azure service principal if client credentials are missing (default: `--create-sp`) |
+| `--reuse-sp-only` | | Strict mode: reuse existing credentials only and never create a service principal |
+
+Output file permissions are set to `600` because it contains secrets.
+
+Use the generated file with Helm:
+
+```bash
+helm upgrade --install datalayer-operator \
+    ./etc/helm/charts/datalayer-operator \
+    --namespace datalayer-runtimes \
+    --values datalayer-operator-azure.json
+```
 
 ---
 

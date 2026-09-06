@@ -3,6 +3,12 @@
 from typing import Optional
 
 from .config import get_azure_credential, get_azure_subscription_id
+from ...util.wait import wait_with_spinner
+
+
+def _wait_poller(poller, description: str):
+    """Wait on Azure SDK pollers with delayed spinner + elapsed time."""
+    return wait_with_spinner(lambda: poller.result(), description)
 
 
 def _get_subscription_client():
@@ -148,18 +154,150 @@ def list_azure_resources_by_region(region: Optional[str] = None,
 # --- VM Sizes ---
 
 def list_azure_vm_sizes(location: str, subscription_id: Optional[str] = None) -> list:
-    """List available VM sizes in a location."""
+    """List available VM sizes in a location with capability details.
+
+    Uses Resource SKUs so we can expose richer columns (GPU, architecture,
+    temp disk, acceleration type) in the CLI.
+    """
     client = _get_compute_client(subscription_id)
-    return [
-        {
+
+    # Build a fast map from the legacy VM sizes endpoint for stable vCPU/memory values.
+    base_sizes = {}
+    for size in client.virtual_machine_sizes.list(location):
+        base_sizes[size.name] = {
             "name": size.name,
             "vcpus": size.number_of_cores,
             "memory_gb": round(size.memory_in_mb / 1024, 1),
             "max_data_disks": size.max_data_disk_count,
             "os_disk_size_gb": size.os_disk_size_in_mb // 1024 if size.os_disk_size_in_mb else None,
         }
-        for size in client.virtual_machine_sizes.list(location)
+
+    location_lc = location.lower()
+    detailed: list[dict] = []
+
+    for sku in client.resource_skus.list():
+        if str(getattr(sku, "resource_type", "")).lower() != "virtualmachines":
+            continue
+
+        locations = [str(loc).lower() for loc in (getattr(sku, "locations", None) or [])]
+        if location_lc not in locations:
+            continue
+
+        name = str(getattr(sku, "name", "") or "")
+        if not name:
+            continue
+
+        capabilities = {}
+        for capability in (getattr(sku, "capabilities", None) or []):
+            cap_name = str(getattr(capability, "name", "") or "")
+            cap_value = str(getattr(capability, "value", "") or "")
+            if cap_name:
+                capabilities[cap_name] = cap_value
+
+        gpu_count_raw = capabilities.get("GPUs", "0")
+        try:
+            gpu_count = int(float(gpu_count_raw)) if gpu_count_raw else 0
+        except Exception:
+            gpu_count = 0
+
+        gpu_type = capabilities.get("AcceleratorType", "")
+        if not gpu_type and gpu_count > 0:
+            gpu_type = "GPU"
+
+        gpu_mem_raw = capabilities.get("GpuMemoryGB", "")
+        try:
+            gpu_memory_gb = float(gpu_mem_raw) if gpu_mem_raw else None
+        except Exception:
+            gpu_memory_gb = None
+
+        base = base_sizes.get(name, {})
+        detailed.append(
+            {
+                "name": name,
+                "family": str(getattr(sku, "family", "") or ""),
+                "vcpus": base.get("vcpus"),
+                "memory_gb": base.get("memory_gb"),
+                "max_data_disks": base.get("max_data_disks"),
+                "os_disk_size_gb": base.get("os_disk_size_gb"),
+                "temp_disk_gb": (
+                    float(capabilities.get("MaxResourceVolumeMB", "0")) / 1024
+                    if capabilities.get("MaxResourceVolumeMB")
+                    else None
+                ),
+                "architecture": capabilities.get("CpuArchitectureType", ""),
+                "gpu_available": gpu_count > 0,
+                "gpu_count": gpu_count,
+                "gpu_type": gpu_type,
+                "gpu_memory_gb": gpu_memory_gb,
+            }
+        )
+
+    # Keep deterministic order and ensure unique sizes.
+    dedup = {}
+    for row in detailed:
+        dedup[row["name"]] = row
+    return list(dedup.values())
+
+
+def list_azure_popular_vm_images(location: str, subscription_id: Optional[str] = None) -> list:
+    """List popular VM images and whether they are available in a location.
+
+    Returns a list of dicts with keys:
+    - ``name``: friendly image label consumed by CLI (e.g. Ubuntu2204)
+    - ``publisher``
+    - ``offer``
+    - ``sku``
+    - ``version`` (always ``latest``)
+    - ``available`` (bool)
+    """
+
+    client = _get_compute_client(subscription_id)
+    candidates = [
+        {
+            "name": "Ubuntu2204",
+            "publisher": "Canonical",
+            "offer": "0001-com-ubuntu-server-jammy",
+            "sku": "22_04-lts-gen2",
+            "version": "latest",
+        },
+        {
+            "name": "Ubuntu2404",
+            "publisher": "Canonical",
+            "offer": "ubuntu-24_04-lts",
+            "sku": "server",
+            "version": "latest",
+        },
+        {
+            "name": "Debian12",
+            "publisher": "Debian",
+            "offer": "debian-12",
+            "sku": "12-gen2",
+            "version": "latest",
+        },
     ]
+
+    images: list[dict] = []
+    for candidate in candidates:
+        available = False
+        try:
+            versions = list(
+                client.virtual_machine_images.list(
+                    location=location,
+                    publisher_name=candidate["publisher"],
+                    offer=candidate["offer"],
+                    skus=candidate["sku"],
+                    top=1,
+                )
+            )
+            available = len(versions) > 0
+        except Exception:
+            available = False
+
+        image = dict(candidate)
+        image["available"] = available
+        images.append(image)
+
+    return images
 
 
 # --- Virtual Machines ---
@@ -239,7 +377,7 @@ def create_azure_vm(
                 "subnets": [{"name": subnet_name, "address_prefix": "10.0.0.0/24"}],
             },
         )
-        vnet = vnet_poller.result()
+        vnet = _wait_poller(vnet_poller, f"Creating virtual network {vnet_name}")
         subnet_id = vnet.subnets[0].id
 
     # 2. Create or reuse NSG with SSH rule
@@ -265,7 +403,7 @@ def create_azure_vm(
                 ],
             },
         )
-        nsg = nsg_poller.result()
+        nsg = _wait_poller(nsg_poller, f"Creating network security group {nsg_name}")
         nsg_id = nsg.id
 
     # 3. Create Public IP
@@ -279,7 +417,7 @@ def create_azure_vm(
             "public_ip_allocation_method": "Static",
         },
     )
-    public_ip = ip_poller.result()
+    public_ip = _wait_poller(ip_poller, f"Creating public IP {ip_name}")
 
     # 4. Create NIC with NSG
     nic_name = f"{vm_name}-nic"
@@ -299,7 +437,7 @@ def create_azure_vm(
             ],
         },
     )
-    nic = nic_poller.result()
+    nic = _wait_poller(nic_poller, f"Creating network interface {nic_name}")
 
     # 4. Build VM parameters
     vm_params = {
@@ -351,7 +489,7 @@ def create_azure_vm(
     vm_poller = compute_client.virtual_machines.begin_create_or_update(
         resource_group, vm_name, vm_params,
     )
-    vm = vm_poller.result()
+    vm = _wait_poller(vm_poller, f"Creating Azure VM {vm_name}")
 
     return {
         "name": vm.name,
@@ -361,6 +499,88 @@ def create_azure_vm(
         "public_ip": public_ip.ip_address,
         "resource_group": resource_group,
     }
+
+
+def run_azure_vm_shell_script(
+    resource_group: str,
+    vm_name: str,
+    script: str,
+    *,
+    subscription_id: Optional[str] = None,
+) -> dict:
+    """Execute a shell script on an Azure VM via RunCommand API.
+
+    Returns a dict with ``stdout``, ``stderr`` and ``raw`` fields.
+    """
+
+    compute_client = _get_compute_client(subscription_id)
+    poller = compute_client.virtual_machines.begin_run_command(
+        resource_group,
+        vm_name,
+        {
+            "command_id": "RunShellScript",
+            "script": [script],
+        },
+    )
+    result = _wait_poller(poller, f"Running command on VM {vm_name}")
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    for item in getattr(result, "value", []) or []:
+        code = str(getattr(item, "code", "") or "")
+        message = str(getattr(item, "message", "") or "")
+        if "/stderr" in code.lower():
+            stderr_chunks.append(message)
+        else:
+            stdout_chunks.append(message)
+
+    return {
+        "stdout": "\n".join(chunk for chunk in stdout_chunks if chunk).strip(),
+        "stderr": "\n".join(chunk for chunk in stderr_chunks if chunk).strip(),
+        "raw": result,
+    }
+
+
+def get_kubeadm_join_command(
+    resource_group: str,
+    master_vm_name: str,
+    *,
+    subscription_id: Optional[str] = None,
+) -> str:
+    """Get a kubeadm join command from the control-plane VM via Azure RunCommand.
+
+    Raises ``ValueError`` when a valid join command cannot be resolved.
+    """
+
+    result = run_azure_vm_shell_script(
+        resource_group=resource_group,
+        vm_name=master_vm_name,
+        script="sudo kubeadm token create --print-join-command",
+        subscription_id=subscription_id,
+    )
+    stdout = str(result.get("stdout") or "").strip()
+    stderr = str(result.get("stderr") or "").strip()
+
+    join_command = ""
+    for line in stdout.splitlines():
+        candidate = line.strip()
+        if "kubeadm join" in candidate:
+            join_command = candidate
+            break
+
+    if not join_command and "kubeadm join" in stdout:
+        normalized = " ".join(stdout.split())
+        marker = normalized.find("kubeadm join")
+        if marker >= 0:
+            join_command = normalized[marker:].strip()
+
+    if not join_command or "kubeadm join" not in join_command:
+        raise ValueError(
+            "invalid_kubeadm_join_command;"
+            f"stdout={stdout[-400:]};stderr={stderr[-400:]}"
+        )
+
+    return " ".join(join_command.split())
 
 
 def delete_azure_vm(resource_group: str, vm_name: str,
@@ -386,7 +606,7 @@ def delete_azure_vm(resource_group: str, vm_name: str,
     # Delete the VM first (releases disk attachments)
     client = _get_compute_client(subscription_id)
     poller = client.virtual_machines.begin_delete(resource_group, vm_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting Azure VM {vm_name}")
 
     # Clean up associated resources
     if resources:
@@ -395,28 +615,28 @@ def delete_azure_vm(resource_group: str, vm_name: str,
         for nic_name in resources.get("nic_names", []):
             try:
                 p = network_client.network_interfaces.begin_delete(resource_group, nic_name)
-                p.result()
+                _wait_poller(p, f"Deleting network interface {nic_name}")
             except Exception:
                 pass
         # Delete public IPs
         for ip_name in resources.get("ip_names", []):
             try:
                 p = network_client.public_ip_addresses.begin_delete(resource_group, ip_name)
-                p.result()
+                _wait_poller(p, f"Deleting public IP {ip_name}")
             except Exception:
                 pass
         # Delete OS disk
         if resources.get("os_disk_name"):
             try:
                 p = client.disks.begin_delete(resource_group, resources["os_disk_name"])
-                p.result()
+                _wait_poller(p, f"Deleting OS disk {resources['os_disk_name']}")
             except Exception:
                 pass
         # Delete data disks
         for disk_name in resources.get("data_disk_names", []):
             try:
                 p = client.disks.begin_delete(resource_group, disk_name)
-                p.result()
+                _wait_poller(p, f"Deleting data disk {disk_name}")
             except Exception:
                 pass
 
@@ -493,7 +713,7 @@ def delete_azure_nic(resource_group: str, nic_name: str,
     """Delete a network interface."""
     client = _get_network_client(subscription_id)
     poller = client.network_interfaces.begin_delete(resource_group, nic_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting network interface {nic_name}")
 
 
 def delete_azure_public_ip(resource_group: str, ip_name: str,
@@ -501,7 +721,7 @@ def delete_azure_public_ip(resource_group: str, ip_name: str,
     """Delete a public IP address."""
     client = _get_network_client(subscription_id)
     poller = client.public_ip_addresses.begin_delete(resource_group, ip_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting public IP {ip_name}")
 
 
 def delete_azure_disk(resource_group: str, disk_name: str,
@@ -509,7 +729,7 @@ def delete_azure_disk(resource_group: str, disk_name: str,
     """Delete a managed disk."""
     client = _get_compute_client(subscription_id)
     poller = client.disks.begin_delete(resource_group, disk_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting disk {disk_name}")
 
 
 def delete_azure_nsg(resource_group: str, nsg_name: str,
@@ -517,7 +737,7 @@ def delete_azure_nsg(resource_group: str, nsg_name: str,
     """Delete a network security group."""
     client = _get_network_client(subscription_id)
     poller = client.network_security_groups.begin_delete(resource_group, nsg_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting network security group {nsg_name}")
 
 
 def delete_azure_vnet(resource_group: str, vnet_name: str,
@@ -525,7 +745,7 @@ def delete_azure_vnet(resource_group: str, vnet_name: str,
     """Delete a virtual network (and all its subnets)."""
     client = _get_network_client(subscription_id)
     poller = client.virtual_networks.begin_delete(resource_group, vnet_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting virtual network {vnet_name}")
 
 
 # --- Load Balancer ---
@@ -556,7 +776,7 @@ def create_azure_load_balancer(
             "public_ip_allocation_method": "Static",
         },
     )
-    public_ip = ip_poller.result()
+    public_ip = _wait_poller(ip_poller, f"Creating load balancer IP {public_ip_name}")
 
     # Build LB parameters
     frontend_id = (
@@ -646,7 +866,7 @@ def create_azure_load_balancer(
     lb_poller = network_client.load_balancers.begin_create_or_update(
         resource_group, lb_name, lb_params,
     )
-    lb = lb_poller.result()
+    lb = _wait_poller(lb_poller, f"Creating load balancer {lb_name}")
 
     # Extract backend pool ID from created LB
     backend_pool_id = None
@@ -705,7 +925,7 @@ def add_nic_to_lb_backend_pool(
     poller = network_client.network_interfaces.begin_create_or_update(
         resource_group, nic_name, nic_params,
     )
-    poller.result()
+    _wait_poller(poller, f"Updating network interface {nic_name}")
 
 
 def delete_azure_load_balancer(resource_group: str, lb_name: str,
@@ -713,4 +933,4 @@ def delete_azure_load_balancer(resource_group: str, lb_name: str,
     """Delete a load balancer."""
     client = _get_network_client(subscription_id)
     poller = client.load_balancers.begin_delete(resource_group, lb_name)
-    poller.result()
+    _wait_poller(poller, f"Deleting load balancer {lb_name}")

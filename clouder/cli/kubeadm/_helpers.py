@@ -7,11 +7,41 @@ import typer
 from rich import print
 from rich.prompt import Prompt
 
-from ..ctx import get_current_context, get_default_ssh_key
-from ...util.utils import CLOUDER_CLUSTERS_FOLDER, CLOUDER_KUBECONFIGS_FOLDER, SSH_FOLDER
+from ..ctx import get_current_context, get_default_ssh_key, load_context, save_context
+from ...util.utils import kubeadm_metadata_path, SSH_FOLDER
 
 # Kubernetes version to install
 K8S_VERSION = "1.32"
+
+# Keep in sync with plane/datalayer_plane/sbin/k8s-label-nodes.sh
+DEFAULT_NODE_LABELS = [
+    "role.datalayer.io/router=true",
+    "role.datalayer.io/system=true",
+    "role.datalayer.io/api=true",
+    "role.datalayer.io/solr=true",
+    "role.datalayer.io/runtime=true",
+    "node.datalayer.io/variant=medium",
+    "xpu.datalayer.io/cpu=true",
+]
+
+
+def _print_step_header(step: int, total: int, title: str) -> None:
+    """Render a high-contrast, separated step header for multi-step actions."""
+    separator = "=" * 78
+    print(f"\n[bold bright_blue]{separator}[/bold bright_blue]")
+    print(
+        f"[bold bright_magenta]STEP {step}/{total}[/bold bright_magenta] "
+        f"[bold bright_cyan]{title}[/bold bright_cyan]"
+    )
+    print(f"[bold bright_blue]{separator}[/bold bright_blue]")
+
+
+def _print_section_header(title: str) -> None:
+    """Render a high-contrast, separated section header for phase blocks."""
+    separator = "=" * 78
+    print(f"\n[bold bright_blue]{separator}[/bold bright_blue]")
+    print(f"[bold bright_magenta]SECTION[/bold bright_magenta] [bold bright_cyan]{title}[/bold bright_cyan]")
+    print(f"[bold bright_blue]{separator}[/bold bright_blue]")
 
 
 # ---------------------------------------------------------------------------
@@ -55,17 +85,88 @@ def _ssh_cmd_stream(ip: str, user: str, key_path: str, command: str) -> int:
 # Cluster VM resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_cluster_vms(cluster_name: str):
-    """Resolve all VMs belonging to a kubeadm cluster, returning (master, workers) with IPs."""
-    (cloud, context_id) = get_current_context()
+def resolve_kubeadm_cloud_context(
+    cloud: str | None = None,
+    cluster_name: str | None = None,
+) -> tuple[str, str]:
+    """Resolve the kubeadm cloud/context pair.
+
+    Priority order:
+    1) Explicit ``--cloud`` option when provided.
+    2) Cluster metadata cloud when cluster metadata exists.
+    3) Current context cloud.
+
+    When the resolved cloud differs from the current context cloud, this helper
+    tries to find a matching configured context for that cloud, preferring the
+    context id recorded in cluster metadata.
+    """
+
+    requested_cloud = (cloud or "").strip().lower() or None
+    if requested_cloud and requested_cloud not in {"azure", "aws"}:
+        raise typer.BadParameter("--cloud must be one of: azure, aws")
+
+    metadata: dict = {}
+    if cluster_name:
+        metadata = _load_cluster_metadata(cluster_name) or {}
+
+    metadata_cloud = str(metadata.get("cloud") or "").strip().lower() or None
+    if requested_cloud and metadata_cloud and requested_cloud != metadata_cloud:
+        raise typer.BadParameter(
+            f"Cluster '{cluster_name}' metadata says cloud={metadata_cloud}, but --cloud={requested_cloud}."
+        )
+
+    target_cloud = requested_cloud or metadata_cloud
+    current_cloud, current_context_id = get_current_context()
+    if not target_cloud:
+        return (current_cloud, current_context_id)
+
+    if target_cloud == current_cloud:
+        return (current_cloud, current_context_id)
+
+    context = load_context()
+    cloud_contexts = (
+        context.get("clouder", {})
+        .get("contexts", {})
+        .get(target_cloud, {})
+        or {}
+    )
+
+    preferred_context_id = ""
+    if target_cloud == "azure":
+        preferred_context_id = str(metadata.get("subscription_id") or "")
+    elif target_cloud == "aws":
+        preferred_context_id = str(metadata.get("account_id") or "")
+
+    if preferred_context_id and preferred_context_id in cloud_contexts:
+        return (target_cloud, preferred_context_id)
+
+    if len(cloud_contexts) == 1:
+        return (target_cloud, next(iter(cloud_contexts.keys())))
+
+    raise typer.BadParameter(
+        "Could not resolve a unique context for --cloud. "
+        "Run `clouder ctx set <cloud> <context_id>` for the target cloud or keep the current context aligned."
+    )
+
+
+def _resolve_cluster_vms(
+    cluster_name: str,
+    cloud: str | None = None,
+    context_id: str | None = None,
+):
+    """Resolve all VMs belonging to a kubeadm cluster, returning master/workers with IPs."""
+    if not cloud or not context_id:
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=cluster_name)
     if cloud == "azure":
         from ...cloud.azure.api import list_azure_vms, get_azure_vm_public_ip
         vms = list_azure_vms(subscription_id=context_id)
 
-        master_name = f"{cluster_name}-master"
-        master_vm = next((vm for vm in vms if vm["name"] == master_name), None)
+        master_prefix = f"{cluster_name}-master"
+        master_vm = next((vm for vm in vms if vm["name"] == master_prefix), None)
         if not master_vm:
-            typer.echo(f"Master VM '{master_name}' not found.", err=True)
+            master_vm = next((vm for vm in vms if vm["name"].startswith(f"{master_prefix}-")), None)
+        if not master_vm:
+            typer.echo(f"Master VM '{master_prefix}' not found.", err=True)
             raise typer.Exit(1)
 
         worker_vms = sorted(
@@ -74,7 +175,7 @@ def _resolve_cluster_vms(cluster_name: str):
         )
 
         master_ip = get_azure_vm_public_ip(
-            master_vm["resource_group"], master_name, subscription_id=context_id
+            master_vm["resource_group"], master_vm["name"], subscription_id=context_id
         )
         workers = []
         for wvm in worker_vms:
@@ -84,7 +185,8 @@ def _resolve_cluster_vms(cluster_name: str):
             workers.append({"name": wvm["name"], "ip": wip, "resource_group": wvm["resource_group"]})
 
         return {
-            "master": {"name": master_name, "ip": master_ip, "resource_group": master_vm["resource_group"]},
+            "cloud": cloud,
+            "master": {"name": master_vm["name"], "ip": master_ip, "resource_group": master_vm["resource_group"]},
             "workers": workers,
             "context_id": context_id,
         }
@@ -92,11 +194,16 @@ def _resolve_cluster_vms(cluster_name: str):
     if cloud == "aws":
         from ...cloud.aws.api import list_aws_vms
 
-        vms = list_aws_vms()
-        master_name = f"{cluster_name}-master"
-        master_vm = next((vm for vm in vms if vm["name"] == master_name), None)
+        metadata = _load_cluster_metadata(cluster_name) or {}
+        aws_region = metadata.get("region")
+
+        vms = list_aws_vms(region=aws_region)
+        master_prefix = f"{cluster_name}-master"
+        master_vm = next((vm for vm in vms if vm["name"] == master_prefix), None)
         if not master_vm:
-            typer.echo(f"Master VM '{master_name}' not found.", err=True)
+            master_vm = next((vm for vm in vms if vm["name"].startswith(f"{master_prefix}-")), None)
+        if not master_vm:
+            typer.echo(f"Master VM '{master_prefix}' not found.", err=True)
             raise typer.Exit(1)
 
         worker_vms = sorted(
@@ -109,13 +216,15 @@ def _resolve_cluster_vms(cluster_name: str):
             workers.append({
                 "name": wvm["name"],
                 "ip": wvm.get("public_ip"),
+                "private_ip": wvm.get("private_ip"),
                 "instance_id": wvm.get("id"),
                 "region": wvm.get("region"),
             })
 
         return {
+            "cloud": cloud,
             "master": {
-                "name": master_name,
+                "name": master_vm["name"],
                 "ip": master_vm.get("public_ip"),
                 "instance_id": master_vm.get("id"),
                 "region": master_vm.get("region"),
@@ -134,6 +243,20 @@ def _resolve_ssh_key_for_cluster(cluster_name: str) -> str:
     cluster_key = SSH_FOLDER / f"{cluster_name}-key"
     if cluster_key.exists():
         return str(cluster_key)
+
+    # Try key names from cluster metadata (e.g. AWS key pairs often stored as *.pem locally)
+    metadata = _load_cluster_metadata(cluster_name) or {}
+    metadata_key = metadata.get("ssh_key_name")
+    if metadata_key:
+        metadata_candidates = [metadata_key]
+        if not metadata_key.endswith(".pem"):
+            metadata_candidates.append(f"{metadata_key}.pem")
+        for candidate in metadata_candidates:
+            candidate_path = SSH_FOLDER / candidate
+            if candidate_path.exists():
+                print(f"[dim]Using cluster SSH key: {candidate_path}[/dim]")
+                return str(candidate_path)
+
     # Try configured default key
     default_key = get_default_ssh_key()
     if default_key:
@@ -158,33 +281,39 @@ def _resolve_ssh_key_for_cluster(cluster_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cluster metadata persistence (~/.clouder/clusters/<name>.json)
+# Cluster metadata persistence (~/.clouder/kubeadm/<name>/kubeadm.json)
 # ---------------------------------------------------------------------------
 
 def _cluster_metadata_path(cluster_name: str):
     """Return the path to the cluster metadata JSON file."""
-    return CLOUDER_CLUSTERS_FOLDER / f"{cluster_name}.json"
+    return kubeadm_metadata_path(cluster_name)
 
 
 def _save_cluster_metadata(cluster_name: str, metadata: dict):
     """Save cluster metadata to disk."""
     from datetime import datetime, timezone
-    CLOUDER_CLUSTERS_FOLDER.mkdir(parents=True, exist_ok=True)
+    path = _cluster_metadata_path(cluster_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
     if "created_at" not in metadata:
         metadata["created_at"] = metadata["updated_at"]
-    path = _cluster_metadata_path(cluster_name)
     path.write_text(json.dumps(metadata, indent=2))
     path.chmod(0o600)
     print(f"[dim]Cluster metadata saved to {path}[/dim]")
 
 
 def _load_cluster_metadata(cluster_name: str) -> dict | None:
-    """Load cluster metadata from disk. Returns None if not found."""
+    """Load cluster metadata from disk. Returns None if not found, empty, or corrupt."""
     path = _cluster_metadata_path(cluster_name)
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    content = path.read_text().strip()
+    if not content:
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return None
 
 
 def _update_cluster_metadata(cluster_name: str, updates: dict):
@@ -202,12 +331,41 @@ def _delete_cluster_metadata(cluster_name: str):
         typer.echo(f"  Removed cluster metadata: {path}")
 
 
+def get_default_kubeadm_cluster() -> str | None:
+    """Get the default kubeadm cluster name from ~/.clouder/clouder.yaml."""
+    context = load_context()
+    return context.get("clouder", {}).get("default_kubeadm_cluster")
+
+
+def set_default_kubeadm_cluster(cluster_name: str | None):
+    """Set or clear the default kubeadm cluster name."""
+    context = load_context()
+    if cluster_name:
+        context.setdefault("clouder", {})["default_kubeadm_cluster"] = cluster_name
+    else:
+        context.setdefault("clouder", {}).pop("default_kubeadm_cluster", None)
+    save_context(context)
+
+
+def resolve_kubeadm_cluster_name(cluster_name: str | None) -> str:
+    """Resolve explicit cluster name or fall back to configured default."""
+    if cluster_name:
+        return cluster_name
+    default_cluster = get_default_kubeadm_cluster()
+    if default_cluster:
+        return default_cluster
+    raise typer.BadParameter(
+        "Cluster name is required. Pass <name> or set a default with `clouder kubeadm set-default <name>`."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Script fragments for remote setup
 # ---------------------------------------------------------------------------
 
 _SCRIPT_PREREQS = f"""
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # --- Disable swap ---
@@ -309,11 +467,29 @@ sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kubelet kubeadm kubectl > /dev/null
 sudo apt-mark hold kubelet kubeadm kubectl containerd.io
 
+# --- Validate kube binaries/services are present ---
+command -v kubelet >/dev/null
+command -v kubeadm >/dev/null
+command -v kubectl >/dev/null
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
+    echo "WARN: kubelet.service not detected, attempting reinstall..."
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall kubelet > /dev/null || true
+    sudo systemctl daemon-reload || true
+fi
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
+    echo "ERROR: kubelet.service unit file is missing"
+    exit 1
+fi
+sudo systemctl daemon-reload
+sudo systemctl enable kubelet >/dev/null 2>&1 || true
+
 echo "Prerequisites installed successfully."
+echo "__DATALAYER_PREREQS_OK__"
 """
 
 _SCRIPT_KUBEADM_INIT = """
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
 
@@ -396,7 +572,8 @@ kubeadm token create --print-join-command 2>/dev/null
 # """
 
 _SCRIPT_INSTALL_CNI = """
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 
 # Install Flannel CNI
 kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
@@ -407,7 +584,8 @@ kubectl -n kube-flannel wait --for=condition=Ready pod -l app=flannel --timeout=
 """
 
 _SCRIPT_WORKER_FEATURE_GATE = """
-set -euo pipefail
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
 # Enable ContainerCheckpoint feature gate on worker kubelet
 KUBELET_CONF=/var/lib/kubelet/config.yaml
 if sudo grep -q "featureGates:" $KUBELET_CONF; then
@@ -448,6 +626,52 @@ echo "runc wrapper installed (--tcp-established for checkpoint)."
 sudo sysctl -w kernel.io_uring_disabled=2 > /dev/null 2>&1 || true
 echo 'kernel.io_uring_disabled = 2' | sudo tee /etc/sysctl.d/99-disable-io-uring.conf > /dev/null
 echo "io_uring disabled for unprivileged processes."
+"""
+
+_SCRIPT_UPGRADE_KUBELET = f"""
+set -eu
+(set -o pipefail) >/dev/null 2>&1 && set -o pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+echo "=== Upgrading kubelet / kubeadm / kubectl to v{K8S_VERSION}.x ==="
+
+# --- Update the Kubernetes apt repo to the target version ---
+sudo mkdir -p /etc/apt/keyrings
+sudo rm -f /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v{K8S_VERSION}/deb/Release.key | \
+    sudo gpg --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg 2>/dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{K8S_VERSION}/deb/ /' | \
+    sudo tee /etc/apt/sources.list.d/kubernetes.list > /dev/null
+sudo apt-get update -qq
+
+# --- Unhold, upgrade, re-hold ---
+sudo apt-mark unhold kubelet kubeadm kubectl 2>/dev/null || true
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kubelet kubeadm kubectl > /dev/null
+sudo apt-mark hold kubelet kubeadm kubectl
+
+# --- Validate kube binaries/services are present ---
+command -v kubelet >/dev/null
+command -v kubeadm >/dev/null
+command -v kubectl >/dev/null
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
+    echo "WARN: kubelet.service not detected after upgrade, attempting reinstall..."
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --reinstall kubelet > /dev/null || true
+    sudo systemctl daemon-reload || true
+fi
+if ! sudo systemctl cat kubelet >/dev/null 2>&1; then
+    echo "ERROR: kubelet.service unit file is missing after upgrade"
+    exit 1
+fi
+
+# --- Restart kubelet ---
+sudo systemctl daemon-reload
+sudo systemctl restart kubelet
+
+echo "kubelet version: $(kubelet --version 2>&1)"
+echo "kubeadm version: $(kubeadm version -o short 2>&1)"
+echo "kubectl version: $(kubectl version --client -o yaml 2>&1 | head -3)"
+echo "__DATALAYER_KUBELET_UPGRADE_OK__"
+echo "=== Upgrade complete ==="
 """
 
 # ---------------------------------------------------------------------------
@@ -503,12 +727,30 @@ def _get_or_create_azure_sp(subscription_id: str, resource_group: str, cluster_n
     if not tenant_id:
         return None, None, None
 
+    sp_name = f"clouder-{cluster_name}-csi"
+
+    # If an SP with the expected name already exists, do not recreate it.
+    existing_sp = subprocess.run(
+        [
+            "az", "ad", "sp", "list",
+            "--display-name", sp_name,
+            "--query", "[0].appId",
+            "-o", "tsv",
+        ],
+        capture_output=True, text=True,
+    )
+    if existing_sp.returncode == 0 and existing_sp.stdout.strip():
+        print(
+            f"[dim]Reusing existing Azure service principal '{sp_name}' (scoped to {resource_group}); no recreation performed.[/dim]"
+        )
+        return tenant_id, existing_sp.stdout.strip(), None
+
     # Create a new service principal scoped to the cluster resource group.
-    print(f"  [dim]Creating Azure service principal for disk provisioning (scoped to {resource_group})...[/dim]")
+    print(f"[dim]Creating Azure service principal for disk provisioning (scoped to {resource_group})...[/dim]")
     result = subprocess.run(
         [
             "az", "ad", "sp", "create-for-rbac",
-            "--name", f"clouder-{cluster_name}-csi",
+            "--name", sp_name,
             "--role", "Contributor",
             "--scopes", f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}",
             "-o", "json",
@@ -516,7 +758,7 @@ def _get_or_create_azure_sp(subscription_id: str, resource_group: str, cluster_n
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print(f"  [red]Failed to create service principal: {result.stderr.strip()}[/red]")
+        print(f"[red]Failed to create service principal: {result.stderr.strip()}[/red]")
         return tenant_id, None, None
 
     sp_data = json.loads(result.stdout)
@@ -665,30 +907,152 @@ kubectl get storageclass
 """
 
 
-def _build_aws_load_balancer_setup_script(
-        region: str,
-        vpc_id: str,
-        cluster_name: str,
-) -> str:
-        """Return a bash script that installs AWS Load Balancer Controller for kubeadm clusters."""
+def _build_aws_efs_storageclass_script(file_system_id: str) -> str:
+        """Return a bash script that creates or updates the aws-efs StorageClass."""
         return f"""set -euo pipefail
 
-# Install Helm if missing
+cat <<'SCEOF' | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+    name: aws-efs
+provisioner: efs.csi.aws.com
+parameters:
+    provisioningMode: efs-ap
+    fileSystemId: {file_system_id}
+    directoryPerms: \"700\"
+    basePath: \"/datalayer-dynamic\"
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+SCEOF
+
+echo \"StorageClass 'aws-efs' created.\"
+kubectl get storageclass aws-efs
+"""
+
+
+def _build_aws_efs_csi_setup_script(
+    region: str,
+    use_instance_profile: bool = False,
+    access_key_id: str | None = None,
+    secret_access_key: str | None = None,
+    session_token: str | None = None,
+) -> str:
+    """Return a bash script that installs AWS EFS CSI driver."""
+    import base64
+
+    access_key_b64 = base64.b64encode((access_key_id or "").encode()).decode()
+    secret_key_b64 = base64.b64encode((secret_access_key or "").encode()).decode()
+    session_token_b64 = base64.b64encode((session_token or "").encode()).decode()
+
+    credential_block = """
+# Ensure static credentials are not forced when using instance profile auth.
+kubectl -n kube-system set env deployment/efs-csi-controller \\
+    --containers=efs-plugin AWS_ACCESS_KEY_ID- AWS_SECRET_ACCESS_KEY- AWS_SESSION_TOKEN- || true
+"""
+
+    if not use_instance_profile:
+        credential_block = f"""
+AWS_ACCESS_KEY_ID=\"$(echo '{access_key_b64}' | base64 -d)\"
+AWS_SECRET_ACCESS_KEY=\"$(echo '{secret_key_b64}' | base64 -d)\"
+AWS_SESSION_TOKEN=\"$(echo '{session_token_b64}' | base64 -d)\"
+
+kubectl -n kube-system create secret generic aws-efs-csi-credentials \\
+    --from-literal=AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\" \\
+    --from-literal=AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\" \\
+    --from-literal=AWS_SESSION_TOKEN=\"$AWS_SESSION_TOKEN\" \\
+    --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n kube-system set env deployment/efs-csi-controller \\
+    --containers=efs-plugin --from=secret/aws-efs-csi-credentials
+"""
+
+    return f"""set -euo pipefail
+
 if ! command -v helm >/dev/null 2>&1; then
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 fi
 
-# Install cert-manager (required by aws-load-balancer-controller webhook)
-helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/ 2>/dev/null || true
 helm repo update
-kubectl create namespace cert-manager 2>/dev/null || true
-helm upgrade --install cert-manager jetstack/cert-manager \\
-    --namespace cert-manager \\
-    --version v1.16.1 \\
-    --set crds.enabled=true \\
-    --wait --timeout 240s
 
-# Install AWS Load Balancer Controller (node IAM role / instance profile auth)
+helm upgrade --install aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver \\
+    --namespace kube-system \\
+    --set controller.serviceAccount.create=true \\
+    --wait --timeout 300s
+
+kubectl -n kube-system set env deployment/efs-csi-controller \\
+    --containers=efs-plugin AWS_REGION={region}
+
+{credential_block}
+
+kubectl -n kube-system rollout status deployment/efs-csi-controller --timeout=240s
+kubectl -n kube-system get deployment efs-csi-controller -o wide
+kubectl -n kube-system get daemonset efs-csi-node -o wide
+
+echo \"AWS EFS CSI driver installed.\"
+"""
+
+
+def _build_aws_load_balancer_setup_script(
+        region: str,
+        vpc_id: str,
+        cluster_name: str,
+        use_instance_profile: bool = False,
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
+        session_token: str | None = None,
+) -> str:
+        """Return a bash script that installs AWS Load Balancer Controller for kubeadm clusters."""
+        import base64
+
+        access_key_b64 = base64.b64encode((access_key_id or "").encode()).decode()
+        secret_key_b64 = base64.b64encode((secret_access_key or "").encode()).decode()
+        session_token_b64 = base64.b64encode((session_token or "").encode()).decode()
+
+        credential_block = """
+# Ensure static credentials are not forced when using instance profile auth.
+kubectl -n kube-system set env deployment/aws-load-balancer-controller \\
+    AWS_ACCESS_KEY_ID- AWS_SECRET_ACCESS_KEY- AWS_SESSION_TOKEN- || true
+"""
+        if not use_instance_profile:
+            credential_block = f"""
+AWS_ACCESS_KEY_ID=\"$(echo '{access_key_b64}' | base64 -d)\"
+AWS_SECRET_ACCESS_KEY=\"$(echo '{secret_key_b64}' | base64 -d)\"
+AWS_SESSION_TOKEN=\"$(echo '{session_token_b64}' | base64 -d)\"
+
+kubectl -n kube-system create secret generic aws-load-balancer-credentials \\
+    --from-literal=AWS_ACCESS_KEY_ID=\"$AWS_ACCESS_KEY_ID\" \\
+    --from-literal=AWS_SECRET_ACCESS_KEY=\"$AWS_SECRET_ACCESS_KEY\" \\
+    --from-literal=AWS_SESSION_TOKEN=\"$AWS_SESSION_TOKEN\" \\
+    --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n kube-system set env deployment/aws-load-balancer-controller \\
+    --from=secret/aws-load-balancer-credentials
+"""
+
+        return f"""set -euo pipefail
+
+section() {{
+    printf '\n\033[1;36m==> %s\033[0m\n' "$1"
+}}
+
+ok() {{
+    printf '\033[1;32m[OK]\033[0m %s\n' "$1"
+}}
+
+section "AWS Load Balancer Controller / Sub-step 1: Helm"
+if ! command -v helm >/dev/null 2>&1; then
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+fi
+ok "Helm is available"
+
+section "AWS Load Balancer Controller / Sub-step 2: cert-manager"
+echo "Skipping cert-manager install/check (managed externally)."
+ok "Continuing without cert-manager bootstrap checks"
+
+section "AWS Load Balancer Controller / Sub-step 3: controller install"
 helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
 helm repo update
 kubectl create namespace kube-system 2>/dev/null || true
@@ -700,42 +1064,12 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
     --set vpcId={vpc_id} \\
     --wait --timeout 300s
 
-kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=240s || true
-echo \"AWS Load Balancer Controller installed.\"
+section "AWS Load Balancer Controller / Sub-step 4: verification"
+{credential_block}
+kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=240s
+kubectl -n kube-system get deployment aws-load-balancer-controller -o wide
+kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
+ok "AWS Load Balancer Controller installed and rollout is healthy"
 """
 
 
-def _build_aws_load_balancer_setup_script(
-        region: str,
-        vpc_id: str,
-        cluster_name: str,
-) -> str:
-        """Return a bash script that installs AWS Load Balancer Controller for kubeadm clusters."""
-        return f"""set -euo pipefail
-
-if ! command -v helm >/dev/null 2>&1; then
-    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-fi
-
-helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
-helm repo update >/dev/null
-
-kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller//crds?ref=master"
-
-helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \\
-    -n kube-system \\
-    --set clusterName={cluster_name} \\
-    --set serviceAccount.create=true \\
-    --set serviceAccount.name=aws-load-balancer-controller \\
-    --set region={region} \\
-    --set vpcId={vpc_id} \\
-    --set replicaCount=1 \\
-    --wait --timeout 10m
-
-kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=300s || true
-
-echo "AWS Load Balancer Controller installed."
-echo "Use Service annotations for NLB when needed:"
-echo "  service.beta.kubernetes.io/aws-load-balancer-type: external"
-echo "  service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip"
-"""

@@ -1,0 +1,285 @@
+---
+title: Node Mounts
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 📁 Datalayer Node Mounts
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="green">Node DaemonSet shipped</Label>
+  <Label color="yellow">Relay and Operator rendering: see their pages</Label>
+</Stack>
+
+Everything Datalayer mounts on a Kubernetes node comes from one privileged
+DaemonSet, `datalayer-node-mounts`, running **two node services** in one
+container — because a node has one mount table, and two components owning it
+is how a leaked mount goes unnoticed:
+
+- the **[Node Mount Gateway](/services/system/node-mount-gateway/)**, which
+  mounts home folders, datasets, NFS exports, Git checkouts and buckets into a
+  Pod that is **already running**, so a launch that mounts content is served
+  from the prewarmed pool instead of a cold Pod;
+- the **[Local CSI driver](/services/system/local-csi/)**,
+  `local.csi.datalayer.io`, which presents a folder of a user's own computer
+  inside a Datalayer Code Sandbox through the Contents **local bridge**.
+
+Each has its own page. **This one is about the DaemonSet they share** — the
+image, the chart, the deployment, and the checks that cover both.
+
+:::note[Why the DaemonSet is not called `local-csi` any more]
+
+It was, and the name became wrong. The **driver** really is local-only: it
+publishes exactly one kind of volume, a bridge to a laptop. The **DaemonSet**
+is not — the gateway rides in it, and nothing the gateway mounts involves a
+laptop.
+
+Renaming the driver instead would have been worse. The gateway is deliberately
+*not* a CSI driver: a PVC cannot attach to a Pod that is already running,
+which is the whole reason the gateway exists. Calling the package
+`datalayer-csi` would have named it after the mechanism it was built to avoid.
+So the driver keeps `local.csi.datalayer.io`, and the package around it is
+named for what it does: Datalayer's mounts, on a node.
+
+:::
+
+They share an image, a chart and an upgrade. Only one of them has a switch:
+`nodeMountGateway.enabled` turns the gateway on, and it is off by default. The
+driver has none — deploying this DaemonSet deploys it, because the `CSIDriver`
+object and the registrar sidecar are unconditional. If you want neither, do
+not deploy the DaemonSet.
+
+## The two services
+
+| | [Node Mount Gateway](/services/system/node-mount-gateway/) | [Local CSI driver](/services/system/local-csi/) |
+| --- | --- | --- |
+| What it mounts | Home folders, datasets, NFS exports, Git checkouts, buckets | One thing: a folder on a user's own computer, through the Contents bridge relay |
+| How a Pod gets it | A grant on the Pod's annotation, applied while the Pod is already running | An ephemeral inline CSI volume, rendered by the Operator at Pod creation |
+| When it can act | Any point in the Pod's life, and revocable | Pod creation only — a Pod's `volumes` are fixed then |
+| Is it CSI? | **No**, deliberately: a PVC cannot attach to a running Pod, which is why the gateway exists | Yes. `local.csi.datalayer.io` |
+| Switch | `nodeMountGateway.enabled`, off by default | `driver.*` values; on whenever the DaemonSet is |
+
+What follows is what they share — the image, the chart, the deployment and the
+checks. Everything specific to one of them is on its page.
+
+## What ships in Clouder
+
+| Piece | Where |
+| --- | --- |
+| Image | `plane/etc/dockerfiles/datalayer-node-mounts` → `datalayer/node-mounts:0.1.0`: Clouder with the `csi` extra, `code-sandboxes` (the bridge FUSE filesystem), `mount-s3` (Mountpoint for S3), `fuse3` |
+| Chart | `plane/etc/helm-private/charts/datalayer-node-mounts` |
+| Install | `plane up datalayer-node-mounts` (needs `DATALAYER_NODE_MOUNTS_ENABLED=true`) or `clouder kubeadm setup --node-mounts` |
+| Check | `clouder node-mounts status`, `clouder node-mounts verify` |
+| Entrypoint | `python -m clouder.csi --endpoint unix:///csi/csi.sock --node-id $NODE_ID`, plus `--node-mount-gateway` and its switches |
+
+## The chart
+
+Objects `datalayer-node-mounts` ships, all in `datalayer-runtimes`:
+
+- a `DaemonSet` on the nodes labelled `role.datalayer.io/runtime=true`
+  (`driver.nodeSelector`), with the privileged `driver` container and the
+  upstream `csi-node-driver-registrar` sidecar, `/var/lib/kubelet/plugins/local.csi.datalayer.io`
+  mounted at `/csi` and `/var/lib/kubelet/pods` mounted at the same path, both
+  `Bidirectional`, and `/dev/fuse`;
+- a `ServiceAccount` with a `ClusterRole` limited to `nodes: get` and
+  `events: create, patch` — no Secrets. The gateway adds `pods: get, list,
+  watch, patch` to it when it is on, and reading a Secret is a separate,
+  namespaced `Role`;
+- a `CSIDriver` `local.csi.datalayer.io`, for the driver
+  ([details](/services/system/local-csi/#what-the-driver-adds-to-the-chart));
+- a `NetworkPolicy` (`networkPolicy.enabled`) allowing egress to DNS, to the
+  bridge relay port, and — when the gateway is on — to the API server;
+- a `PrometheusRule` (`monitoring.prometheusRule`, off by default because it
+  needs the Prometheus operator's CRD and an unappliable manifest fails the
+  whole release).
+
+The values divide the same way: `driver.*`, `registrar.*` and `relay.*` are
+the driver's, `nodeMountGateway.*` is the gateway's, and `monitoring.*` and
+`apiServer.*` are shared. Each page documents its own.
+
+## Deploy
+
+The DaemonSet joins the system layer after the shared filesystem and before
+the Operator: the Operator renders the volumes the driver serves, and writes
+the grants the gateway applies.
+
+<Tabs>
+<TabItem value="plane" label="Plane">
+
+Off by default: it is privileged and runs on every runtimes node, so a
+cluster serving neither Local Mounts nor gateway mounts should not have it.
+
+Everything below reads from the cluster's environment, so set that once —
+a `datalayerrc` per cluster is the usual place — and source it rather than
+exporting by hand:
+
+~~~bash
+source ~/.datalayer/datalayerrc-<cluster>
+~~~
+
+**1. Build and push the image.** The chart pulls
+`${DATALAYER_DOCKER_REGISTRY}/node-mounts:0.1.0`, which does not exist until
+you build it:
+
+~~~bash
+cd $DATALAYER_SERVICES_HOME/plane/etc/dockerfiles/datalayer-node-mounts
+make build push
+~~~
+
+It takes two named build contexts — Clouder with its `csi` extra, and
+`code-sandboxes` for the bridge filesystem — resolved from `DATALAYER_HOME`,
+so neither needs to be on PyPI. A release should pin `MOUNTPOINT_URL` to a
+Mountpoint version rather than taking `latest`.
+
+**2. Deploy.**
+
+~~~bash
+plane up datalayer-node-mounts
+~~~
+
+**3. Check before moving on.** `verify` is a preflight, not a smoke test: it
+reports what is wrong on the node while it is still cheap to fix.
+
+~~~bash
+kubectl -n datalayer-runtimes rollout status daemonset/datalayer-node-mounts
+clouder node-mounts verify
+~~~
+
+The environment `up.sh` reads:
+
+| Variable | Sets | Notes |
+| --- | --- | --- |
+| `DATALAYER_NODE_MOUNTS_ENABLED` | whether to deploy at all | Off by default: it is privileged and runs on every runtimes node |
+| `DATALAYER_NODE_MOUNT_GATEWAY_ENABLED` | `nodeMountGateway.enabled` | The **same** variable the Operator reads, so one export turns on both ends of the gateway |
+| `DATALAYER_SHARED_FS_VOLUME_CLAIM_NAME` | `nodeMountGateway.sharedFilesystemClaim` | Required with the gateway. Asking for one without the other fails the deploy rather than installing an agent with nothing to bind |
+| `DATALAYER_KUBERNETES_API_SERVER_CIDR` | `apiServer.cidr` | The control plane, for the NetworkPolicy |
+| `DATALAYER_KUBERNETES_API_SERVER_PORT` | `apiServer.port` | See the warning below |
+| `DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS` and `_BUCKETS`, `_LOCAL_BRIDGES`, `_REPOSITORIES` | the four mount-kind switches | All off unless set |
+| `DATALAYER_LOCAL_CSI_RELAY_CIDR`, `_PORT` | `relay.cidr`, `relay.port` | The driver's bridge relay. `relay.host` is derived from `DATALAYER_CONTENTS_URL` (or `DATALAYER_RUNTIMES_URL`) |
+
+:::warning[The API server port is not 443 on kubeadm]
+
+`apiServer.port` defaults to 443, which is the port pods use to reach the
+`kubernetes.default.svc` Service. Most CNIs evaluate a NetworkPolicy **after**
+the Service is resolved, so the destination is the endpoint behind it — and a
+kubeadm control plane answers on **6443**.
+
+Leaving the default on such a cluster produces the worst failure this
+component has: the DaemonSet is healthy, the chart is right, nothing logs an
+error, and the agent's Pod watch is blocked — so it mounts nothing, for ever.
+Set `DATALAYER_KUBERNETES_API_SERVER_PORT=6443` there. `kubectl cluster-info`
+prints the port your control plane is on.
+
+:::
+
+</TabItem>
+<TabItem value="kubeadm" label="clouder kubeadm setup">
+
+`clouder kubeadm setup` installs storage providers in **Step 7**. With
+`--node-mounts` it installs the DaemonSet right after the cloud storage provider,
+packing the chart from `PLANE_HOME`, `DATALAYER_HOME` or the source tree and
+applying it on the master with Helm:
+
+~~~bash
+clouder kubeadm setup my-cluster --node-mounts \
+  --local-csi-relay-host r1.datalayer.run \
+  --local-csi-relay-cidr 203.0.113.10/32
+
+# ...and with the gateway half switched on, which also checks mount
+# propagation on the node — the one thing that silently costs you every mount:
+clouder kubeadm setup my-cluster --node-mounts --node-mounts-gateway \
+  --local-csi-relay-host r1.datalayer.run
+~~~
+
+The `--local-csi-relay-*` flags are the driver's: they name the Contents
+bridge relay, which the gateway does not use.
+`--node-mounts-image` and `--node-mounts-chart` override the image and the chart
+location. The cluster metadata records `node_mounts_ready`.
+
+</TabItem>
+</Tabs>
+
+## The whole sequence, end to end
+
+The DaemonSet is one step of several, and the **order matters** — turning the
+Operator's half on before the agent exists gives you pooled Pods carrying a
+gateway volume and waiting for mounts nobody makes. Everything here reads the
+cluster's environment, so source it once:
+
+~~~bash
+source ~/.datalayer/datalayerrc-<cluster>
+
+# 1. The claim every home folder lives on, if it is not already there.
+plane up datalayer-shared-filesystem
+
+# 2. The images. Neither exists in the registry until it is built.
+(cd $DATALAYER_SERVICES_HOME/plane/etc/dockerfiles/datalayer-node-mounts && make build push)
+(cd $DATALAYER_SERVICES_HOME/plane/etc/dockerfiles/datalayer-contents     && make build push)
+
+# 3. The node agent, BEFORE the Operator.
+plane up datalayer-node-mounts
+kubectl -n datalayer-runtimes rollout status daemonset/datalayer-node-mounts
+clouder node-mounts verify
+
+# 4. Contents, which serves the same claim to the Home Folder browser.
+plane up datalayer-contents
+kubectl -n datalayer-api rollout status deploy/datalayer-contents
+
+# 5. The Operator, which writes the grants the agent applies.
+plane up datalayer-operator
+clouder node-mounts verify        # now expects both halves on
+~~~
+
+If the Contents deploy carried a schema change, move the stored documents
+after it — the command is idempotent and resumes if interrupted, and
+[the reindex](/services/contents/#the-reindex-datalayer-contents-reindex) has
+the detail:
+
+~~~bash
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex --dry-run
+kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-reindex
+~~~
+
+Then prove it end to end: a launch that mounts the Home Folder should come
+from the pool rather than a cold Pod. That is
+[Turning it on, and proving it works](/services/system/node-mount-gateway/#turning-it-on-and-proving-it-works)
+on the gateway's page, with the measurement to take.
+
+## Verify
+
+~~~bash
+kubectl -n datalayer-runtimes rollout status daemonset/datalayer-node-mounts
+kubectl -n datalayer-runtimes logs daemonset/datalayer-node-mounts -c driver --tail=50
+clouder node-mounts status          # CSIDriver, DaemonSet, per-node bridges, volumes and gateway mounts
+clouder node-mounts status --json
+clouder node-mounts verify          # propagation, RBAC, the claim, and anything left behind
+~~~
+
+`status` and `verify` report **both** services, because both live in this
+DaemonSet and a node that is wrong for one is usually wrong for the other.
+Proving a local mount end to end is on the
+[Local CSI driver](/services/system/local-csi/#verify-a-local-mount) page;
+proving the gateway is on the
+[Node Mount Gateway](/services/system/node-mount-gateway/#turning-it-on-and-proving-it-works)
+page.
+
+The full node suite:
+
+~~~bash
+cd clouder
+python -m pytest clouder/tests/test_csi_driver.py clouder/tests/test_csi_server.py \
+  clouder/tests/test_csi_bridge_mount.py clouder/tests/test_csi_chart.py \
+  clouder/tests/test_node_mounts_cli.py clouder/tests/test_csi_node_mount_gateway.py \
+  clouder/tests/test_csi_node_mount_gateway_agent.py clouder/tests/test_csi_linux.py \
+  clouder/tests/test_csi_git_materializer.py clouder/tests/test_csi_main_wiring.py -q
+~~~
+
+## Where to go next
+
+- **[Node Mount Gateway](/services/system/node-mount-gateway/)** — what it can
+  mount and how, the grant annotation, and the credential rules.
+- **[Local CSI driver](/services/system/local-csi/)** — the CSI contract, the
+  bridge relay, revocation and what a disconnected laptop looks like.

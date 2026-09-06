@@ -1,0 +1,65 @@
+---
+title: inbounds
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 📥 Datalayer Inbounds
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-inbounds
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+...
+EOF
+export RELEASE=datalayer-inbounds
+export NAMESPACE=datalayer-inbounds
+helm upgrade \
+    --install $RELEASE \
+    datalayer/inbounds \
+    --create-namespace \
+    --namespace $NAMESPACE \
+    --values /tmp/values.yaml \
+    --timeout 10m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Inbounds Pods.
+
+```bash
+kubectl get pods -n datalayer-inbounds
+
+# NAME                                 READY   STATUS      RESTARTS   AGE
+...
+```
+
+Tear down inbounds if needed.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-inbounds
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-inbounds
+export NAMESPACE=datalayer-inbounds
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>

@@ -1,0 +1,187 @@
+---
+sidebar_position: 2
+---
+
+import ModalImage from "react-modal-image";
+
+# Runtime Environments
+
+## Runtime Environments Specification
+
+Runtime Environments define:
+
+- The available libraries which are available in a Docker Image. The Docker Image can be compared to a [Conda Environment](#conda2docker).
+- The mounted [Runtime Contents](./runtime-contents).
+- Some Environment Variables.
+- The default number of CPU/GPU and memory resources.
+- A template for the Runtime given-name.
+- Snippets.
+- Links to examples.
+
+The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-environment.yaml) and the following sections show simple examples.
+
+## Contents: selected by uid
+
+An Environment names what it brings by the **`spec.uid`** of each
+[Runtime Content](./runtime-contents), and where it appears in the runtime:
+
+```yaml
+spec:
+  contents:
+    - uid: 01M0YX0MXYD8YZVMJW016KTB4M # nfs-models-oss-content
+      mount: /home/jovyan/models/datalayer-oss
+      permissions: ro
+```
+
+`permissions` narrows the content's own access and is never wider than it;
+absent means the content's own. The name after `#` is a comment for the
+reader. An entry written the earlier way — `name:` instead of `uid:` — is
+not a selection: the Operator refuses to spawn **any** runtime of that
+Environment, pool pods included, and says so at startup and on every
+reconcile (`plane logs datalayer-operator | grep startup_check`). See
+[the Operator page](/services/operator/#runtime-contents-and-environments)
+for what is resolved and mounted at launch.
+
+## Apply the platform definitions
+
+The platform's Environments live in the Services repository under
+`plane/etc/specs/runtime-environments/{prod,dev,oss}/`. They are applied
+with `kubectl` — no Plane command applies them, and redeploying the Operator
+leaves them as they are — after the Runtime Contents they select:
+
+```bash
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-contents/
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
+Each Environment must list the uids it selects; the Operator picks a
+re-applied Environment up within a minute, without a restart.
+
+## Manage the Environments
+
+```bash
+kubectl get runtime-environments.datalayer.io -A
+kubectl get runtime-environments.datalayer.io -o yaml -A
+```
+
+## Runtime Launcher
+
+The information provided in the specification is used when by the Runtime Launcher.
+
+<ModalImage
+  small="https://images.datalayer.io/legacy/jupyter-kernels/env.png"
+  large="https://images.datalayer.io/legacy/jupyter-kernels/env.png"
+  alt=""
+/>
+
+## Platform and User Environments
+
+The Platform Administrator is responsible for provisioning the Platform Environments.
+
+:::note
+
+Users can create their own Runtime Environments.
+
+:::
+
+## CVE based on Software Bill of Materials
+
+The environments are scanned for `CVE` (Cybersecurity Vulnerabilities) based on their Docker Image `Software Bill of Materials`.
+
+As the scanning is done at the Docker level, it covers all Linux libraries as the various packages installed e.g. in a Conda Environment defined in that Docker Image.
+
+## Conda2Docker
+
+`Runtime Environments` can be seen as an extension, in the cloud era, of well-known [Conda Environments](https://docs.conda.io/projects/conda).
+
+Actually, Conda Environments are more similar to a Docker Image and we are working on `Conda2Docker`, a solution to automatically create a Docker Image from a Conda Environment.
+
+With Runtime Environments, Datalayer allows you to specify, on top of Conda Environments, Contents, Environment Variables, Snippets, Examples, CPU/GPU and memory resources, the Runtime naming template, and other cloud-native features.
+
+## Simple Environment Example
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: RuntimeEnvironment
+metadata:
+  name: python-simple-env
+  namespace: datalayer-runtimes
+  labels:
+    project.datalayer.io/name: poc
+spec:
+  title: Python Simple Environment
+  description: A Python environment for simple coding.
+  language: python
+  owner: datalayer
+  visibility: public
+  example: https://raw.githubusercontent.com/datalayer/examples/e8390ce9eb4aee36721eb6e7cdc31ef8455ff359/python-simple/python-simple-example.ipynb
+  dockerImage: ${DATALAYER_DOCKER_REGISTRY}/datalayer/jupyter-python:0.0.8
+  kernel:
+    givenNameTemplate: A Python kernel for simple coding.
+  resourcesRanges:
+    default:
+      requests:
+        cpu: "250m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+EOF
+```
+
+## Xarray Environment Example
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: RuntimeEnvironment
+metadata:
+  name: xarray-env
+  namespace: datalayer-runtimes
+  labels:
+    project.datalayer.io/name: dev
+spec:
+  title: XArray Environment
+  description: |
+    A environment for analysis with Xarray. **[xarray](https://github.com/pydata/xarray)** (pronounced "ex-array", formerly known as **xray**) is an open source project and Python package that makes working with labelled multi-dimensional arrays simple, efficient, and fun!
+
+    **Typical use cases**
+
+    EO (Earth observation) analysis.
+
+    **Mounted contents**
+
+    Analysis-ready, cloud-optimized (ARCO) from Sentinel-2 mission:Lland monitoring constellation of two satellites that provide high resolution optical imagery and provide continuity for the current SPOT and Landsat missions. The mission provides a global coverage of the Earth's land surface every 5 days, making the data of great use in on-going studies. L1C data are available from June 2015 globally. L2A data are available from November 2016 over Europe region and globally since January 2017.
+
+    ![](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2022/09/copernicus_sentinel_family/24451531-1-eng-GB/Copernicus_Sentinel_family_pillars.jpg)
+
+    **Hardware recommandation for large scale analysis**
+
+    - [x] GPU (CUDA > 11)
+    - [x] GPU Memory: Minimum 8BG
+
+  language: python
+  owner: datalayer
+  visibility: public
+  example: https://raw.githubusercontent.com/datalayer/examples/e8390ce9eb4aee36721eb6e7cdc31ef8455ff359/python-simple/python-simple-example.ipynb
+  dockerImage: 9ol9b008.c1.bhs5.container-registry.ovh.net/datalayer/jupyter-python:0.0.8
+  kernel:
+    givenNameTemplate: A kernel for analysis with XArray.
+  snippets:
+    - title: Useful imports
+      code: |
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import pandas as pd
+  resourcesRanges:
+    default:
+      requests:
+        cpu: "250m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+EOF
+```
