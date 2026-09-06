@@ -1031,6 +1031,7 @@ Prometheus through the collector's exporter as:
 | `contents_limit_refusals_total` | `limit` (`query-concurrency`, `mcp-rate`, `bridges`, `transfer-size`, `quota`) | Requests a limit refused |
 | `contents_readiness_failures_total` | `process`, `dependency` | Readiness probes that found a required dependency down |
 | `contents_worker_loops_total`, `contents_worker_sweeps_total` | ; `task` | The worker's loop coming round, and what its sweeps moved |
+| `contents_worker_sweep_failures_total` | `task` | Housekeeping sweeps that raised and were isolated — one failing sweep no longer starves the rest, so a rising count here is where to look when a sweep's work stops happening |
 | `contents_reconcile_runs_total`, `contents_reconcile_discrepancies`, `contents_reconcile_last_run_timestamp_seconds` | `outcome`; `kind` | The scheduled reconciliation |
 
 Spans: one per operation (`contents.operation`, with kind, UID, attempt and
