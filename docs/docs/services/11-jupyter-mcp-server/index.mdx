@@ -1039,6 +1039,30 @@ real id first.
 
 :::
 
+### A deploy keeps the sandbox and empties it
+
+Drilled on prod1 and r1 on 2026-09-06. Restart the gateway deployment under a
+live session and the runtime pod is the same pod on the other side, with the
+same creation time; the next call resolves the same sandbox handle and is
+answered. Neither the pod nor the binding is a casualty of a deploy.
+
+**The kernel is.** A variable set before the rollout is gone after it, and
+the call that finds out answers `NameError` — as though the agent had never
+assigned it. Counted from inside the runtime there is one kernel before and
+one after, and it is a different one: the kernel holding the session's state
+is gone by the time the new worker looks, and the worker reuses whatever it
+finds instead.
+
+So a routine deploy silently empties every session's memory, and an agent
+learns it from a name that is suddenly undefined rather than from anything
+that says the state was lost. The mechanism is not settled: the kernel client
+already declines to shut down a kernel it did not start, and which of the
+runtime, the culler or the drain removes the old one has not been
+determined.
+
+Until it is, treat a deploy the way you would treat a lost sandbox: what was
+in memory is gone, and what was written to the notebook is not.
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The
