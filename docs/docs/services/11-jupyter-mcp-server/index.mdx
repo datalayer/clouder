@@ -1202,24 +1202,49 @@ reading — while its other seventeen threads waited on futexes. Nothing said
 so: `/api/mcp/v1/operations/workers` reported the worker healthy throughout,
 `serving: 1`, `running: true`, and only a pod restart cleared it.
 
-The cause is one line of `DatalayerTaskStore`:
+**The worker silenced itself by talking.** Its stdout is a pipe the gateway
+reads, and the relay that reads it exists precisely so somebody empties it:
+otherwise the kernel buffer fills, the next `write` blocks, and because
+logging is synchronous from whichever thread logs — the event loop included —
+the worker stops serving anything at all.
 
-```python
-await asyncio.to_thread(work, self._dao())
+The relay had stopped doing its job. Its loop sat inside
+`contextlib.suppress(CancelledError, Exception)`, so *any* exception ended it
+in silence — including the `ValueError` asyncio raises for a line past its
+64KiB reader limit. And a worker produced such lines: building the Solr task
+repository installs a ZooKeeper cluster-state watcher that logs every
+collection, shard and replica at INFO on every update.
+
+```
+worker output, by second:  1 @18:26:19   5 @18:26:24   25 @18:26:25   27 @18:26:26
+605,129 bytes in seven seconds, longest line 62,793
 ```
 
-Python evaluates an argument before the call it belongs to, so `_dao()` —
-which opens a Solr connection through ZooKeeper on first use — ran on the
-event loop. The line whose whole purpose was to get this off the loop kept
-the expensive half on it. Both call sites build the repository inside the
-thread now, under a `threading` lock rather than an `asyncio` one, because
-there is no loop where `_dao` runs.
+Both halves are fixed. The relay survives a line of any length, says when it
+drops one, and says so if it ever does stop instead of vanishing; its reader
+limit is 1MiB rather than 64KiB. And the worker does not emit that line:
+`pysolr` and `kazoo` are quietened to WARNING, so a Solr *failure* still
+comes through and the cluster state does not.
 
-Worth keeping for the shape rather than the line: **a synchronous call on a
+:::tip A worker that has gone quiet can be asked where it is
+
+Send it `SIGUSR1` and every thread's Python stack goes to its stderr, which
+the gateway copies into its own log:
+
+```bash
+kubectl exec -n datalayer-api <pod> -- kill -USR1 <worker pid>
+```
+
+If nothing appears, that is itself the answer: the dump writes to the same
+pipe, so silence means the pipe is the problem. Then read
+`/proc/<pid>/task/*/wchan` — a main thread that is not in `ep_poll` is a
+blocking call that should have been in a thread.
+
+:::
+
+Worth keeping for the shape rather than the line: **anything that blocks a
 worker's loop takes the whole worker down, not the request that made it**,
-and the directory cannot tell. If a worker ever goes quiet again, the first
-thing to read is `/proc/<pid>/task/*/wchan` in its pod — a main thread that
-is not in `ep_poll` is a blocking call that should have been in a thread.
+and the directory cannot tell.
 
 ### Snapshots, and why there is no restore tool
 
