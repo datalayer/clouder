@@ -819,6 +819,7 @@ page (default `200`).
 | `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_BYTES` | Per-user User Folder byte limit reserved before upload |
 | `DATALAYER_CONTENTS_HOME_FOLDER_QUOTA_OBJECTS` | Per-user User Folder object limit reserved before upload |
 | `DATALAYER_CONTENTS_VERSION_RETENTION_DAYS` | Retention period for superseded object versions |
+| `DATALAYER_CONTENTS_OPERATION_RETENTION_DAYS` | How long a finished durable operation (a transfer, a volume provisioning, a query acquisition) is kept before the worker deletes it; default `30`. Long enough to answer an idempotent retry and to triage a failure — past it the row is debris. A quarantined failure is held for a person and is never swept |
 | `DATALAYER_CONTENTS_CLEANUP_INTERVAL_SECONDS` | Worker cleanup/reconciliation interval |
 | `DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` | How often the worker compares the catalog against the object store; default `21600` (six hours), `0` never. `DATALAYER_CONTENTS_RECONCILE_VERIFY` (default `false`) hashes every object rather than checking sizes; `DATALAYER_CONTENTS_RECONCILE_SAMPLE` (default `0`, every version) looks at that many versions and not for orphans. The last report is `GET /operations/reconcile` |
 | `DATALAYER_CONTENTS_MAX_CONCURRENT_QUERIES` | How many queries one actor may have pending or running at once; default `8`, `0` no limit. One more answers `429 QUERY_LIMIT`; cancelling a query makes room |
