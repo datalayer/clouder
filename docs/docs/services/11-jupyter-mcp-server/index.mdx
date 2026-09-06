@@ -1115,6 +1115,68 @@ then reads the cell's variable back. A notebook cell and ad-hoc code share
 one kernel on one sandbox, which is the design's first rule walked rather
 than argued.
 
+### A notebook survives the worker that opened it
+
+The gateway's notebook binding lives in the shared store: it survives a
+rollout, a restart, and a move to another replica. The worker's *connection*
+does not — it is a `NotebookManager` entry and a websocket to the document
+server, in one process's memory. Those two lifetimes are not the same, and
+until 2026-09-06 they were assumed to be.
+
+So a worker restarted under a live session held no notebooks, and every cell
+tool refused:
+
+```
+Error executing tool read_cell: Notebook 'reconnect' is not connected.
+```
+
+— while the gateway's own binding still named the notebook perfectly well.
+Measured on prod1 across a gateway rollout: `[('QAXYM5', 'reconnect',
+'01KW96PZYRVKZXT8FS644GFD0D')]` before it and `[('QAXYM5', 'reconnect')]`
+after, with `read_cell` refusing in between. The session was not broken; the
+process that had opened the notebook was gone, and nothing reopened it.
+
+Same shape as the sandbox above, and the same fix. The gateway names the
+notebook on every call that acts on one — the alias the worker knows it by,
+and the item it resolves to — in `x-datalayer-notebook` and
+`x-datalayer-notebook-path`, beside `x-datalayer-sandbox`. One ASGI
+middleware in the worker reads all three into context variables, and a hook
+reopens the notebook when the worker serving the call does not hold it.
+
+Reopening takes nothing away. In `MCP_SERVER` mode `use_notebook` starts no
+kernel — it makes the document connection — so a reopened notebook lands on
+the session's own sandbox exactly as it did before. That is the follower's
+job, one seam over, and the two compose, in that order:
+
+```
+📓 Reopened notebook [reopen] from [01KW96PZYRVKZXT8FS644GFD0D], for insert_execute_code_cell on this worker
+🧭 insert_execute_code_cell already runs on the session's sandbox [01m1tzb6j…]
+```
+
+`use_notebook` is not reopened for — it is the call that opens one — and
+neither is `unuse_notebook`, which would open one only to close it again.
+
+**Walked on prod1 on 2026-09-06.** A session opens a notebook, runs a cell
+that sets a variable, and the gateway deployment is restarted under it. On
+the other side the binding is unchanged, `insert_execute_code_cell` runs on
+the same notebook and answers *the notebook is back: set before the
+rollout* — the notebook reopened, the sandbox followed, and the variable
+still in the kernel that was never restarted.
+
+The reading half holds with it. A cell executed before the rollout is read
+back after it, through a worker that never opened the notebook:
+
+```
+=====Cell 40 | type: code | execution count: 1=====
+kept = 'written before the rollout'
+print(kept)
+written before the rollout
+```
+
+`read_notebook` and `execute_cell` answer on the same notebook afterwards.
+The outputs the runtime already wrote survive the loss of the process that
+was driving them.
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The
