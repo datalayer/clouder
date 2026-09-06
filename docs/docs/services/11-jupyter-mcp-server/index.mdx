@@ -720,6 +720,11 @@ that agent `view/update/execute` and names the owner; the agent attaches by
 name and runs code; its binding carries `shared_from` and `on_lost: fail`;
 and the call after `unshare_sandbox` is refused *"no longer shared with you"*.
 
+**A shared sandbox is genuinely shared.** The owner sets a variable and the
+grantee reads it back. Before execution followed the session's sandbox the
+grantee got a `NameError`, which looked like a decision about namespaces and
+was nothing of the kind: its code was running on another pod of the pool.
+
 A grantee calls `use_sandbox` with the sandbox's runtime name, or with the
 owner's handle. The gateway asks Runtimes what the caller may do, and a
 `view` is the least that makes a binding — one of the grantee's own, naming
