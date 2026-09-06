@@ -651,6 +651,41 @@ person who is not the owner gets Runtimes' `403`, and the dialog says so
 rather than drawing an empty list of grants, which would read as a sandbox
 shared with nobody.
 
+:::danger Sharing is refused on prod1 until the Runtimes plane is deployed
+
+`PUT /runtimes/{name}/sharing` answers `500 Database Request Error` for a
+user, a team, an organization and an agent alike. Runtimes writes the
+runtime's expiry straight into a Solr **date** field, and the operator
+answers epoch seconds as a string — `'1788671641.000'`. A date field that is
+not a date makes Solr refuse the whole document, which is why the principal
+kind made no difference: the field at fault was the one that never varied.
+
+Fixed in `datalayer_solr.runtime_sharing`, and it ships in the **Runtimes**
+image on the r1 plane. Until that is deployed, neither the tools nor the
+console's Share button can share a sandbox.
+
+Every test of `to_document` called it without an expiry, which is how the
+value that reaches Solr in production never reached it in a test.
+
+:::
+
+**A share naming nobody is refused.** `share_sandbox` with no principals used
+to `PUT` what was already stored and answer *"sharing updated. They can use
+it with `use_sandbox`"* — so a typo'd parameter, an empty list or a uid that
+came back blank all read as a share that happened, and the owner found out
+only when the grantee was refused. An *unshare* naming nobody keeps its
+meaning: revoke everybody at that level.
+
+:::caution A grantee cannot yet reach the runtime by name
+
+`GET /runtimes/{name}` answers `404` for a grantee, so the worker's
+attach-by-name cannot find a runtime shared with it and `use_sandbox` answers
+*"No sandbox with id …"*. The permissions route answers a grantee perfectly
+well; the runtime route does not. Until it does, a share can be made and not
+used.
+
+:::
+
 A grantee calls `use_sandbox` with the sandbox's runtime name, or with the
 owner's handle. The gateway asks Runtimes what the caller may do, and a
 `view` is the least that makes a binding — one of the grantee's own, naming
