@@ -369,6 +369,16 @@ gateway: its claim is fixed at creation and stays until the runtime is
 deleted. An attachment at `/home/jovyan` itself is the Home Folder capability
 and is left alone.
 
+A **local bridge** is the exception that needs no runtime deletion to settle. Its
+data path is the person's client, so when the bridge is over — expired, or
+revoked while its sandbox was already gone — the mount is dead whatever the pod
+is doing, and the worker (which holds no caller credential to drive the unmount)
+would otherwise leave the attachment `revoking` for ever. The bridge-expiry sweep
+reaps these: a `local-bridge` attachment left `revoking` past a short grace is
+settled `revoked`, so it stops counting as attached and the same folder can be
+served to that sandbox again. A gateway `mount` is never settled this way — it
+waits for the confirmed unmount or the runtime's deletion.
+
 ### Ending a local mount
 
 `datalayer contents unmount`, the Unmount button and `DELETE
