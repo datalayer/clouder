@@ -1098,6 +1098,14 @@ there.
 So a deploy no longer empties a session's memory, and a grantee attaching to
 a shared sandbox reaches the sandbox rather than a pool pod of its own.
 
+**The notebook walk passes with it.** On prod1 the same day: `use_notebook`
+opens the notebook, `insert_cell` adds a code cell, `execute_cell` answers
+*cell says 42* in a second and names the session's sandbox, `read_cell` shows
+the output **in the notebook** with execution count 1, and `execute_code`
+then reads the cell's variable back. A notebook cell and ad-hoc code share
+one kernel on one sandbox, which is the design's first rule walked rather
+than argued.
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The
