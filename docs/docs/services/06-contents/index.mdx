@@ -379,6 +379,40 @@ settled `revoked`, so it stops counting as attached and the same folder can be
 served to that sandbox again. A gateway `mount` is never settled this way — it
 waits for the confirmed unmount or the runtime's deletion.
 
+### Revoking on unshare
+
+Removing a grant always stops *new* capabilities — every token, ticket and MCP
+session is minted against the current ACL. Taking away a capability a de-shared
+principal already holds — a mount still bound, an MCP session still open — is
+behind `DATALAYER_CONTENTS_REVOKE_ATTACHMENTS_ON_UNSHARE`, **off by default**.
+With it on, replacing a source's sharing revokes the live capabilities of
+principals whose access is now *entirely* gone: their active attachments (a
+mounted one to `revoking`, a not-yet-mounted one straight to `revoked`) and
+their MCP sessions on that source.
+
+Who is "entirely gone" is decided without resolving memberships — the sharing
+request can only resolve the caller's — so a user is named **only** when nothing
+could still cover them: the source has no space access, the new ACL carries no
+team or organization grant a member might reach it through, and the user holds
+no grant of their own. This is exact for a source shared directly with people
+and deliberately under-revokes (leaves the mount) when a team or organization
+grant might still cover the principal.
+
+The gateway unmount is the **Operator's**, not Contents': the owner triggering
+an unshare does not own the sandbox, and the detach route checks ownership. So a
+mount an unshare set `revoking` waits on `GET /attachments/pending-revocation`,
+which the Operator polls with its own API key; it removes the grant from the pod
+with its own identity, re-applies the rest, and reports the attachment `revoked`
+only after the node agent confirms — a sandbox that is already gone settles the
+record so it never sits `revoking` for ever. Because the teardown is the
+Operator's, **turn the flag on only where the Operator carrying this teardown is
+deployed**, and prove it first with a share → mount → unshare drill: a second
+user mounts a shared source, the owner un-shares them, and the mount leaves that
+sandbox (the target drops from `runtime-pools.datalayer.io/node-mount-gateway-ready`
+and the path stops reading). Two cases are not yet covered: a principal a
+*remaining* team or organization grant still reaches (needs a privileged IAM
+membership lookup), and a grant *downgrade* rather than removal.
+
 ### Ending a local mount
 
 `datalayer contents unmount`, the Unmount button and `DELETE
@@ -853,6 +887,7 @@ page (default `200`).
 | `DATALAYER_SHARED_FS_MOUNT_PATH` | Where that claim is mounted (default `/mnt/shared-fs`). The Contents and Operator values must agree, or a path recorded by one will not resolve in the other |
 | `DATALAYER_CONTENTS_SYNC_HEARTBEAT_GRACE_SECONDS` | How long a `--watch` synchronization session survives without a heartbeat from its client before the worker closes it as failed with `SYNC_CLIENT_LOST`; default `900`. Long enough for a laptop's sleep to come back, short enough that a dead client is not reported as running all day. The next `datalayer contents sync` of the folder resumes from the last accepted manifest |
 | `DATALAYER_CONTENTS_HOME_FOLDERS_CACHE_SECONDS` | How long the set of home folders one caller reaches is held before IAM is asked again; default `60`. The set is what the Home Folder browser may list, so this is a cached authorization decision: leaving an organization keeps its folder listable for up to this long. `0` disables the cache and asks IAM for every directory a person opens |
+| `DATALAYER_CONTENTS_REVOKE_ATTACHMENTS_ON_UNSHARE` | Whether replacing a source's sharing also revokes the live capabilities of principals whose access is now entirely gone — their mounts and MCP sessions, not only their next request; default `false`. The gateway-mount unmount is the Operator's (it polls `GET /attachments/pending-revocation`), so turn this on only where that Operator teardown is deployed and a share→mount→unshare drill has proven the mount leaves the sandbox. See [Revoking on unshare](#revoking-on-unshare) |
 | `DATALAYER_CONTENTS_MCP_CONNECT_TIMEOUT_SECONDS` | How long connecting to an MCP server — and one round trip on it — may take before the server is reported unavailable; default `30`. Discovery, health and a tool call all wait this long at most |
 | `DATALAYER_CONTENTS_MCP_CONTENT_CAP_BYTES` | The most a tool may answer *inline* — the JSON kept on the call — before the call is refused as `MCP_RESULT_TOO_LARGE`; default `262144`. Bytes belong in an artifact, which the worker lands through a transfer under the source's own `max_result_bytes`; this keeps a manifest from becoming the download |
 | `DATALAYER_CONTENTS_MCP_SESSION_SECONDS` | How long a minted MCP session lives when the request does not say; default `3600`. `DATALAYER_CONTENTS_MCP_SESSION_MAX_SECONDS` (default `86400`) is the most a request may ask for; a longer `expires_in` is cut to it, not refused |
