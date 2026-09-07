@@ -251,7 +251,9 @@ reclaims — an operation a short wait would have saved.
 
 An operation the worker has retried to exhaustion is failed with
 `RETRY_EXHAUSTED`, its compensation runs — a Volume whose claim never bound
-is released, so nothing is left that nobody owns — and it appears in the dead
+is released, an acquisition's or query's held quota reservation is freed (a run
+that died between landing its object and settling the reservation left it
+dangling), so nothing is left that nobody owns — and it appears in the dead
 letter. So does an operation that failed on something nobody expected, with
 `INTERNAL_ERROR`: it is a bug, not a policy, and rather than vanish when
 retention sweeps it is held beside the exhausted ones for a person to read. (A
