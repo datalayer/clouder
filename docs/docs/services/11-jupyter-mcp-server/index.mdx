@@ -2144,6 +2144,31 @@ collector's and the consumer's batching. The route is `/api/otel/v1/traces/{id}`
 **without a trailing slash** — with one it is a 404 for a trace the listing
 route just returned, which `datalayer-core`'s client sent until 2026-09-05.
 
+**How the spans are read.** The Observability view draws a trace twice: as
+the named tree it always was, and above it as bars laid against one clock —
+proportional, nested by `parent_span_id`, coloured by service. The tree gives
+the durations, the bars give the shape, and the gap between a parent's bar
+and its children's is time the call spent waiting rather than working, which
+a table of durations hides. The same drawing sits under the output on a run's
+own page. Span names are labelled by prefix, not by service, because one
+service emits spans for more than one stage: `mcp.request` is **Gateway**,
+`mcp.policy` **Policy**, `sandbox.*` **Sandbox**, `durable.*` **Workflow**
+and `runtimes.*` **Runtime**. Workflow and Runtime are kept apart on purpose —
+a durable run that is slow is either waiting on the engine or waiting on the
+sandbox, and those are different services to go and look at. A span name
+nothing recognises is drawn and timed with no stage label rather than a
+wrong one.
+
+**The Live pane** asks `/api/mcp/v1/operations/workflows` how the durable
+engine is and lists the runs still working. The engine has three states, not
+two: *healthy*, *unhealthy* — the engine says so — and *unreachable*, which
+is this gateway not being able to ask. That is why the route answers instead
+of returning 500, and collapsing the two would send an operator to the engine
+when the problem is the network to it. A healthy engine with a queue stays
+healthy and reports the depth; a queue is a queue, not a fault. `durable.*`
+spans will appear in these traces when a run first goes through the durable
+service — nothing starts one yet, so today those rows draw nothing.
+
 The table below is generated from `telemetry.CATALOGUE`, which a test holds
 against the instruments actually created — in both directions — and against
 the label values actually passed. It was hand-copied once and drifted three
