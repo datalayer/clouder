@@ -303,11 +303,14 @@ def test_the_metrics_are_scraped_and_the_leak_is_alerted(tmp_path):
     assert pod["annotations"]["prometheus.io/path"] == "/metrics"
 
     rules = documents[("PrometheusRule", "datalayer-node-mounts")]["spec"]["groups"][0]["rules"]
-    leak = next(rule for rule in rules if rule["alert"] == "DatalayerNodeMountGatewayLeakedMount")
-    # A leaked mount is the failure that ends in a Pod stuck Terminating. It
-    # must not depend on somebody running a CLI to notice it.
-    assert leak["labels"]["severity"] == "critical"
-    assert "datalayer_mount_gateway_leaked_total" in leak["expr"]
+    stuck = next(rule for rule in rules if rule["alert"] == "DatalayerNodeMountGatewayStuckMount")
+    # A stuck mount is the failure that ends in a Pod stuck Terminating. It must
+    # not depend on somebody running a CLI to notice it — and it alerts on the
+    # `stuck` gauge (what is a mount point now and should not be), not the
+    # `leaked` counter, which climbs on a teardown race that self-cleared.
+    assert stuck["labels"]["severity"] == "critical"
+    assert "datalayer_mount_gateway_stuck" in stuck["expr"]
+    assert "leaked_total" not in stuck["expr"]
 
 
 def test_there_is_no_rule_where_there_is_no_prometheus_operator(rendered):

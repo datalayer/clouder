@@ -82,6 +82,15 @@ class HealthServer:
                 "# HELP datalayer_mount_gateway_mounts Folders currently bound into running pods.",
                 "# TYPE datalayer_mount_gateway_mounts gauge",
                 f'datalayer_mount_gateway_mounts{{node="{node}"}} {mounted}',
+                # What is stuck *now* — a mount point that will not come down —
+                # not how often something once was. This is the number an
+                # operator acts on: it clears itself when the mount finally
+                # goes, where the `leaked` counter only ever climbs and pages a
+                # healthy node for the life of the process (an unmount that
+                # raced kubelet's teardown moved the counter, not the state).
+                "# HELP datalayer_mount_gateway_stuck Mounts that will not unmount right now; each is a Pod stuck Terminating.",
+                "# TYPE datalayer_mount_gateway_stuck gauge",
+                f'datalayer_mount_gateway_stuck{{node="{node}"}} {len(snapshot.get("stuck") or [])}',
             ]
             for name, help_text, kind in (
                 ("granted", "Folders bound since this agent started.", "counter"),
