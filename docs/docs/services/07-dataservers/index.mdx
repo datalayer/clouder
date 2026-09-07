@@ -173,7 +173,7 @@ SIGTERM drains rather than killing — no new work, then
 
 A registration that **never** connects does not sit `registering` for ever. Only
 a heartbeat leaves `registering`, so one that is declared and never deployed
-would linger `pending` in the catalog — so past a grace window
+would linger in `registering` — so past a grace window
 (`DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS`, default 24 h) Contents
 archives it: the source leaves every listing (kept for the audit as
 `dataserver.expired`) and the registration reads `unavailable`. The window is
