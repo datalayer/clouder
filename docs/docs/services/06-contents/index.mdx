@@ -517,9 +517,11 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/jovyan/local`,
    then `datalayer contents mounts` shows the bridge `connected`, and the
    sandbox's Contents tab and the Mounts card show the same state. The
-   Operator has rendered the attachment as an inline `csi:` volume; the node
-   plugin mounted the far end into the pod. A revoked bridge
-   (`datalayer contents unmount <bridge uid>`) makes the volume report
+   Operator has written the bridge as a Node Mount Gateway grant on the pod's
+   annotation; the node agent runs the bridge's FUSE filesystem as a process
+   and binds it into the pod (the inline `local.csi.datalayer.io` volume that
+   used to deliver it at pod creation is retired, audit 82). A revoked bridge
+   (`datalayer contents unmount <bridge uid>`) makes the mount report
    abnormal within a heartbeat, never stale data.
 
 ### Arrow Flight
@@ -660,7 +662,7 @@ datalayer contents environment list
 datalayer contents environment verify python-cpu --provider daytona
 datalayer contents sandbox attach models --sandbox SANDBOX_UID --path /home/jovyan/volumes/models
 datalayer contents sandbox list --sandbox SANDBOX_UID
-# Local mounts (the relay and, on Datalayer runtimes, the Local CSI driver)
+# Local mounts (the relay, delivered by the Node Mount Gateway on Datalayer runtimes)
 datalayer contents mount ./folder --sandbox SANDBOX_UID --path /home/jovyan/local
 datalayer contents mounts
 # MCP sources

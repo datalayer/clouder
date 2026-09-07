@@ -521,8 +521,9 @@ hour in, with nothing to be done from the node.
 Mountpoint uses the AWS SDK, whose container-credentials provider re-fetches
 from `AWS_CONTAINER_CREDENTIALS_FULL_URI` as a session nears expiry. So the
 agent serves that URI itself, on loopback in its own network namespace, from
-the Secret the grant names. **Refreshing a mount becomes refreshing a
-Secret** — no unmount, no remount, no open file handle broken mid-read. Each
+the Secret the grant names. The intent is that **refreshing a mount becomes
+refreshing a Secret** — no unmount, no remount, no open file handle broken
+mid-read (see the status note below for the wiring that is still pending). Each
 mount's request must carry the token it was started with, so one mount cannot
 read another's session, and the credential never appears on a command line
 where `ps` would show it.
@@ -532,10 +533,16 @@ The Secret carries `access-key-id`, `secret-access-key`, `session-token`,
 without it the SDK has no reason to come back, and the mount keeps a session
 it cannot know has expired.
 
-**Not yet verified against a real bucket.** The runner, the endpoint and the
-refresh path are tested; that `mount-s3` accepts this credential URI on a real
-S3 bucket is part of the cluster run, and a mount that starts without mounting
-anything is reported as a failure rather than as a mount.
+**Not yet verified against a real bucket, and in-place refresh is not yet
+wired.** The runner, the credential endpoint and their `refresh` methods have
+unit tests, but the reconcile loop does not yet re-read a changed Secret to
+call them: a Secret replaced in place leaves the grant hash unchanged, so the
+agent short-circuits, the mount keeps serving its original session, and it
+returns 403 once that session expires. Turning buckets on for real means wiring
+that re-read (`ProcessRouter.refresh` → `BucketProcesses.refresh` on a
+process-kind grant whose Secret changed) and verifying `mount-s3` accepts this
+credential URI on a real S3 bucket, as part of the cluster run; a mount that
+starts without mounting anything is reported as a failure rather than as a mount.
 
 ### A static key, and a session
 
@@ -930,7 +937,7 @@ let kubelet finish:
 ~~~bash
 # On the node holding the pod:
 findmnt -R /var/lib/datalayer/node-mount-gateway/POD_UID
-umount -R /var/lib/kubelet/pods/POD_UID/volumes/kubernetes.io~empty-dir/mount-gateway
+umount -R /var/lib/kubelet/pods/POD_UID/volumes/kubernetes.io~empty-dir/node-mount-gateway
 umount -R /var/lib/datalayer/node-mount-gateway/POD_UID
 ~~~
 

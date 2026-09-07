@@ -443,6 +443,33 @@ def test_more_mounts_than_the_cap_are_refused_as_a_set(tmp_path, shared, kubelet
     assert mounter.mounts == set()
 
 
+def test_a_pods_own_mounts_are_not_double_counted_against_the_node_cap(
+    tmp_path, shared, kubelet, mounter
+):
+    gateway = NodeMountGateway(
+        mounter,
+        shared_root=str(shared),
+        gateway_root=str(tmp_path / "gateway"),
+        kubelet_dir=str(kubelet),
+        max_mounts_per_node=2,
+    )
+    request = pod(
+        annotation(
+            mount("home/users/01H-eric", "eric"),
+            mount("home/teams/01K-research", "research"),
+        )
+    )
+    first = gateway.reconcile(request)
+    assert first.state == STATE_READY
+
+    # Steady state: the pod already holds its two mounts, so its state file
+    # counts toward the node total. Reconciling the same set must not count
+    # those mounts a second time and flap the pod to `failed` at the cap.
+    again = gateway.reconcile(request)
+    assert again.state == STATE_READY
+    assert again.failed == {}
+
+
 def test_a_pod_whose_volume_kubelet_has_not_made_yet_is_not_ready(tmp_path, shared, mounter):
     gateway = NodeMountGateway(
         mounter,

@@ -464,7 +464,7 @@ class NodeMountGateway:
                 state=STATE_FAILED,
                 failed={"*": ERROR_TOO_MANY_MOUNTS},
             )
-        if self.mounted_count() + len(grants) > self.max_mounts_per_node:
+        if self.mounted_count(exclude=pod.uid) + len(grants) > self.max_mounts_per_node:
             self.counters["failed"] += 1
             return Report(
                 applied_hash=wanted_hash,
@@ -511,6 +511,14 @@ class NodeMountGateway:
                     log.warning("pod %s: the filesystem behind '%s' has stopped", pod.uid, target)
                     failed[target] = ERROR_MOUNT_DEAD
                     continue
+                # NOTE (buckets not yet wired): a process grant whose backing
+                # Secret was replaced in place — an STS session refresh — has an
+                # unchanged grant hash, so it short-circuits here without a
+                # re-read. To make a bucket survive its first session expiry,
+                # re-read the Secret for a live process grant and call
+                # `ProcessRouter.refresh` -> `BucketProcesses.refresh` when it
+                # changed. Off-by-default and unverified today; see the Node
+                # Mount Gateway doc's bucket status note.
                 mounted.append(target)
                 continue
             if self.mounter.is_mount_point(path):
@@ -893,8 +901,18 @@ class NodeMountGateway:
 
     # -- what an operator reads -------------------------------------------
 
-    def mounted_count(self) -> int:
-        return sum(len(self._read_state(entry)) for entry in _entries(self.pods_dir()))
+    def mounted_count(self, *, exclude: str | None = None) -> int:
+        # `exclude` drops one pod from the node total. The per-node cap check
+        # passes the pod being reconciled, whose state file still holds the
+        # grants it already applied on the previous pass; counting those and
+        # then adding this pod's desired grants double-counts it, which flaps a
+        # steady-state pod to `failed` near the cap. Excluding it and adding
+        # `len(grants)` gives the true projected total.
+        return sum(
+            len(self._read_state(entry))
+            for entry in _entries(self.pods_dir())
+            if entry != exclude
+        )
 
     def stuck_mounts(self) -> list[str]:
         """The mounts that would not come down and are still there, right now.
