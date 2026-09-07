@@ -501,8 +501,10 @@ mount fails `FUSE_UNAVAILABLE: fusepy is not installed in the sandbox` — a
 message written for a sandbox, arriving from a node agent whose `/dev/fuse`,
 `SYS_ADMIN` and `fusermount` are all exactly as this page says they should be.
 
-The inline CSI volume stays the creation-time path. Retiring it belongs with
-proving this one, not with shipping it.
+The inline `local.csi.datalayer.io` CSI volume that was the creation-time path
+is retired (audit 82): a local mount is now a gateway process grant like any
+other, and the chart defaults to gateway-only (`driver.gatewayOnly: true`), so
+no `CSIDriver` or registrar is rendered.
 
 ### Buckets through the gateway
 

@@ -46,21 +46,22 @@ named for what it does: Datalayer's mounts, on a node.
 
 :::
 
-They share an image, a chart and an upgrade. Only one of them has a switch:
-`nodeMountGateway.enabled` turns the gateway on, and it is off by default. The
-driver has none — deploying this DaemonSet deploys it, because the `CSIDriver`
-object and the registrar sidecar are unconditional. If you want neither, do
-not deploy the DaemonSet.
+They share an image, a chart and an upgrade. The gateway is the live service —
+`nodeMountGateway.enabled` turns it on. The inline-CSI driver is **retired**
+(audit 82): its delivery path is gone from the Operator, and the chart defaults
+to gateway-only (`driver.gatewayOnly: true`), so the `CSIDriver` object and the
+registrar sidecar are rendered **only** when `gatewayOnly` is set false. By
+default the DaemonSet ships the gateway alone.
 
 ## The two services
 
-| | [Node Mount Gateway](/services/system/node-mount-gateway/) | [Local CSI driver](/services/system/local-csi/) |
+| | [Node Mount Gateway](/services/system/node-mount-gateway/) | [Local CSI driver](/services/system/local-csi/) — **retired (audit 82)** |
 | --- | --- | --- |
-| What it mounts | Home folders, datasets, NFS exports, Git checkouts, buckets | One thing: a folder on a user's own computer, through the Contents bridge relay |
-| How a Pod gets it | A grant on the Pod's annotation, applied while the Pod is already running | An ephemeral inline CSI volume, rendered by the Operator at Pod creation |
-| When it can act | Any point in the Pod's life, and revocable | Pod creation only — a Pod's `volumes` are fixed then |
-| Is it CSI? | **No**, deliberately: a PVC cannot attach to a running Pod, which is why the gateway exists | Yes. `local.csi.datalayer.io` |
-| Switch | `nodeMountGateway.enabled`, off by default | `driver.*` values; on whenever the DaemonSet is |
+| What it mounts | Home folders, datasets, NFS exports, Git checkouts, buckets — including a folder on a user's own computer, through the bridge relay | Once: a folder on a user's own computer (that delivery is now a gateway grant) |
+| How a Pod gets it | A grant on the Pod's annotation, applied while the Pod is already running | Was an ephemeral inline CSI volume the Operator rendered at Pod creation |
+| When it can act | Any point in the Pod's life, and revocable | Pod creation only — which is exactly the limitation the gateway removed |
+| Is it CSI? | **No**, deliberately: a PVC cannot attach to a running Pod, which is why the gateway exists | Yes, `local.csi.datalayer.io` — off by default |
+| Switch | `nodeMountGateway.enabled`, off by default | `driver.gatewayOnly: false` to bring it back; off by default |
 
 What follows is what they share — the image, the chart, the deployment and the
 checks. Everything specific to one of them is on its page.
@@ -80,15 +81,17 @@ checks. Everything specific to one of them is on its page.
 Objects `datalayer-node-mounts` ships, all in `datalayer-runtimes`:
 
 - a `DaemonSet` on the nodes labelled `role.datalayer.io/runtime=true`
-  (`driver.nodeSelector`), with the privileged `driver` container and the
-  upstream `csi-node-driver-registrar` sidecar, `/var/lib/kubelet/plugins/local.csi.datalayer.io`
-  mounted at `/csi` and `/var/lib/kubelet/pods` mounted at the same path, both
-  `Bidirectional`, and `/dev/fuse`;
+  (`driver.nodeSelector`), with the privileged `driver` container,
+  `/var/lib/kubelet/pods` mounted at the same path `Bidirectional`, and
+  `/dev/fuse`. The upstream `csi-node-driver-registrar` sidecar and the
+  `/var/lib/kubelet/plugins/local.csi.datalayer.io` socket mount are rendered
+  only when `driver.gatewayOnly` is false (retired, off by default; audit 82);
 - a `ServiceAccount` with a `ClusterRole` limited to `nodes: get` and
   `events: create, patch` — no Secrets. The gateway adds `pods: get, list,
   watch, patch` to it when it is on, and reading a Secret is a separate,
   namespaced `Role`;
-- a `CSIDriver` `local.csi.datalayer.io`, for the driver
+- a `CSIDriver` `local.csi.datalayer.io`, for the driver — rendered only when
+  `driver.gatewayOnly` is false (retired, off by default; audit 82)
   ([details](/services/system/local-csi/#what-the-driver-adds-to-the-chart));
 - a `NetworkPolicy` (`networkPolicy.enabled`) allowing egress to DNS, to the
   bridge relay port, and — when the gateway is on — to the API server;
