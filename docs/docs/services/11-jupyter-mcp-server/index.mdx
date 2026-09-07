@@ -1627,6 +1627,80 @@ already dying. A drain that stops accepting forwards before anything else,
 and re-registers nothing, is what closes that gap; the grace period alone
 does not.
 
+### What the load test measured, and what it could not
+
+Run on prod1 on 2026-09-07: 50 agents for 120 seconds at each of 1, 2 and 4
+replicas, each agent doing a whole sequence — discover, list, open a
+notebook, read a cell, execute code — rather than a stateless read.
+
+```
+replicas  calls    ok  failed  calls/s      p50      p95      p99
+       1    842   468     374     6.66    12.5s    23.4s    28.4s
+       2    478   476       2     3.01    13.5s    29.2s    44.9s
+       4    466   460       6     3.47    13.2s    31.6s    38.5s
+```
+
+**Successful calls are flat — 468, 476, 460.** `compare.py` refused to
+report a factor at all, naming the baseline's 374 failures and a p95 that
+moved between runs, which is the harness doing its job rather than failing.
+
+The reason is not a scaling defect: **a worker is one process per user, and
+the proxy routes to the replica holding it.** The harness drives every agent
+with one token, so every tool call lands on that one replica or hops to it,
+and a fourth replica adds a hop rather than capacity. Only `server/discover`
+— one step of six — is answered without a worker. Measuring capacity per
+replica needs many *callers*, not many connections; with one token the
+question cannot be asked.
+
+**Losing a pod under load behaves.** Delete one of two while 30 agents work:
+9 failures out of 581, all connection errors, and the same thirteen active
+handles before and after. That is the pod's in-flight requests and nothing
+else, which is the claim.
+
+**A rolling upgrade under load does not, quite.** Same load, roll the
+deployment: 15 failures out of 596, nine of them `502`, with handles again
+thirteen before and thirteen after. Nothing is *lost* — but "no request
+dropped" is not true today.
+
+:::caution The autoscaler is not enabled on prod1
+
+The table above describes the chart's default. On prod1 there is no
+`HorizontalPodAutoscaler` at all and the Deployment carries an explicit
+`replicas: 2`, so the scale-up and scale-down behaviour documented above is
+not what is running. Check with `kubectl get hpa -n datalayer-api` before
+relying on it.
+
+:::
+
+### A readiness probe must not queue behind the work
+
+The load test found this, and it is the more useful half of what it found.
+
+`/api/mcp/readyz` used to answer by probing: four service pings and four Solr
+reads, eight network round trips, on the request path. The kubelet runs it
+every ten seconds with `timeoutSeconds: 5`. Under load that budget is gone —
+not because a dependency is slow, but because the answer waits behind the
+requests it is reporting on:
+
+```
+Warning  Unhealthy  1s (x19 over 4m16s)  kubelet
+  Readiness probe failed: Get "http://10.244.1.232:4404/api/mcp/readyz":
+  context deadline exceeded
+```
+
+while the same endpoint answered instantly when called from inside that pod.
+Kubernetes takes such a replica out of the Service and sheds its share onto
+the others, which meet the same wall — the shape of the 371 `503`s in the
+one-replica run above.
+
+The answer is kept now, and refreshed behind the requests rather than in
+front of them: `readyz` serves the last result immediately and starts a
+background refresh when it has aged past five seconds, one refresh at a time.
+A refresh that fails leaves the previous answer standing, because reporting
+*not ready* over a check that could not be made would take a working replica
+out of service for being busy — the same failure through another door.
+`dependencies_age_seconds` on the response says how old the verdict is.
+
 ### No affinity at the edge
 
 The ingress round-robins. There is **no cookie affinity** and there are no
