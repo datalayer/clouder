@@ -951,12 +951,26 @@ transport among it, and refuses those tools with `transport_direct`, naming
 with a Jupyter server. Counted in `mcp.refusals`.
 
 **Cancelling a running cell.** A task's `execute` step runs the code in a
-thread, which nothing outside that thread can stop. While it runs, the
-durable worker asks the engine every two seconds whether the run was
+thread, which nothing outside that thread can stop, so stopping the *wait*
+for a cell is not stopping the cell. `tasks/cancel` therefore calls the
+interrupt the tool registered before it cancels the handle: the sandbox's
+own, which for a Datalayer runtime reaches the kernel as
+`POST /api/kernels/{id}/interrupt` on the Jupyter server that runtime is. A
+ten-minute cell a person had already given up on used to keep computing
+until it finished on its own.
+
+Measured on prod1 on 2026-09-07, a cell looping for two minutes and
+cancelled ten seconds in: the next `execute_code` on that session answers in
+**0.6 seconds**, where it took **60.8** before — a free kernel answers in
+about a second, and anything longer is the cancelled cell still running.
+Worth stating as a measurement rather than a description, because the task
+said `cancelled` in both cases: the status was never the thing that told you
+whether the work had stopped.
+
+Under the durable engine (milestone 2) the same interrupt is driven from the
+other side: the worker asks the engine every two seconds whether the run was
 cancelled — from any replica, since the engine's record is shared — and
-interrupts the kernel through the runtime's sandbox client the moment it
-was. A ten-minute cell a person had already given up on used to keep
-computing until it finished on its own.
+interrupts the same way the moment it was.
 
 ### The follower, and why it never ran
 
