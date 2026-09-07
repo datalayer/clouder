@@ -1584,7 +1584,7 @@ chart says so.
 | Setting | Value | Why |
 | --- | --- | --- |
 | `jupyterMcpServer.replicaCount` | `2` | The floor. Applied only when autoscaling is off — with the HPA enabled the Deployment omits `replicas` so the two do not fight |
-| `jupyterMcpServer.autoscaling` | `enabled`, `minReplicas: 2`, `maxReplicas: 8`, `targetCPUUtilizationPercentage: 70` | An `autoscaling/v2` HPA on CPU, with `scaleDown.stabilizationWindowSeconds: 600` so a quiet minute does not take a pod away from the sessions on it |
+| `jupyterMcpServer.autoscaling` | **`enabled: false`**, `minReplicas: 2`, `maxReplicas: 8`, `targetCPUUtilizationPercentage: 70` | Off by default, and the chart **refuses to render** if it is switched on while the records stay in the process — standalone mode, or `memory` as the store. `minReplicas` wins over `replicaCount`, which is how two standalone pods came to be running, each with its own idea of every session. Switched on, it is an `autoscaling/v2` HPA on CPU with `scaleDown.stabilizationWindowSeconds: 600`, so a quiet minute does not take a pod away from the sessions on it |
 | `jupyterMcpServer.podDisruptionBudget` | `enabled`, `minAvailable: 1` | A node drain never empties the service |
 | `jupyterMcpServer.topologySpread` | `enabled` | `maxSkew: 1` across `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, `ScheduleAnyway` so a small cluster still schedules rather than leaving a replica `Pending` |
 | `strategy.rollingUpdate` | `maxSurge: 1`, `maxUnavailable: 0` | A rolling upgrade is the ordinary case; the new pod is ready before an old one goes |
@@ -1652,23 +1652,44 @@ and a fourth replica adds a hop rather than capacity. Only `server/discover`
 replica needs many *callers*, not many connections; with one token the
 question cannot be asked.
 
-**Losing a pod under load behaves.** Delete one of two while 30 agents work:
-9 failures out of 581, all connection errors, and the same thirteen active
-handles before and after. That is the pod's in-flight requests and nothing
-else, which is the claim.
+**Losing a pod under load behaves, and after the readiness fix it is
+perfect.** Delete one of two while 30 agents work: before the fix, 9 failures
+out of 581, all connection errors; after it, **629 calls and 629 answers, no
+failures at all**, with the same thirteen active handles before and after
+each time. The claim allows losing that pod's in-flight requests; it now
+loses none.
 
 **A rolling upgrade under load does not, quite.** Same load, roll the
 deployment: 15 failures out of 596, nine of them `502`, with handles again
 thirteen before and thirteen after. Nothing is *lost* — but "no request
 dropped" is not true today.
 
-:::caution The autoscaler is not enabled on prod1
+Fixing the readiness probe below did **not** change that: run again on the
+same day with the fix deployed, the number was 15 of 596 exactly, all `502` —
+while the pod-deletion drill beside it went from 9 failures to none. So the
+probe was one real cause and this is another, which is worth stating because
+they looked like one problem.
 
-The table above describes the chart's default. On prod1 there is no
-`HorizontalPodAutoscaler` at all and the Deployment carries an explicit
-`replicas: 2`, so the scale-up and scale-down behaviour documented above is
-not what is running. Check with `kubectl get hpa -n datalayer-api` before
-relying on it.
+**Why a rollout drops requests: nothing holds the door.** The Deployment has
+no `lifecycle.preStop` hook, so `SIGTERM` reaches the process at the same
+moment the endpoints controller starts removing the pod from the Service —
+and endpoint removal has to propagate to every kube-proxy and the ingress
+before traffic stops arriving. Requests routed during that window reach a pod
+that has begun draining, and the ingress answers `502`.
+
+The remedy is the usual one and belongs in the chart rather than the code: a
+`preStop` that sleeps a few seconds, so the pod keeps serving while the
+removal propagates and only then hears `SIGTERM`. The gateway's own drain is
+not the problem — it is correct and it starts too early.
+
+:::note There is no autoscaler running, and that is the default
+
+prod1 has no `HorizontalPodAutoscaler` and the Deployment carries an explicit
+`replicas: 2`. That matches the chart, whose `autoscaling.enabled` is `false`
+— this page said `enabled` until 7 September 2026, which is the error. So the
+scale-up and scale-down behaviour above is not what is running anywhere until
+somebody turns it on, and turning it on requires moving the records out of the
+process first; the chart enforces that rather than trusting it.
 
 :::
 
@@ -1700,6 +1721,11 @@ A refresh that fails leaves the previous answer standing, because reporting
 *not ready* over a check that could not be made would take a working replica
 out of service for being busy — the same failure through another door.
 `dependencies_age_seconds` on the response says how old the verdict is.
+
+**Measured after deploying it: nineteen probe failures became zero.** Both
+pods went through a 30-agent run and a rolling upgrade with no `Unhealthy`
+event at all. What it did *not* do is change the rollout's dropped requests,
+which is the section above.
 
 ### No affinity at the edge
 
