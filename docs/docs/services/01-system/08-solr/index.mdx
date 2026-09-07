@@ -347,6 +347,18 @@ Omitting one of them leaves the worker crashing at startup with
 `contents` scope stays available to backup, status, task cleanup and restore
 commands; it does not create duplicate collections.
 
+`content-operations` is the busiest of the four: within it live the durable
+operation jobs, transfers (with their part rows), datasource queries, Dataserver
+registrations and capability tickets, MCP sessions/calls/approvals, local-bridge
+sessions, and the **synchronization** sessions with their conflict rows
+(`content_sync_session` and `content_sync_conflict`). A synchronization's block
+content itself is *not* in Solr — the changed blocks are staged in managed
+object storage and composed into an object version there; only the session and
+conflict state is a Solr document. All of these finished records age out under
+`DATALAYER_CONTENTS_OPERATION_RETENTION_DAYS` (see the Contents service page),
+and `contents_mappings.json` is the authoritative per-family record of each
+one's `type_s`, fields and nested children.
+
 ### The Contents mapping
 
 `datalayer_solr/contents_mappings.json` records every Contents document family:
