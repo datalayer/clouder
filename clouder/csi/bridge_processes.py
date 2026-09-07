@@ -105,6 +105,13 @@ class BridgeProcesses:
             return self._mounter.alive(handle)
         return _running(pid)
 
+    def refresh(self, pid: int, credential: dict[str, bytes]) -> None:
+        # A bridge's session and relay key are fixed for the life of the mount:
+        # it dials a relay at connect rather than serving a credential a client
+        # re-fetches, so there is nothing to re-serve mid-mount. (Bucket mounts
+        # are the ones that renew an STS session in place.)
+        return None
+
     def stop(self, pid: int, target: str) -> None:
         handle = self._handles.pop(pid, None)
         if handle is not None:

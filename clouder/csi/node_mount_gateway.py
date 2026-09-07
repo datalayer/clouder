@@ -329,6 +329,9 @@ class MountProcesses(Protocol):
     def stop(self, pid: int, target: str) -> None:
         """Stop the process and make sure its mount point is gone."""
 
+    def refresh(self, pid: int, credential: dict[str, bytes]) -> None:
+        """Re-serve a newer credential to a running mount, without remounting."""
+
 
 class NoProcessMounts:
     """The default: the agent binds directories and runs nothing.
@@ -348,6 +351,9 @@ class NoProcessMounts:
         return False
 
     def stop(self, pid: int, target: str) -> None:
+        return None
+
+    def refresh(self, pid: int, credential: dict[str, bytes]) -> None:
         return None
 
 
@@ -511,14 +517,23 @@ class NodeMountGateway:
                     log.warning("pod %s: the filesystem behind '%s' has stopped", pod.uid, target)
                     failed[target] = ERROR_MOUNT_DEAD
                     continue
-                # NOTE (buckets not yet wired): a process grant whose backing
-                # Secret was replaced in place — an STS session refresh — has an
-                # unchanged grant hash, so it short-circuits here without a
-                # re-read. To make a bucket survive its first session expiry,
-                # re-read the Secret for a live process grant and call
-                # `ProcessRouter.refresh` -> `BucketProcesses.refresh` when it
-                # changed. Off-by-default and unverified today; see the Node
-                # Mount Gateway doc's bucket status note.
+                # A process grant whose backing Secret was replaced in place —
+                # an STS session refresh — has an unchanged grant hash, so it
+                # reaches here. Re-serve the current Secret to the running mount
+                # so Mountpoint's SDK re-fetches live credentials rather than
+                # 403-ing when its first session expires. A read that fails
+                # (transient, or credentials off) leaves the mount on its
+                # last-known session rather than tearing a working mount down.
+                if grant.is_process and grant.secret:
+                    try:
+                        credential = self._credential_for(pod, grant)
+                    except NodeMountGatewayError as exc:
+                        log.warning(
+                            "pod %s: could not refresh the secret for '%s': %s", pod.uid, target, exc
+                        )
+                    else:
+                        if credential:
+                            self.processes.refresh(int(recorded.get("pid") or 0), credential)
                 mounted.append(target)
                 continue
             if self.mounter.is_mount_point(path):

@@ -315,6 +315,14 @@ class ProcessRouter:
         for candidate in [runner] if runner is not None else list(self._runners.values()):
             candidate.stop(pid, target)
 
+    def refresh(self, pid: int, credential) -> None:
+        # Re-serve a rotated credential to the mount this pid runs. When the
+        # router was replaced (agent restart), the pid is not in `_by_pid`; each
+        # runner no-ops a pid that is not its own, so asking all of them is safe.
+        runner = self._by_pid.get(pid)
+        for candidate in [runner] if runner is not None else list(self._runners.values()):
+            candidate.refresh(pid, credential)
+
 
 class KubernetesCredentials:
     """Reads a Secret a grant names, and only one the pod itself owns.

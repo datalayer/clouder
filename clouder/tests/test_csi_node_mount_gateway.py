@@ -817,6 +817,7 @@ class _Processes:
         self.fail = fail
         self.started: list[dict] = []
         self.stopped: list[tuple[int, str]] = []
+        self.refreshed: list[tuple[int, dict]] = []
         self.dead: set[int] = set()
         self.mounts_nothing = False
         self._next_pid = 1000
@@ -839,6 +840,9 @@ class _Processes:
     def stop(self, pid, target):
         self.stopped.append((pid, target))
         self.mounter.mounts.discard(target)
+
+    def refresh(self, pid, credential):
+        self.refreshed.append((pid, credential))
 
 
 def _bucket(target="data", **fields):
@@ -875,7 +879,25 @@ def test_a_process_mount_is_started_rather_than_bound(running, mounter):
     assert not any(call[0] in ("attach", "bind_dir") and call[2] == started["target"] for call in mounter.calls)
 
 
-def test_a_process_that_mounts_nothing_is_a_failure_not_a_mount(running):
+def test_a_reconcile_re_serves_a_rotated_secret_to_a_running_bucket(running, mounter):
+    """An STS session refreshed in place — same Secret name, new bytes — has an
+    unchanged grant hash, so the mount is not remounted. The reconcile re-reads
+    the Secret and re-serves it to the running process, so the mount does not
+    keep a session that will 403 at expiry."""
+    gateway, processes = running
+    grant = pod(annotation(_bucket(secret="mount-01h")))
+
+    first = gateway.reconcile(grant)
+    assert first.state == STATE_READY
+    pid = processes.started[0]["pid"]
+
+    # The Operator replaced the session Secret in place; the grant is unchanged.
+    gateway.credentials.data = {"key": b"rotated-session"}
+    second = gateway.reconcile(grant)
+
+    assert second.state == STATE_READY
+    assert processes.started == processes.started[:1], "the mount was not restarted"
+    assert processes.refreshed == [(pid, {"key": b"rotated-session"})]
     gateway, processes = running
     processes.mounts_nothing = True
 

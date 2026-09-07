@@ -533,16 +533,16 @@ The Secret carries `access-key-id`, `secret-access-key`, `session-token`,
 without it the SDK has no reason to come back, and the mount keeps a session
 it cannot know has expired.
 
-**Not yet verified against a real bucket, and in-place refresh is not yet
-wired.** The runner, the credential endpoint and their `refresh` methods have
-unit tests, but the reconcile loop does not yet re-read a changed Secret to
-call them: a Secret replaced in place leaves the grant hash unchanged, so the
-agent short-circuits, the mount keeps serving its original session, and it
-returns 403 once that session expires. Turning buckets on for real means wiring
-that re-read (`ProcessRouter.refresh` → `BucketProcesses.refresh` on a
-process-kind grant whose Secret changed) and verifying `mount-s3` accepts this
-credential URI on a real S3 bucket, as part of the cluster run; a mount that
-starts without mounting anything is reported as a failure rather than as a mount.
+**In-place refresh is wired; verify against a real bucket when buckets go on.**
+Each reconcile re-reads a live process grant's Secret and re-serves it to the
+running mount (`NodeMountGateway.reconcile` → `ProcessRouter.refresh` →
+`BucketProcesses.refresh`), so a Secret the Operator replaces in place — an STS
+session renewed under the same name — reaches the loopback endpoint within a
+reconcile cycle and Mountpoint's SDK re-fetches live credentials rather than
+403-ing when its first session expires. What is still unproven is `mount-s3`
+itself against a real S3 bucket: that this credential URI is accepted and a
+bucket actually mounts is the cluster-run check, and a mount that starts without
+mounting anything is reported as a failure rather than as a mount.
 
 ### A static key, and a session
 
