@@ -243,12 +243,22 @@ that port.
 
 ### Operations that gave up
 
+A failed attempt is not retried at once. Each retry waits a backoff that
+doubles from `DATALAYER_CONTENTS_WORKER_RETRY_BACKOFF_SECONDS` up to
+`..._CAP_SECONDS`, so a brief outage no longer spends every attempt in a few
+seconds and dead-letters — and, for a Volume, deletes the PVC its compensation
+reclaims — an operation a short wait would have saved.
+
 An operation the worker has retried to exhaustion is failed with
 `RETRY_EXHAUSTED`, its compensation runs — a Volume whose claim never bound
 is released, so nothing is left that nobody owns — and it appears in the dead
-letter. Reading it, quarantining an operation while it is looked at, and
-requeuing it once the cause is fixed are platform-administrator actions,
-audited:
+letter. So does an operation that failed on something nobody expected, with
+`INTERNAL_ERROR`: it is a bug, not a policy, and rather than vanish when
+retention sweeps it is held beside the exhausted ones for a person to read. (A
+refusal on the operation's own terms — a bad query, a missing executor — is a
+final answer, not a bug, and stays an ordinary terminal failure.) Reading the
+dead letter, quarantining an operation while it is looked at, and requeuing it
+once the cause is fixed are platform-administrator actions, audited:
 
 ```bash
 datalayer contents operations dead-letter
@@ -740,7 +750,7 @@ kubectl exec -n datalayer-api deploy/datalayer-contents -- datalayer-contents-re
 Contents stores its documents in four Solr collections, in a **mapping** —
 which document families exist, which fields each writes, with which Solr
 suffix — that is generated from the DAO codecs into `contents_mappings.json`
-and carries a **version** (`CONTENTS_MAPPING_VERSION`, today `8`) and a
+and carries a **version** (`CONTENTS_MAPPING_VERSION`, today `9`) and a
 fingerprint. The mapping says what the code means *now*. The cluster holds
 documents written by whatever the code meant *then*: an attachment recorded
 under version 1 has no `access_mode_s`, because version 1 had no such field.
@@ -898,7 +908,9 @@ page (default `200`).
 | `DATALAYER_CONTENTS_DATASERVER_REGISTRATION_TTL_SECONDS` | How long a registration may stay `registering` — declared but never having heartbeated — before the worker archives it as never-connected; default `86400` (24 h). The source leaves every listing (kept for the audit as `dataserver.expired`) and the registration reads `unavailable`. Generous, so a slow deploy still connects first; a server that ever heartbeated is not `registering` and is never touched |
 | `DATALAYER_CONTENTS_DATASERVER_CA_CERT` / `DATALAYER_CONTENTS_DATASERVER_CA_KEY` | The internal CA that signs Dataserver client certificates: PEM, or a path to PEM, from one Kubernetes secret, set together. Absent, the API generates one at startup that no replica shares and no restart keeps — `GET /dataservers/ca` reports it `ephemeral` — which is right for `plane local` and wrong anywhere else. `DATALAYER_CONTENTS_DATASERVER_IDENTITY_DAYS` (default `30`) is how long an issued certificate lasts; rotation overlaps the previous serial |
 | `DATALAYER_CONTENTS_WORKER_PROBE_PORT` | Where the worker serves `/health` and `/ready`; default `9403`, set by the chart from `contents.workerProbePort` so the port and the probes cannot drift apart |
-| `DATALAYER_CONTENTS_WORKER_STALL_SECONDS` | How long the worker's loop may go without coming round before `/health` reports `stalled`; default `120`. It must outlast the slowest turn of the loop — a full batch of operations — or a busy worker is restarted for being busy |
+| `DATALAYER_CONTENTS_WORKER_STALL_SECONDS` | How long the worker's loop may go without coming round before `/health` reports `stalled`; default `120`. It must outlast the slowest turn of the loop — a full batch of operations — or a busy worker is restarted for being busy. The loop runs each handler synchronously and ticks once a turn, so a legitimately long operation looks like a stall; the worker therefore raises the effective threshold, if need be, to sit a minute above `DATALAYER_CONTENTS_QUERY_MAX_SECONDS`, and logs when it does, so a valid long query is never SIGKILLed mid-flight. Set this above the query maximum yourself to choose the value |
+| `DATALAYER_CONTENTS_WORKER_RETRY_BACKOFF_SECONDS` | The wait before a failed operation's first retry; default `15`. Each further retry waits twice as long, so a transient outage backs off across attempts rather than spending them all at poll speed |
+| `DATALAYER_CONTENTS_WORKER_RETRY_BACKOFF_CAP_SECONDS` | The longest a retry backoff may grow to, however many attempts have gone by; default `300` |
 | `DATALAYER_RUNTIMES_API_KEY` | The Runtimes service's key to Contents, for attaching sources to a sandbox. One identity per calling process, so a key can be rotated for one without touching the others and the audit trail says which acted |
 | `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for reporting Volume claims |
 | `DATALAYER_CONTENTS_API_KEY` | The Contents worker's own key, for running operations |
@@ -914,7 +926,7 @@ page (default `200`).
 | `DATALAYER_CONTENTS_WORKER_UID` | How the worker names itself on the leases it claims; default the host name and a ULID, so two workers never share a name |
 | `DATALAYER_CONTENTS_WORKER_POLL_SECONDS` | How often an idle worker looks for operations; default `1` |
 | `DATALAYER_CONTENTS_WORKER_BATCH_SIZE` | How many operations one turn of the worker's loop claims; default `25` |
-| `DATALAYER_CONTENTS_WORKER_LEASE_SECONDS` | How long a claimed operation stays the worker's before another may take it over; default `30`. It must outlast the longest handler turn, or a slow attachment is run twice |
+| `DATALAYER_CONTENTS_WORKER_LEASE_SECONDS` | How long a claimed operation stays the worker's before another may take it over; default `30`. It must outlast the longest handler turn, or a slow attachment is run twice. A single worker replica is safe whatever the lease — it is blocked in the handler and no one else can re-claim — but with more than one replica a lease shorter than `DATALAYER_CONTENTS_QUERY_MAX_SECONDS` lets a second worker double-claim an operation still running; the worker logs a warning when it starts in that state. Run a single replica, or raise this above the query maximum |
 | `DATALAYER_CONTENTS_FLIGHT_HOST` | The address the Flight Gateway binds; default `0.0.0.0` |
 | `DATALAYER_CONTENTS_FLIGHT_PROBE_PORT` | Where the Flight Gateway serves its own `/health` and `/ready`; default `9404` |
 | `DATALAYER_CONTENTS_FLIGHT_STALL_SECONDS` | How long the gateway's loop may go without coming round before `/health` reports `stalled`; default `60` |

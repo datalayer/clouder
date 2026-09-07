@@ -537,8 +537,8 @@ it cannot know has expired.
 
 **In-place refresh is wired; verify against a real bucket when buckets go on.**
 Each reconcile re-reads a live process grant's Secret and re-serves it to the
-running mount (`NodeMountGateway.reconcile` → `ProcessRouter.refresh` →
-`BucketProcesses.refresh`), so a Secret the Operator replaces in place — an STS
+running mount (`NodeMountGateway.reconcile()` → `ProcessRouter.refresh()` →
+`BucketProcesses.refresh()`), so a Secret the Operator replaces in place — an STS
 session renewed under the same name — reaches the loopback endpoint within a
 reconcile cycle and Mountpoint's SDK re-fetches live credentials rather than
 403-ing when its first session expires. What is still unproven is `mount-s3`
