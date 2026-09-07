@@ -740,6 +740,8 @@ by a name nothing writes any more.
 | 4 | `content-operations` gains the `mcp_session`, `mcp_call` and `mcp_approval` families |
 | 5 | `content-operations` gains `content_bridge`: the session a local-bridge attachment holds |
 | 6 | `content-operations` gains `datasource_query`, `data_server_registration` and `capability_ticket` |
+| 7 | a datasource query carries `truncated_s`: whether the result was cut short by a limit, so a partial answer is not read as a whole one |
+| 8 | a datasource query carries `connector_s`: which connector by name, because a published table's two answerers hold connectors of different types under one name |
 
 ### Why after every deploy, and why the dry run first
 
@@ -758,8 +760,8 @@ Even a migration that only *adds* families (versions 4 to 6 do) is worth
 running for real: the documents it meets are left unchanged, but the family's
 recorded version moves up, and that recorded version is what the **next**
 migration — the one that renames a field — starts from. A family whose state
-says version 3 while the code writes 6 will be walked through three steps
-when version 7 arrives, and any of them may have been written against a
+says version 3 while the code writes 8 will be walked through five steps
+when a later version arrives, and any of them may have been written against a
 mapping the documents are no longer in.
 
 ### Why on the pod
@@ -1003,7 +1005,7 @@ again.
 
 Never `rm -rf` a Pod's gateway directory under `/var/lib/kubelet/pods` while a
 bind is standing in it. Unmount first — the recovery is on the
-[Local CSI driver](/services/system/node-mount-gateway/#watching-it) page — and treat
+[Node Mount Gateway](/services/system/node-mount-gateway/#watching-it) page — and treat
 the `datalayer_mount_gateway_leaked_total` alert as an alert about **this
 service's data**, not about a node.
 
