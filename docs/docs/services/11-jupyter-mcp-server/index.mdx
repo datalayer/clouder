@@ -967,6 +967,16 @@ Worth stating as a measurement rather than a description, because the task
 said `cancelled` in both cases: the status was never the thing that told you
 whether the work had stopped.
 
+The cancel also waits a bounded two seconds for the interrupted tool to hand
+back what the cell printed, and only then cancels it. Without that the tool
+was killed before its own completion path could run, so a cancelled cell
+answered with **no outputs at all** — in the task *and* in the notebook —
+though it had been printing for twenty seconds. Re-measured after the fix:
+eleven lines and the `KeyboardInterrupt` in both, and the cancel itself
+returning in 1.4 seconds. A tool that registered no interrupt, or a provider
+that answered that it could not deliver one, is cancelled at once rather than
+waited on.
+
 Under the durable engine (milestone 2) the same interrupt is driven from the
 other side: the worker asks the engine every two seconds whether the run was
 cancelled — from any replica, since the engine's record is shared — and
