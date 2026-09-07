@@ -1246,6 +1246,37 @@ Worth keeping for the shape rather than the line: **anything that blocks a
 worker's loop takes the whole worker down, not the request that made it**,
 and the directory cannot tell.
 
+### A task nobody owns is not a task everybody owns
+
+`_task_for` is the one place a task's ownership is decided, and three routes
+ask it: reading a task, cancelling it, and answering one that is waiting. It
+read
+
+```python
+owner = str(task.get("user_uid") or "")
+if owner and owner != caller.user_uid:
+    ...refuse...
+```
+
+so a row with an empty `user_uid` skipped the check entirely and was answered
+— and cancelled — for any caller holding `notebooks:read`.
+
+**Every row was in that state.** The projection read `initiating_user_uid`,
+the Solr *field* the owner is stored in, rather than `initiating_user`, the
+key the codec decodes to. A task written on prod1 on 7 September 2026 with
+`initiating_user='01JV1VE1…'` came back over `GET /api/mcp/v1/tasks/{uid}` as
+`"user_uid": ""`.
+
+Either defect alone was harmless: an unenforced check over a value that was
+always present, or a lost value under a check that enforced it. Together they
+were an open door.
+
+Both halves are fixed — the projection reads the key that arrives, and an
+owner that cannot be established is a refusal rather than a pass. Worth
+keeping for the shape: **an empty value is not permission.** The same
+sentence covers the sandbox grant that named nobody and reported success, one
+section up.
+
 ### Snapshots, and why there is no restore tool
 
 A sandbox is the one place a session's state is *not* recoverable. The
