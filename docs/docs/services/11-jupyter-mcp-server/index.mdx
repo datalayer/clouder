@@ -1998,6 +1998,7 @@ naming the setting; a missing one is an error line and a readiness report.
 | `DATALAYER_MCP_AUDIT_RETENTION_DAYS` | Per-plan audit retention, as `plan:days` pairs — `free:30,pro:365`. A malformed pair is skipped rather than raising, because this is read at import and a typo must not be a crash loop; a non-positive value is skipped too, since audit readable for no time at all can only be a mistake |
 | `DATALAYER_DURABLE_URL` | Where [Durable](/services/system/durable/) is, at its own public URL on the runtimes plane. Left empty the gateway falls back to an in-process workflow backend that reports `durable: false` — correct for a cluster that has not deployed it, and the thing not to mistake for one that has |
 | `DATALAYER_DURABLE_API_KEY` | What the gateway proves itself to Durable with. Falls back to `DATALAYER_JUPYTER_MCP_SERVER_API_KEY`, which is the name Durable knows this caller by |
+| `DATALAYER_MCP_DURABLE_TOOLS` | Which tools run on the durable engine instead of in the worker that accepted the call. Empty — the default — keeps every task on the worker, which is what a deployment does until somebody chooses otherwise. A comma-separated subset of what the gateway vouches for, or `all` for whatever that is; today it vouches for `execute_code` alone. **The allowlist is in code and this may only narrow it**: a name it does not know is dropped with a warning rather than honoured, so a typo routes *less* rather than routing something nobody chose. `GET /api/mcp/readyz` says which tools are routed, because an engine that is ready and receives nothing reads exactly like one that is working |
 | `DATALAYER_MCP_CALLS_PER_MINUTE_PER_USER` | Tool calls one user may make in a minute; default `300`, `0` no limit. The refusal is a JSON-RPC error carrying `retry_after_ms`, and the windows live in `mcp-gateway` so the limit means the same thing however many pods answer |
 | `DATALAYER_MCP_CALLS_PER_MINUTE_PER_AGENT` | The same, per `client_id`; default `120` |
 | `DATALAYER_MCP_DEPENDENCY_TIMEOUT` | How long a call to a platform dependency may take before it is a timeout; default `10` seconds |
@@ -2158,6 +2159,32 @@ a durable run that is slow is either waiting on the engine or waiting on the
 sandbox, and those are different services to go and look at. A span name
 nothing recognises is drawn and timed with no stage label rather than a
 wrong one.
+
+### Turning execution over to the engine
+
+Deploying Durable does not move any work to it. The gateway calls it for
+`cancel`, `signal` and `operations`, and until `DATALAYER_MCP_DURABLE_TOOLS`
+names a tool it calls `start` for nothing: every task runs in the worker that
+accepted it, which is what a task did before Durable existed and what it goes
+on doing after.
+
+`DATALAYER_MCP_DURABLE_TOOLS=execute_code` moves that one tool. The gateway
+answers such a call itself — with the task handle the client polls on — and
+**never forwards it to the worker**, which is what makes "both ran it" a
+state the design cannot reach rather than one a setting protects against.
+
+Every reason not to route is a fallback to the worker, never a refusal of the
+call: a synchronous call, a session with no sandbox, a call carrying an
+idempotency key (only the worker's task store can recognise a retry of one),
+an engine that cannot be named. Declining costs a task that does not survive
+a pod restart. Starting one wrongly costs a cell executed twice, which is why
+the engine's own execute step is marked not idempotent.
+
+`execute_code` and not `execute_cell`: `execute_code` carries the code in its
+own arguments, so what the engine runs is what the client sent. `execute_cell`
+names a cell, and routing it would make the gateway a second reader of which
+cell is meant against a document that can change between the read and the
+run — a run of the wrong code, reported as a success.
 
 **The Live pane** asks `/api/mcp/v1/operations/workflows` how the durable
 engine is and lists the runs still working. The engine has three states, not
