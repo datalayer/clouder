@@ -1415,6 +1415,23 @@ anything else — 2025-11-25 explains it completely, and readiness will not.
 
 :::
 
+:::warning And every answer must say what kind it is
+
+`resultType` is required on the 2026-07-28 wire, and `tools/call` is a union
+discriminated on it: `complete` for a finished result, `task` for the receipt
+of a call that became one. The gateway assembles its own answers rather than
+letting the SDK dump them — refusals, a `launch_sandbox` it short-circuits,
+a cached *not modified* — and until 2026-09-08 none of them carried it. A
+modern client raised on each one before its caller saw anything, which reads
+as the gateway being down rather than as a shape it got wrong.
+
+Fixed in `datalayer-jupyter-mcp-server:0.0.4`. On the older wire the field's
+absence *means* `complete`, so nothing about this changes for a 2025-11-25
+client — which is also why it went unnoticed for as long as the only clients
+were on that wire.
+
+:::
+
 :::
 
 ## What it stores
