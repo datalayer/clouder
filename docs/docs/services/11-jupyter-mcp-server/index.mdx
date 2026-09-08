@@ -570,6 +570,40 @@ whoever asked next. The bytes themselves are fetched from Contents by the
 client, with its own credential, and are never proxied through the
 gateway.
 
+## The library, which anyone may read
+
+Three tools search what Datalayer has published — `search_library`,
+`get_library_artifact`, `read_library_artifact` — against
+`DATALAYER_LIBRARY_URL`, which defaults to the IAM host because that is where
+the library is served.
+
+**They work without a credential, and that is the design.** The library's
+public routes answer an anonymous browser, so an agent asked to "find a
+notebook that plots a parabola" can answer it. When the request does carry a
+Datalayer identity it is exchanged and passed on, and the only difference is
+whether results say the caller orbits them. A caller whose exchange fails
+searches anonymously rather than being refused — a toolset that required a
+token would be refusing the thing it exists for.
+
+Consequences worth knowing before you read the audit:
+
+- **A library call is priced at `notebooks:read`**, the weakest read scope,
+  rather than left to deny-by-default. Charging `code:execute` to search a
+  public catalogue would refuse a read-only agent the one thing it is
+  certainly allowed to do.
+- **Nothing here writes.** Publishing is a decision a person makes about
+  their own work, in the web application, in a dialog that shows them what
+  will appear where. All three tools are annotated read-only, and a test
+  holds that over the served list.
+- **Every result carries the artifact's public URL**, built by the library
+  from `DATALAYER_CDN_URL`. If that is unset there, results arrive without a
+  `url` and an agent answers with uids a person cannot open — the symptom
+  appears here and the cause is in the library's configuration.
+- **A kind the library does not hold is refused by name**, so an agent that
+  asked for "spreadsheets" is told what there is instead of silently being
+  given everything.
+
+
 ## A sandbox has two names
 
 A sandbox is identified by a **ULID** — that is its `sandbox_uid`, and it
@@ -2036,6 +2070,7 @@ naming the setting; a missing one is an error line and a readiness report.
 | `DATALAYER_SPACER_URL` | Where notebooks and their permissions live; defaults to `DATALAYER_IAM_URL` |
 | `DATALAYER_RUNTIMES_URL` | Where a sandbox is asked for. Provider-neutral: the same URL launches an internal runtime or an external one, and the gateway never sees which SDK is behind it. Defaults to `DATALAYER_IAM_URL` |
 | `DATALAYER_CONTENTS_URL` | Where Contents runs — the runtimes plane, at its own public URL (`https://r1.datalayer.run`). No fallback, and a value equal to `DATALAYER_IAM_URL` is reported as a misconfiguration: a gateway that does not know where Contents is has no Contents, and readiness says so |
+| `DATALAYER_LIBRARY_URL` | Where the public library is searched, for `search_library`, `get_library_artifact` and `read_library_artifact`; defaults to `DATALAYER_IAM_URL`, which is where it is served. Leaving it out does **not** turn the tools off. Its routes answer anonymously, so these tools work for a caller with no Datalayer identity — what a credential adds is only whether the caller orbits a result |
 | `DATALAYER_AI_AGENTS_URL` | Where activity events are posted, so what an agent does appears in the feed; defaults to `DATALAYER_IAM_URL`. Every post is best-effort and off the request path |
 | `DATALAYER_MCP_STANDALONE` | Run the MCP endpoint with none of the platform machinery behind it — see [Two modes](#two-modes-and-which-one-you-are-running). `true`/`1`/`yes`/`on`; anything else, including `false`, is off. It wins over `DATALAYER_MCP_STORE` below, and it requires `replicaCount: 1`. Turning it **off** does not by itself move the records out of the process — set `DATALAYER_SOLR_ZK_HOST` in the same change, or the chart refuses to render. See [Turning it off](#turning-it-off) |
 | `DATALAYER_MCP_STORE` | `solr` in a deployment, `memory` for a single local process. Unset, Solr is used when `DATALAYER_SOLR_ZK_HOST` is set and memory otherwise. Any other value refuses to start. Ignored under `DATALAYER_MCP_STANDALONE` |
