@@ -418,6 +418,28 @@ and somewhere else:
   PostgreSQL: a local run on SQLite would pass against something the
   deployment refuses to start on.
 
+:::note What startup cannot check for you
+
+`check_configuration()` reads settings. It cannot tell you that a package a
+step reaches for at the moment of doing its work is absent, because nothing
+has imported it yet — several of this service's imports are inside the
+functions that need them.
+
+That is not hypothetical. Until 2026-09-08 `agent-runtimes` — the client the
+`execute` step runs code in a sandbox with, and so the whole of what a
+notebook run does — was declared in no `pyproject.toml`. The service started,
+reported `ready`, took work, and failed each notebook run at its last step
+with `No module named 'agent_runtimes'`. Every version before `durable:0.0.3`
+behaves that way.
+
+The check lives in the test suite now (`test_every_lazy_import_is_installed`),
+which is where it belongs: it needs a clean environment to mean anything, and
+a deployment's environment is exactly that. If you are debugging a run that
+fails at a step rather than at startup, `python -c "import agent_runtimes"`
+inside the pod is worth trying before anything else.
+
+:::
+
 ## Deploy
 
 The cluster first. The workers refuse to start without it, deliberately: a
