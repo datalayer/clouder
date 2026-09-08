@@ -189,6 +189,46 @@ takes milliseconds do not belong in the same line.
 | `approval` | `ApprovalWorkflow` | Waits on people; costs nothing while waiting, so its concurrency is high |
 | `agent` | `AgentRunWorkflow` | An agent run: blocks for as long as the agent works, and holds a sandbox through a child workflow |
 
+### Any worker accepts any start; only its own queues are run
+
+These are two different things, and a deployer needs to know they are. Every
+pod declares **every** queue in the catalog, so `POST /workflows` is accepted
+by whichever pod answers, whatever queue the workflow belongs to. Only the
+queues in that Deployment's `DATALAYER_DURABLE_QUEUES` are polled, so the work
+is still run by the Deployment that exists for it.
+
+Enqueueing is a row in PostgreSQL; running the work is polling for that row.
+They have to be separable here because every caller reaches the workers
+through **one** Service, `datalayer-durable-svc`, which answers from whichever
+pod the load balancer picked — so the pod that takes a start is almost never
+the pod that will run it. Until 2026-09-08 a worker declared only the queues
+it served, and a start for anybody else's queue was refused:
+
+```
+503 {"detail":"NotebookRunWorkflow runs on the 'notebook' queue,
+     which this worker does not serve (it serves sandbox)"}
+```
+
+With seven pods over five queues that refused about five starts in seven, and
+the gateway's fallback made it look like an engine that worked intermittently
+rather than one that was misrouted.
+
+What this means when you scale: adding pods to a queue adds capacity for that
+queue's work, and adds nothing to the queue's *isolation*, which is already
+absolute. A pod whose `DATALAYER_DURABLE_QUEUES` names a queue the catalog
+does not have — a typo — polls the rest of its queues normally and simply
+never runs work under the name that does not exist; it is dropped rather than
+refused, because one deployment's typo should not stop the queues it does
+serve. The startup log names what it actually polls:
+
+```
+Listening to 1 queues:
+Queue: notebook
+```
+
+Read that line after any change to `DATALAYER_DURABLE_QUEUES`. It is the only
+place that says what a pod will *run*, as opposed to what it will accept.
+
 ## The workflow catalog
 
 What this service will run, and nothing else. A caller names a workflow by
@@ -358,11 +398,11 @@ already has one.
 | `DATALAYER_SOLR_ZK_HOST` | Where `mcp-tasks` is. The `project_task` step writes the projection **directly**, so this is required and not optional |
 | `DATALAYER_DURABLE_APPLICATION_VERSION` | What this worker runs, from the chart's `appVersion`. A worker only takes workflows of a version it can run — see [Upgrades](#upgrades) |
 | `DBOS_APPLICATION_VERSION` | The same value under the name the `dbos` library reads from the environment itself, which is why a DBOS deployment sets this one. Where both are set the service's own name wins |
-| `DATALAYER_DURABLE_QUEUES` | Which queues this Deployment takes work from, comma-separated. One Deployment per queue is why a long run cannot starve a short one |
+| `DATALAYER_DURABLE_QUEUES` | Which queues this Deployment **runs work from**, comma-separated. One Deployment per queue is why a long run cannot starve a short one. It does *not* limit what this pod will accept: every pod declares every queue and enqueues onto any of them, because one Service fronts them all — see [The queues](#any-worker-accepts-any-start-only-its-own-queues-are-run) |
 | `DATALAYER_RUNTIMES_URL` | Where Runtimes is, at its **public** URL — the workers and Runtimes are not guaranteed to share a cluster, and an in-cluster name works right up until they do not |
 | `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
 | `DATALAYER_IAM_URL`, `DATALAYER_IAM_API_KEY` | Where IAM is, at its public URL, and this service's key for it — what a task's grant is issued and released against, and what mints the temporary key an agent run works with. Empty means "not configured": the run goes on with the service key and says so in the log. The key comes from `datalayer-durable-secret` |
-| `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret |
+| `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret. **The key does not cover the feed entry a finished run makes**: `POST /agents/{id}/events` asks for a *person*, so that one call is made with the run's own credential — the token its task grant was exchanged for — and answers `401` for any service key however well configured. A run with no grant makes no entry and is not failed for it |
 | `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever — and, on `engine: temporal`, so a client that would retry a failing call indefinitely cannot make `start` wait for ever with the gateway waiting on it |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
 

@@ -744,6 +744,25 @@ and the next call is refused without asking again. Both name the owner and
 say `launch_sandbox` is the way to a sandbox of one's own. Counted as
 `access_revoked` in `mcp.refusals`.
 
+**Letting go is never refused.** `use_sandbox` with no name drops the
+session's selection and goes back to Jupyter kernels. It names no sandbox, so
+neither the grant nor the sandbox's liveness is checked: a caller whose share
+has been taken back, or whose sandbox is gone, is exactly the caller who most
+needs that call to work. Naming a sandbox is a *selection* and is checked as
+one.
+
+That was worth fixing rather than documenting around. Until 2026-09-08 the
+release was checked like any other selection, so a session bound to a revoked
+sandbox had no way out: the release answered the revocation error, and
+`launch_sandbox` — the remedy the revocation message itself names — answered
+*"this session already has a live sandbox"*, because the close that is
+supposed to free the session was being written with a call that could not
+work and whose `TypeError` went to a debug line. Only `terminate_sandbox`
+followed by `launch_sandbox` with `replace: true` recovered such a session,
+which a grantee cannot do on somebody else's sandbox at all. If you see a
+session stuck between those two answers, it is running an image from before
+that date.
+
 ### A subscriber is told, or nobody is
 
 An agent that has opened a notebook can ask to hear when it changes —
