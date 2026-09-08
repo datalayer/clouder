@@ -1397,6 +1397,24 @@ answers three things:
 A tool missing while its capability is in `known` and not in `capabilities`
 is an Environment that has not declared it, and not a broken gateway.
 
+:::warning Discovery is what puts a client on the modern wire
+
+`supportedVersions` in the `server/discover` result is what a client adopts:
+it intersects that list with the modern versions it knows and takes the
+newest. An answer it cannot parse sends the client back to `initialize`,
+which negotiates **2025-11-25** — and long-running calls do not exist on that
+wire. A `tools/call` carrying `task` is answered with a task, the client
+validates that answer as an ordinary tool result, and it is rejected for
+having no `content`.
+
+Until 2026-09-08 the field was sent under the wrong name, so every SDK client
+fell back and no conformant client could use the durable path at all, while
+`readyz` correctly reported `running execute_code durably`. If a client of
+yours cannot create tasks, check the protocol version it negotiated before
+anything else — 2025-11-25 explains it completely, and readiness will not.
+
+:::
+
 :::
 
 ## What it stores
