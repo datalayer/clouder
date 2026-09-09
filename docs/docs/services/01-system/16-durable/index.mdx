@@ -405,6 +405,9 @@ already has one.
 | `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret. **The key does not cover the feed entry a finished run makes**: `POST /agents/{id}/events` asks for a *person*, so that one call is made with the run's own credential — the token its task grant was exchanged for — and answers `401` for any service key however well configured. A run with no grant makes no entry and is not failed for it |
 | `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever — and, on `engine: temporal`, so a client that would retry a failing call indefinitely cannot make `start` wait for ever with the gateway waiting on it |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
+| `LOG_LEVEL` | The service's own log lines; default `info`. **Until 2026-09-09 nothing installed a handler**, so only warnings reached a pod and every `info` line — the startup banner, which queues a worker polls, whether telemetry started — went nowhere. What you saw came from `dbos` and `uvicorn`, which configure their own |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (and `_METRICS_`, `_LOGS_`) | Where a run's trace goes. The chart used to carry only the generic `OTEL_EXPORTER_OTLP_ENDPOINT`, empty, and nothing installed an SDK provider, so every span was recorded into a no-op — indistinguishable from working, from inside. Set the way the gateway sets them so both halves of a trace, the call and the run, reach one collector |
+| `DATALAYER_OTEL_API_KEY` | Which account the points are exported under. Supplied by `plane up`, never in chart values. A run's spans are additionally stamped with the caller's own account (see below), which is what makes them findable |
 
 `check_configuration()` runs at startup and refuses rather than failing later
 and somewhere else:
@@ -595,6 +598,22 @@ order read back from its own history, an approval that waits and resumes on a
 signal, a cancel, a returned refusal read as a failure with its reason, and a
 non-idempotent step attempted exactly once. Every one of them found something
 the unit tests could not.
+
+## Finding a run in Datalayer OTEL
+
+The OTEL query API is **account-scoped**: a span is filed under its
+`usage_account_uid`, and a query answers only the caller's own. The gateway
+files the span of a call under the organization the call was made in, or the
+person when there was none. A durable run is filed under **the same account
+as the call that started it** — the gateway hands it over with the start, and
+every `durable.start` and `durable.step.*` span carries it, beside the task,
+the workflow and the sandbox uid.
+
+Until 2026-09-09 a run was stamped with nothing and sat under durable's own
+service account, so a person querying by the trace id their audit row carries
+found the call and none of the work. If you see that shape — the gateway's
+spans present, this service's absent — the run was started by a gateway from
+before that date, or by a caller the gateway could not attribute.
 
 ## Health and readiness
 
