@@ -465,6 +465,9 @@ in. That sandbox **is** the session, and it is an `sb_…` handle in
 - a sandbox that is gone ends the call with `SANDBOX_LOST` and the runtime's
   `ResourceState`. Only a binding created with `on_lost: relaunch` gets a
   replacement, and it says so in the result. There is no silent relaunch;
+- `launch_sandbox` on a session that already holds a sandbox answers that
+  one — after confirming with Runtimes that it is still there, never off the
+  record alone;
 - a binding follows the runtime's reservation; closing it ends the session's
   open tasks.
 
@@ -796,6 +799,38 @@ followed by `launch_sandbox` with `replace: true` recovered such a session,
 which a grantee cannot do on somebody else's sandbox at all. If you see a
 session stuck between those two answers, it is running an image from before
 that date.
+
+The same answer had a second way of being wrong, found on 2026-09-09 with a
+runtime deleted straight at Runtimes: the binding's record still said `open`,
+"live" was read off the record, and `launch_sandbox` answered the handle of a
+sandbox that no longer existed — nothing launched, nothing raised — while the
+`use_sandbox` that followed found it gone and said "call `launch_sandbox`".
+From gateway 0.0.8 the existing sandbox is **confirmed against Runtimes**
+before a launch answers it: gone is marked `lost` and the launch goes ahead;
+a binding created with `on_lost: relaunch` is replaced and the launch is
+answered the replacement; and `replace: true` does not relaunch a gone one
+only to close it.
+
+Found on the same drill, one call later: `use_sandbox` naming the **alias of
+the sandbox the session had just launched** was taken for a share — the
+"already adopted" check knew only shared bindings by runtime name — and a
+second binding was made on the same runtime, with `on_lost: fail`, so the
+`on_lost: relaunch` the launch had asked for was gone from the session's
+current binding without anybody saying so. From gateway 0.0.9 a session's
+own live binding, by alias or runtime name, is what a `use_sandbox` selects;
+adoption is only ever of somebody else's sandbox. A session that shows two
+live bindings on one runtime is running an image from before that.
+
+And one call after that, the replacement itself: `on_lost: relaunch` launches
+from the binding's `launch_spec`, and a sandbox launched over the wire had its
+environment recorded there under a key the relaunch does not read — so
+Runtimes refused every such relaunch with `422 body.environment: Field
+required`, and no sandbox launched through `launch_sandbox` had ever actually
+been relaunched. From gateway 0.0.10 the spec has one vocabulary,
+`environment_name`. A binding created before 0.0.10 still carries the old
+key: its relaunch fails the same way, the session is answered `SANDBOX_LOST`
+with that refusal, and `launch_sandbox` is the way on — nothing reads the
+old key.
 
 ### A subscriber is told, or nobody is
 
