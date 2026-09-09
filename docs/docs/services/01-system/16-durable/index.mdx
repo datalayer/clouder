@@ -368,7 +368,7 @@ and never talks to this service.
 | `GET /api/durable/v1/operations` | What this deployment is: engine, queues, catalog |
 
 Authentication is **per caller, with scopes**, in `X-API-Key`. There is no
-single key for the service: three identities are known, each with the least
+single key for the service: four identities are known, each with the least
 it needs, and a key naming another audience is refused even when it is a real
 key — so a leaked Contents key cannot start workflows.
 
@@ -377,6 +377,7 @@ key — so a leaked Contents key cannot start workflows.
 | `jupyter-mcp-server` | `DATALAYER_JUPYTER_MCP_SERVER_API_KEY` | start, read, signal, cancel |
 | `contents` | `DATALAYER_CONTENTS_API_KEY` | start, read, cancel — not signal |
 | `operator` | `DATALAYER_OPERATOR_API_KEY` | read. It watches; it never starts anything |
+| `scheduler` | `DATALAYER_SCHEDULER_DURABLE_API_KEY` | start, read, signal, cancel — a due run started as a workflow instead of run inline. A workload key, not the scheduler's administrator JWT |
 
 **An unset key refuses that caller** rather than admitting all of them:
 absence is a refusal, not a wildcard. The keys are read on each request, not
@@ -384,7 +385,7 @@ when the route is defined, so a rotated key takes effect without a restart —
 which matters most in the case you usually rotate for.
 
 :::info Which keys the chart carries
-All three are on the Deployment as **optional** secret references, so listing
+All four are on the Deployment as **optional** secret references, so listing
 them costs nothing until the release secret has them — and a key the secret
 does not carry refuses that caller rather than admitting everybody. Put a
 caller's key in the secret when that path is wanted:
@@ -393,8 +394,14 @@ caller's key in the secret when that path is wanted:
 kubectl -n datalayer-durable create secret generic datalayer-durable \
   --from-literal=DATALAYER_JUPYTER_MCP_SERVER_API_KEY=... \
   --from-literal=DATALAYER_CONTENTS_API_KEY=... \
+  --from-literal=DATALAYER_SCHEDULER_DURABLE_API_KEY=... \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+`plane up` writes these from the rc: the `scheduler` key is set on both sides
+from `DATALAYER_SCHEDULER_DURABLE_API_KEY` — into this Secret as
+`serviceApiKeys.scheduler`, and into the scheduler Deployment's own env so it
+sends the matching `X-API-Key`.
 
 There is no `DATALAYER_DURABLE_API_KEY`. The name existed, was injected by
 the chart and read by nothing, and its docstring claimed it was what the

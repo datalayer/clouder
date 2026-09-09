@@ -50,7 +50,7 @@ plane local
 
 - Persist schedule definitions (`type_s=schedule`) and runs (`type_s=schedule_run`) in Solr.
 - Poll due planned runs every 10 seconds by default.
-- Execute due runs in background worker threads.
+- Execute due runs in background worker threads (the default, inline path), or hand each due run to [`datalayer-durable`](/services/system/durable/) as a workflow when the cut-over is enabled (see below).
 - Mark run outcomes and create next planned runs from cron expressions.
 
 ## APIs
@@ -80,6 +80,28 @@ plane local
 - `DATALAYER_SCHEDULER_RUNTIME_CREDITS_FRACTION` (default: `0.5`)
 - `DATALAYER_SCHEDULER_EXEC_TIMEOUT_SECONDS` (default: `300`)
 - `DATALAYER_SCHEDULER_SERVICE_TOKEN`
+
+### Durable dispatch (opt-in)
+
+By default the scheduler runs each due run inline in a worker thread, so a run
+is lost if the pod moves mid-execution. It can instead hand each due run to
+[`datalayer-durable`](/services/system/durable/) as a workflow, which
+outlives the worker that started it. This is **off by default** and gated on all
+three variables below; unset any of them and the inline path stays.
+
+- `DATALAYER_SCHEDULER_USE_DURABLE` (default: `false`) — the cut-over switch.
+- `DATALAYER_DURABLE_URL` — the `/api/durable` ingress of the durable service on the runtimes plane.
+- `DATALAYER_SCHEDULER_DURABLE_API_KEY` — this service's own **workload** key to the durable API, which durable knows as the `scheduler` caller. Not the same as `DATALAYER_SCHEDULER_API_KEY`, which is an administrator JWT; the durable key is a separate variable on purpose. The same value is written into the durable Secret as `serviceApiKeys.scheduler`.
+- `DATALAYER_SCHEDULER_DURABLE_WORKFLOW` (default: `AgentRunWorkflow`) and `DATALAYER_SCHEDULER_DURABLE_QUEUE` (default: `agent`) — which workflow a due run is started as, and on which queue. Overridable so the notebook-run workflow can be targeted without a code change.
+
+:::warning
+Leave `DATALAYER_SCHEDULER_USE_DURABLE` at `false` in production for now.
+`AgentRunWorkflow` blocks on an agent signal that a scheduled notebook run never
+sends and needs a sandbox that is already bound, so a run handed to it today
+would hang and leak its compute. The switch turns on only once a durable
+workflow that runs a scheduled notebook (launching its own runtime, no agent)
+lands.
+:::
 
 ## Ingress
 
