@@ -299,6 +299,31 @@ Every step acts with **this service's** identity, never a credential
 belonging to the person the work is for. A user token in a workflow history
 is a token that outlives its reasons.
 
+#### A sandbox that goes away mid-cell
+
+`execute` runs the cell in a thread and, every two seconds, asks the engine
+whether the run was cancelled and Runtimes whether the sandbox is still
+there. A sandbox that is gone ends the run **on that tick**, `failed` with
+`SANDBOX_LOST` naming the runtime — it does not wait for the cell. It
+cannot usefully: the cell is blocked on a socket to a pod that no longer
+answers and would come back only at its own timeout, and its outcome is not
+believable anyway. The kernel is still sent an interrupt, best effort, off
+the loop and capped at one tick, so a kernel that *is* reachable stops
+computing; the thread is left to time out unheard. Once the cell returns on
+its own, the same question is asked once more before the outcome is
+believed, because `RuntimeService.execute` reports a kernel that died
+mid-cell as a success with no outputs. Runtimes being *unreachable* is not
+the sandbox being gone and leaves the run alone. No second sandbox is ever
+launched from inside the step: `on_lost` on the binding decides that, and it
+is the gateway's decision, not this service's.
+
+Measured on prod1 on 2026-09-09: before either check, a sandbox deleted 30 s
+into a 200 s cell ended `completed` with `outputs: []` at 254 s; with the
+post-check alone (durable 0.1.4) it ended `SANDBOX_LOST`, still at 250 s;
+with the poll ending the run (0.1.5) it ended `SANDBOX_LOST` at 44 s — the
+first status read after the deletion. The bound is the two-second poll tick
+plus the time Runtimes takes to answer.
+
 ## Mirroring Contents
 
 A Contents operation — a transfer, a query, a materialization — is
@@ -614,6 +639,15 @@ service account, so a person querying by the trace id their audit row carries
 found the call and none of the work. If you see that shape — the gateway's
 spans present, this service's absent — the run was started by a gateway from
 before that date, or by a caller the gateway could not attribute.
+
+A worker whose start log says `Telemetry could not be started; running
+without it` followed by `Cannot add middleware after an application has
+started` is durable **0.1.4**, where telemetry was installed from the
+lifespan — after Starlette had built its middleware stack. The providers had
+been installed by the time the middleware was refused, so the spans of such a
+worker *did* reach OTEL; only the HTTP hop from the gateway is untraced, and
+the log line is wrong. From 0.1.5 telemetry is installed as the app is
+built, and a worker that started it logs nothing about it at all.
 
 ## Health and readiness
 
