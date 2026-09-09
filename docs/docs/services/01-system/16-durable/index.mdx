@@ -737,7 +737,37 @@ one key — a dict, so three of them silently replaced. An approval could come
 back as a sandbox launch. Fixed 2026-09-02; DBOS had been logging
 "Duplicate registration of function" on every worker startup since.
 
-## Backup: not configured, and what that means
+## Backup
+
+Enabled on 2026-09-09, the way the memory cluster's is. Set
+`DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` and the `aws-creds` secret in the
+`datalayer-dbos` namespace, and `plane postgresql-dbos-create` writes the
+`backup:` stanza into the cluster — the same shared bucket and `30d` retention
+as every other Datalayer cluster. Then:
+
+```bash
+plane postgresql-dbos-backup          # the recurring schedule
+plane postgresql-dbos-backup now      # one off
+plane postgresql-dbos-restore         # into a new cluster, optionally to a timestamp
+```
+
+A restore bootstraps a **new** cluster from the object store; the source is
+never touched. The recovered cluster carries `dbos_durable`, `dbos_agents`
+and the DBOS system database from the base backup, so nothing is reconciled
+afterwards — only the workers' connection secret is republished
+(`plane postgresql-dbos-create` against the new cluster name republishes it
+and does nothing else) and the workers rolled. Each worker that starts
+against it recovers the workflows that were open at the recovery point,
+under the application version it was built with.
+
+**Before that date it was not configured, and it is worth knowing why the
+spec file did not help.** The `backup:` block in
+`etc/specs/postgresql/datalayer-postgresql-dbos.yaml` was commented out — but
+that file is not what creates the cluster; `plane postgresql-dbos-create`
+applies an inline manifest of its own, which had no backup stanza at all. A
+cluster whose spec file said one thing and whose creation said another.
+
+### What "not configured" meant
 
 The workflows **are** the database. There is no second copy, and a run in
 flight exists nowhere else — which is why tearing the workers down is safe
