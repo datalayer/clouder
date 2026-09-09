@@ -430,6 +430,9 @@ already has one.
 | `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret. **The key does not cover the feed entry a finished run makes**: `POST /agents/{id}/events` asks for a *person*, so that one call is made with the run's own credential — the token its task grant was exchanged for — and answers `401` for any service key however well configured. A run with no grant makes no entry and is not failed for it |
 | `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever — and, on `engine: temporal`, so a client that would retry a failing call indefinitely cannot make `start` wait for ever with the gateway waiting on it |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
+| `DATALAYER_DURABLE_EXECUTOR_ID` | Who this worker is to the engine; the chart sets it to the **pod name** (`metadata.name`). DBOS recovers, at start, the `PENDING` runs of its own executor id, so this must be one per pod. Left at DBOS's default `local`, every pod shared one id and a starting pod replayed every run in flight on its live siblings — see [Recovering a lost worker's runs](#recovering-a-lost-workers-runs). Defaults to the hostname, which in a pod is the pod name |
+| `DATALAYER_DURABLE_HEARTBEAT_SECONDS` | How often a worker says it is alive and how often it sweeps for dead workers' runs; default `10` |
+| `DATALAYER_DURABLE_DEAD_AFTER_SECONDS` | After how long a silence an executor is taken for dead and its `PENDING` runs recovered; default `30`. Must be comfortably longer than the heartbeat, or a worker merely slow to beat has its live runs recovered under it — the service refuses to start if it is not |
 | `LOG_LEVEL` | The service's own log lines; default `info`. **Until 2026-09-09 nothing installed a handler**, so only warnings reached a pod and every `info` line — the startup banner, which queues a worker polls, whether telemetry started — went nowhere. What you saw came from `dbos` and `uvicorn`, which configure their own |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (and `_METRICS_`, `_LOGS_`) | Where a run's trace goes. The chart used to carry only the generic `OTEL_EXPORTER_OTLP_ENDPOINT`, empty, and nothing installed an SDK provider, so every span was recorded into a no-op — indistinguishable from working, from inside. Set the way the gateway sets them so both halves of a trace, the call and the run, reach one collector |
 | `DATALAYER_OTEL_API_KEY` | Which account the points are exported under. Supplied by `plane up`, never in chart values. A run's spans are additionally stamped with the caller's own account (see below), which is what makes them findable |
@@ -751,8 +754,18 @@ kubectl -n datalayer-durable exec deploy/datalayer-durable-notebook -- \
 reads under that name). A worker only takes workflows of a version it can run,
 so a workflow started before an upgrade finishes on a worker that still
 matches its history rather than being replayed by code that no longer does.
-Roll workers freely; let the old version's workers drain rather than deleting
-them.
+Letting the old version's workers drain is the gentle path — but `plane reup`
+is uninstall-then-install and leaves none, and a run left at the old version
+is one **no worker will ever dequeue**. Measured on prod1 on 2026-09-09: a
+run open across a roll from `appVersion 0.0.1` to `0.0.2` sat `PENDING` at
+`0.0.1` and would have forever.
+
+So the recovery sweep **adopts** it: a run whose version no live worker
+serves is forked onto the current version from its first incomplete step, the
+original retired, and the new run carries the same task uid so the handle a
+client polls keeps pointing at the work (see *Recovering a lost worker's
+runs*). Roll freely; a run the roll leaves behind is adopted within a sweep,
+not stranded.
 
 On `engine: temporal` the same value is the worker's build id, declared as the
 new default for each queue at startup. Check `/operations` for
@@ -770,6 +783,38 @@ by the same nested function in `DbosEngine._build`, and the four would share
 one key — a dict, so three of them silently replaced. An approval could come
 back as a sandbox launch. Fixed 2026-09-02; DBOS had been logging
 "Duplicate registration of function" on every worker startup since.
+
+## Recovering a lost worker's runs
+
+A worker that dies mid-run — a pod evicted, a node lost — leaves its runs
+`PENDING` in the database. DBOS recovers, at startup, the `PENDING` runs of
+its **own executor id**, so the question is who that worker was.
+
+Each worker is its **pod name**, passed in as `DATALAYER_DURABLE_EXECUTOR_ID`
+(the chart reads `metadata.name`). This matters more than it looks. Left at
+DBOS's default, every worker shared the id `local`, and a pod that started —
+a scale-up, a replacement, any pod of a rollout — ran DBOS's startup recovery
+over every `local` `PENDING` run, which is **every run in flight on every
+live sibling**, and failed each with `MAY_HAVE_RUN`: the replay hit
+`execute`'s claim guard, which refused a cell another process was running.
+Measured on prod1 on 2026-09-09: adding a worker failed every run the others
+were working. A per-pod id ends that — a fresh pod has a fresh id and a past
+of its own, which is empty.
+
+But a dead pod's id is now shared by nobody, so its runs would never be
+recovered. So every worker writes a **heartbeat** (one row per executor, in
+`datalayer_durable_heartbeat`) and sweeps every
+`DATALAYER_DURABLE_HEARTBEAT_SECONDS`: the `PENDING` runs of an executor not
+seen for `DATALAYER_DURABLE_DEAD_AFTER_SECONDS` are recovered — re-enqueued
+through DBOS's resume if they are of a live version, **adopted** (forked, as
+under *Upgrades*) if they are not. The dead-after must be comfortably longer
+than the heartbeat, or a worker merely slow to beat is taken for dead and has
+its live runs recovered under it; the service refuses to start if it is not.
+
+The sweep is single-winner by construction — re-enqueue through resume,
+adoption through an atomic retire of the original — so every worker running it
+at once is each stranded run recovered exactly once. An `ENQUEUED` run is
+never swept: it belongs to nobody yet and the queue will deliver it.
 
 ## Backup
 
