@@ -818,11 +818,17 @@ never swept: it belongs to nobody yet and the queue will deliver it.
 
 ## Backup
 
-Enabled on 2026-09-09, the way the memory cluster's is. Set
-`DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` and the `aws-creds` secret in the
-`datalayer-dbos` namespace, and `plane postgresql-dbos-create` writes the
-`backup:` stanza into the cluster — the same shared bucket and `30d` retention
-as every other Datalayer cluster. Then:
+Drilled end to end on 2026-09-09 — backup, restore into a new cluster, and
+open workflows resuming in it (see the milestone-2 narrative). Set
+`DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME`, the `aws-creds` secret in the
+`datalayer-dbos` namespace, and — for an S3-*compatible* store rather than AWS
+itself, which is what this platform has (OVH Object Storage) —
+`DATALAYER_POSTGRESQL_BACKUP_S3_ENDPOINT`. Then `plane postgresql-dbos-create`
+writes the `backup:` stanza into the cluster: it **patches it onto the running
+cluster in place** when the cluster already exists (CNPG accepts `spec.backup`
+on a live cluster, so the workflows in flight are never put at risk to enable
+the thing that protects them), with the same `30d` retention as every other
+Datalayer cluster. Then:
 
 ```bash
 plane postgresql-dbos-backup          # the recurring schedule
@@ -846,34 +852,23 @@ that file is not what creates the cluster; `plane postgresql-dbos-create`
 applies an inline manifest of its own, which had no backup stanza at all. A
 cluster whose spec file said one thing and whose creation said another.
 
-### What "not configured" meant
+### Why it matters, and the state today
 
 The workflows **are** the database. There is no second copy, and a run in
 flight exists nowhere else — which is why tearing the workers down is safe
-and losing the cluster is not.
+and losing the cluster is not. Three instances protect against losing a node;
+they protect against nothing else — a dropped database, a bad migration or a
+deleted namespace takes every in-flight workflow with it, and the only sign
+in the gateway is a set of tasks that say `working` and never stop. That is
+what backups are for here.
 
-:::danger `datalayer-postgresql-dbos` has no backups today
-The `backup:` block in
-`etc/specs/postgresql/datalayer-postgresql-dbos.yaml` is commented out, and
-unlike the memory cluster there is no `plane postgresql-dbos-backup` or
-`-restore`. `plane postgresql-*` for DBOS is **`create` and `status` only**.
-
-Three instances protect against losing a node. They protect against nothing
-else: a dropped database, a bad migration or a deleted namespace takes every
-in-flight workflow with it, and the only sign in the gateway is a set of
-tasks that say `working` and never stop.
-:::
-
-To enable it, uncomment the block in the spec — it already names the same
-`DATALAYER_POSTGRESQL_BACKUP_S3_BUCKET_NAME` object store and a `30d`
-retention as every other Datalayer cluster — and recreate. The commands are
-modelled on the memory cluster's, which does have them:
-
-```bash
-plane postgresql-agent-memories-backup       # the recurring schedule
-plane postgresql-agent-memories-backup now   # one off
-plane postgresql-agent-memories-restore      # into a new cluster, optionally to a timestamp
-```
+The capability is proven and the commands work; what remains is an operator
+pointing them at a **durable** store. The drill used an in-cluster MinIO and
+tore it down after, so the cluster currently carries no `backup:` stanza. To
+enable backups for real, set the three values above to OVH Object Storage —
+bucket, `aws-creds`, and the endpoint — and run `plane postgresql-dbos-create`
+(patches the stanza onto the live cluster) followed by
+`plane postgresql-dbos-backup` for the recurring schedule.
 
 See the [PostgreSQL page](/services/system/postgresql/) for the operator,
 the object store and the retention variables — none of that is specific to
