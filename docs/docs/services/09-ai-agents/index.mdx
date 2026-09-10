@@ -126,6 +126,163 @@ nothing is stored, and no identity is attached beyond the account the request
 already carries. A free-form label from a browser would be a cardinality bomb
 with an authenticated route in front of it.
 
+## Notifications
+
+`/api/ai-agents/v1/notifications` is a person's inbox, kept in the
+`notifications` Solr collection. Every route answers for the caller's own and
+nobody else's — the listing, the unread count, one notification, marking one
+or all read — and a notification of somebody else's is `404`, so an id says
+nothing about whose it is. The storage names the person on every read and
+write and refuses a call for nobody. `POST /notifications` leaves one in the
+caller's own inbox; producers that tell another person write it for that
+person on the server.
+
+The benchmark notifications are nine kinds (`datalayer_solr.evals_notifications`),
+each with a level, a category and a deep link in `metadata.link` that is a
+path of the app — never a URL, so a notification opens on the deployment it
+is read from and cannot send anybody to another host:
+
+| Kind | Produced by | Links to |
+| --- | --- | --- |
+| `run.completed`, `run.blocked`, `budget.reached` | `datalayer-durable`, when it projects a benchmark run, as the person the run was for | `/runs/{launch}/experiments/{run}` |
+| `approval.requested` | this service, when a tool approval is created, for the person it waits on | `/tool-approvals` |
+| `investigation.mentioned` | this service, for each person newly added to an investigation (not the one adding them) | `/investigations/{uid}` |
+| `task.review`, `report.ready`, `report.published`, `reproduction.failed` | defined, with their links; produced once cases are set to review, reports have a lifecycle, and runs can be reproduced | the task, the report, the launch |
+
+A producer's notification is a courtesy: one that cannot be written is logged
+and never fails the run, the approval or the update that produced it.
+
+## Sharing and permissions of benchmarks
+
+Every evals record belongs to an account — a person, a team or an
+organization — and every store call is scoped on that account. A route that
+names a record (`/evalsets/{id}`, `/launches/{id}`, `/runs/{id}`,
+`/experiments/{id}`, `/investigations/{id}` and what hangs off them) first
+works out the caller's **role** on it (`datalayer_ai_agents.services.evals_access`),
+then acts in the record's own account, whatever `account_uid` the request
+names. Listings and creations (`GET /evalsets`, `GET /launches`,
+`POST /evalsets`, the live routes) stay scoped on `account_uid` as before.
+
+The roles are a ladder, each allowing what the ones below it allow:
+
+| Role | Grant level | May |
+| --- | --- | --- |
+| Viewer | `view` | read the benchmark, its runs, tasks, reports and investigations |
+| Reviewer | `review` | decide a task left in review, open and update an investigation |
+| Runner | `execute` | launch, validate, stop, and bring a task's sandbox back from its snapshot |
+| Editor | `update` | change the definition and its tasks, archive a run, write the report document |
+| Owner | — | delete the benchmark, make it public, share anything |
+
+The **owner** is the account itself, a platform administrator, or an owner of
+the organization the account is or belongs to (a team is owned through its
+organization). Any other member of that organization is a Viewer. Beyond
+that, a role comes from grants stored on the record in the Spacer's field
+names — `shared_{view|review|execute|update}_{user|team|organization}_uids_ss`
+— on benchmarks, launches and investigations. A launch also takes its
+benchmark's grants, and a run and its tasks take their launch's, but only
+within one account: the launch somebody made of a benchmark another account
+published is theirs alone.
+
+Somebody with no role is told the record is not found; somebody whose role is
+too low gets `403` naming the role it needs. A Runner's launch is made in the
+benchmark's account, the account that shared it; a benchmark somebody
+published stays anybody's to run, in their own account.
+
+| Route | Role |
+| --- | --- |
+| `GET`, `PUT /evalsets/{id}/sharing`, same for `/launches/{id}` and `/investigations/{id}` | Owner |
+| `GET /evalsets/{id}/permissions`, same for launches and investigations | any role; answers `role` and what it allows |
+
+`PUT …/sharing` takes `{"access": {"execute": {"userUids": [], "teamUids": [], "organizationUids": []}}}`,
+replaces the levels it names and keeps the others; anything that is not
+levels of principal lists is refused with `400`.
+
+Dataset and secret access do not follow a grant: validation reads the dataset
+revision from contents and the secrets from IAM with the caller's own
+credential. A tool approval is decided by the person it waits on and nobody
+else.
+
+### Audit rows
+
+Sharing, publication, launches, sandbox restores, task reviews and tool
+approval decisions each write a row in the shared audit shape
+(`datalayer_common.audit`), allowed or refused, with who, the account the
+record belongs to, and the role. The rows go to the `datalayer_ai_agents.audit`
+logger unless a sink class is named:
+
+```bash
+DATALAYER_AI_AGENTS_AUDIT_SINK_CLASS=datalayer_common.audit_solr_sink:SolrAuditSink
+```
+
+## The orchestration control plane
+
+The service is also the orchestration control plane: the twelve commands of
+the canonical model (`datalayer_core.orchestration`) under
+`/api/ai-agents/v1/orchestration`, owner-scoped through `account_uid` as the
+evals API is. It holds the commands, the canonical state and the event
+stream, and it does not dispatch. An execution it accepts is started as an
+`OrchestrationWorkflow` on the durable service's `orchestration` queue, keyed
+on the execution id, with the account and the person in its arguments; the
+workflow's worker speaks A2A and ACP.
+
+| Operation | Route |
+| --- | --- |
+| `agents.discover`, `agents.create`, `agents.attach` | `POST /orchestration/agents/{discover,create,attach}` |
+| `executions.delegate`, `steer`, `pause`, `resume`, `cancel`, `checkpoint`, `collect`, `terminate` | `POST /orchestration/executions/{command}` |
+| `executions.subscribe` | `GET /orchestration/executions/{execution_id}/events`, Server-Sent Events |
+| Reads | `GET /orchestration/executions` (`rootExecutionId`, `parentExecutionId`, `status`), `GET /orchestration/executions/{execution_id}` |
+
+- **State** is the `orchestration` Solr collection
+  (`DATALAYER_SOLR_ORCHESTRATION_COLLECTION`), through a store opened per
+  account: every record carries `account_uid_s`, and an idempotency key is
+  claimed per account, so the same key from two accounts is two commands.
+- **Durable** is reached with the same `DATALAYER_DURABLE_URL` and
+  `DATALAYER_AI_AGENTS_API_KEY` benchmark runs use, through the one durable
+  client every service shares (`datalayer_common.durable_client`, the MCP
+  gateway's client lifted out of it). Unset or not answering,
+  `executions.delegate` answers `dispatched: false` and records a retryable
+  `execution.error` on the execution; a request to a worker answers
+  `delivered: false`. Neither loses the command: it is received, and waits in
+  the store for the workflow that reads it.
+- **Refusals** are a canonical `OrchestrationError` in `detail`: `not_found`
+  404; `conflict` and `invalid_transition` 409; `unsupported_operation`,
+  `depth_exceeded`, `fan_out_exceeded` and `deadline_exceeded` 422;
+  `worker_unreachable` 503. A request the worker's adapter cannot carry —
+  pausing an ACP worker, steering an A2A one — is refused with the adapter's
+  own reason.
+- **Discovery** reads the agentspec library `agent-runtimes` ships, each
+  spec's operations filled from the adapter of the protocol it speaks.
+- **A subscription** sends each event with an `id` that is the cursor of the
+  whole tree — `execution:sequence`, comma separated — so a reconnect with
+  `Last-Event-ID` resumes there, and ends with `end` once every execution it
+  covers is terminal. A connection dropped mid-stream and resumed receives
+  every missed event exactly once (`tests/test_orchestration_api.py` drops
+  one at the ASGI level).
+- **The user channel** (`/ws`, `user:{uid}`) carries an `orchestration.tree`
+  event — the tree at a glance: each execution's state, agent and goal, the
+  counts by state, and whether it is over — never the event stream itself.
+  The control plane sends it after a delegation, a cancel and a terminate;
+  the durable worker sends it, as the person, whenever an execution it holds
+  moves, through `POST /orchestration/executions/{execution_id}/announce`.
+  `broadcast` reaches the clients of the replica that sends it, so with more
+  than one ai-agents replica a client may miss an announcement; the
+  subscription is what a page watching one tree relies on.
+- **The contract** is
+  `datalayer_ai_agents/contracts/v1/orchestration-openapi.json`, generated
+  from the routes with each command's test fixture as its example
+  (`make openapi-orchestration`; `make openapi-orchestration-check` fails
+  when it is stale). `core` generates its orchestration TypeScript and
+  `ORCHESTRATION_API` from it, and refuses to when a canonical record the
+  service serves is not the one its models give.
+
+To check it on a deployment:
+
+```bash
+curl -s -X POST https://${DATALAYER_RUN_HOST}/api/ai-agents/v1/orchestration/agents/discover \
+  -H "Authorization: Bearer ${DATALAYER_API_KEY}" -H 'Content-Type: application/json' \
+  -d '{"protocols": ["a2a"]}' | jq '.agents[].agentId'
+```
+
 ## Tear Down Datalayer AI Agents
 
 If needed, tear down.

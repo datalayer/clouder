@@ -286,6 +286,7 @@ What the AI services own — `ai-agents` and the Jupyter MCP Server gateway:
 | `ai-agents` | ai-agents | AI agents service records |
 | `evals` | ai-agents | Evaluation definitions and results |
 | `tool-approvals` | ai-agents | Tool approval requests and decision state |
+| `orchestration` | ai-agents | Orchestration executions — one document per execution, attempt, event, acknowledgement and artifact, told apart by `type_s` — and the idempotency keys delegate commands claim; read by the control plane and written by the durable worker |
 | `mcp-gateway` | Jupyter MCP Server | Handles (notebook, toolset and sandbox bindings), the worker directory, rate windows and fired alerts |
 | `mcp-tasks` | Jupyter MCP Server | Task projection (`mcp_task` roots, bounded `mcp_task_output` children) |
 | `mcp-audit` | Jupyter MCP Server | Immutable audit events, one per call and decision |
@@ -330,7 +331,7 @@ Volumes:
 | `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
 | `content-audit` | Immutable Contents audit and provenance events |
 
-The inventory is 18 Core plus 6 AI plus 8 Runtimes collections, 32 in total.
+The inventory is 18 Core plus 7 AI plus 8 Runtimes collections, 33 in total.
 Always verify the arrays and manifests rather than relying on these numbers
 alone (`scripts/check_solr_collections_parity.py` in the Services repository
 asserts them against both canonical lists, and refuses a collection that
@@ -469,8 +470,8 @@ plane solr-init
 # Select:
 #   1) Core       - Platform collections (18 collections)
 #   2) Runtimes   - Runtimes collections (8 collections, Contents included)
-#   3) All        - All collections (32 collections)
-#   4) AI         - AI collections (6 collections: ai-agents, evals,
+#   3) All        - All collections (33 collections)
+#   4) AI         - AI collections (7 collections: ai-agents, evals, orchestration,
 #                   tool-approvals, mcp-gateway, mcp-tasks, mcp-audit)
 #
 # The init pod is created, logs are streamed, and the pod is auto-cleaned.
@@ -510,7 +511,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
+for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants orchestration outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -530,8 +531,8 @@ resource names so their coordinated schedules can run beside the full backup:
 
 | File | Scope | CR Name |
 |------|-------|---------|
-| `datalayer-backup-s3.yaml` | All 32 collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-ai.yaml` | The 6 AI collections | `datalayer-solr-ai-backups` |
+| `datalayer-backup-s3.yaml` | All 33 collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-ai.yaml` | The 7 AI collections | `datalayer-solr-ai-backups` |
 | `datalayer-backup-s3-core.yaml` | 18 Core collections | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-runtimes.yaml` | 8 Runtimes collections, the four Contents ones included | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
@@ -588,6 +589,7 @@ spec:
     - oauth-clients
     - oauth-codes
     - oauth-grants
+    - orchestration
     - outbounds
     - schedules
     - secrets

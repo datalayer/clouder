@@ -102,6 +102,29 @@ version by the same actor, so restoring the wrong one is a second restore
 away and not a loss. A notebook a caller cannot read answers `403`, not
 `404`: "not found" would send them looking for a typo.
 
+## Document versions
+
+Lexical documents keep versions by the same rules, in their own bucket
+(`<s3_path>.versions/<stamp>-<uid>.json`), through the same service:
+
+| Route | Access | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/lexicals/{id}/versions` | `view` | The versions, newest first, each naming its actor |
+| `POST …/versions` `{"message": "…"}` | `update` | Keep the document as its editors see it now |
+| `GET …/versions/{version}` | `execute` | One version, with its content as `model_s` — the access reading the document itself asks |
+| `POST …/versions/{version}/restore` | `update` | Make it current — after keeping what it replaces |
+
+A document differs from a notebook in the one way that matters here: its
+Loro room holds what its editors see and saves it to S3 at most once a
+minute. So a snapshot first saves the room's unsaved edits, and answers
+`503` keeping nothing when they cannot be saved. A restore is refused with
+`409` while an editor is in the document — the room's next save would
+overwrite it, and its editors would go on with the content it replaced —
+and, with nobody connected, saves the warm copy's edits into the `restore`
+version and then drops the warm copy, so the next editor opens what was
+restored. Nothing here starts the Loro server: a process where nobody has
+opened a document has no room to consult.
+
 ## Sharing with an agent
 
 An item can be shared with an **agent** at any of the three levels, beside
