@@ -112,6 +112,8 @@ OTEL service. This service writes the **activation** half of the funnel
 | `evals.product.events` | What somebody did that leaves no record, by event and funnel line: the wizard opened and completed, a task read, a question asked of the agent, a follow-up cell run, evidence pinned |
 | `evals.investigations.opened` | Investigations opened, by scope — once per investigation, so re-opening one is not a second failure investigated |
 | `evals.sandboxes.restored` | Task sandboxes brought back from a snapshot, by outcome; a sandbox reused is `reused` rather than a second restore |
+| `evals.collaboration.events` | The **collaboration** lines this service sees (B4-12), by `event`: `report.shared` (a sharing update that grants somebody the report), `reviewer.invited` (the reviewers a move to review adds, so a report sent back and sent again counts nobody twice), `report.approved`, `report.reopened` (a report read by somebody other than its author), `decision.recorded` (by `subject`) |
+| `evals.decisions.lead_time` | Seconds from the latest end of the launches a decision is about to the decision, by subject — the time from regression detection to recorded decision; a decision about launches that never ended records no duration |
 | `evals.runs.created`, `evals.reports.generated`, `evals.comparisons.requested`, `evals.live_events.ingested` | The B0-07 baseline |
 
 The **execution** half is `datalayer-durable`'s, because a benchmark run's
@@ -148,9 +150,123 @@ is read from and cannot send anybody to another host:
 | `approval.requested` | this service, when a tool approval is created, for the person it waits on | `/tool-approvals` |
 | `investigation.mentioned` | this service, for each person newly added to an investigation (not the one adding them) | `/investigations/{uid}` |
 | `task.review`, `report.ready`, `report.published`, `reproduction.failed` | defined, with their links; produced once cases are set to review, reports have a lifecycle, and runs can be reproduced | the task, the report, the launch |
+| `comment.mentioned`, `comment.assigned` | Spacer, for each person newly mentioned in a comment or assigned a thread, who can read the document or notebook (never the person naming them) | the page the thread was opened on, with its evidence as `?block=`, `?case=` or `?cell=` |
+
+Beside the nine benchmark kinds, `comment.mentioned` and `comment.assigned`
+(category `comments`) come from the comments on documents and notebooks; the
+same module defines them, and Spacer writes them.
 
 A producer's notification is a courtesy: one that cannot be written is logged
 and never fails the run, the approval or the update that produced it.
+
+## Reports
+
+A report is a record of its own — `type_s: evalset_report` in the `evals`
+collection (`datalayer_solr.evals_reports`): the benchmark and the definition
+version it reports on, the launches and runs it is over, the Lexical document
+written into the benchmark account's benchmarks space, and a state that only
+moves as `datalayer_solr.evals_transitions.REPORT_TRANSITIONS` allows:
+`draft` → `in_review` → `approved` → `published_private` ⇄ `published_public`,
+back to `draft` from review or from an approval, and `superseded` from anything
+by regenerating.
+
+| Route | Role | Does |
+| --- | --- | --- |
+| `POST /reports` `{evalset_id, launch_ids, title?}` | Editor on the benchmark | builds the report over the launches' runs, writes the document, records a `draft` |
+| `GET /reports?evalset_id=&launch_id=&state=` | the account scope | lists |
+| `GET /reports/{id}` | Viewer | reads |
+| `POST /reports/{id}/state` `{state, reviewer_uids?, message?}` | Editor to send for review or reopen; Reviewer to approve or send back; Owner to publish | `409` for a move the table does not allow, before anything else happens |
+| `POST /reports/{id}/regenerate` `{launch_ids?}` | Editor | a new `draft` one version up; the old report `superseded` by it, its grants copied |
+| `GET`, `PUT /reports/{id}/sharing`; `GET /reports/{id}/permissions` | Owner; any role | as for benchmarks |
+| `GET /reports/{id}/export?format=markdown\|csv` | Viewer | the report as it was written: Markdown of its document (narrative and evidence in order, from Spacer's saved content) then its Decisions; or the CLI's CSV of its runs followed by a `narrative` row per block and a `decision` row per decision, in added columns |
+
+Every link the report engine writes — in Markdown, CSV and the console — and
+every address the `agent-runtimes` CLI prints points at the benchmark
+(`/benchmarks/{id}`, its live report at `/benchmarks/{id}/report`) and the run
+(`/runs/{launch}/experiments/{run}`) on the deployment `DATALAYER_UI_URL` names,
+`https://datalayer.app` when it is not set (`agent_runtimes.evals.links`). Set it
+on the AI Agents deployment so reports written there link back to it. Links
+written by earlier reports (`/evals/experiments/…`) still open the former console.
+
+Approving asks Spacer to keep the document as a version with reason
+`approval` (`POST /api/spacer/v1/lexicals/{id}/versions`) and records the
+version's uid on the report, so the approver needs `update` on the document in
+Spacer. Approvals and publications write `evals.report.approve` and
+`evals.report.publish` audit rows, allowed and refused. Sending for review
+notifies the reviewers named (`report.ready`); publishing notifies the author
+when somebody else publishes (`report.published`) and adds `report.published`
+to the activity feed.
+
+The report builder (`agent_runtimes.evals.lexical`) writes each block's
+provenance into the node state `$.evidence`, which Lexical keeps through a
+load, a save and the Loro binding; the report editor locks the blocks that
+carry it. Each block's provenance also carries a stable anchor, `block-N`, so a
+link opens the report on it — `/benchmarks/reports/{id}?block=block-7`, or
+`/investigations/{id}?case={task}` for the first block about a task — wherever
+narrative has since been written around it. The `jupyter-output` node of `jupyter-lexical` keeps node state too.
+A document built before the builder wrote `$.evidence` is not locked;
+regenerating the report rebuilds it. The ai-agents image gets the builder
+change with the next `agent-runtimes` release.
+
+### Imported CI reports
+
+A report the evals CLI or the GitHub action wrote can be imported on its
+benchmark as a read-only snapshot (`type_s: evalset_report_import`,
+`datalayer_solr.evals_report_imports`): the file's text kept as it was in a
+stored text field (`content_t` — an indexed `_s` string refuses a value past
+Lucene's term limit), linked to the runs its CSV names in the `run_id` column
+that are runs of that benchmark in its account, and to their launches. Run ids it
+names that are not are kept as `unmatched_run_ids` rather than linked; a
+Markdown file links no run.
+
+| Route | Role | Does |
+| --- | --- | --- |
+| `POST /evalsets/{id}/reports/import` `{format: csv\|markdown, content, name?}` | Editor | keeps the file (up to 2 MB, `413` past it; `400` for a CSV with no `run_id` column) |
+| `GET /evalsets/{id}/reports/imports` | Viewer | the imports, newest first, without their text |
+| `GET /report-imports/{id}` | Viewer | one import with its text |
+| `POST /report-imports/{id}/continue` | Editor | **Continue investigation**: a live report over the linked launches and a launch-scope investigation, recorded on the import and answered again on a second call; `409` when the file links no run |
+
+### Review decisions
+
+A decision is a record of its own — `type_s: evalset_decision`
+(`datalayer_solr.evals_decisions`) — made on a report or in an investigation:
+a `kind` (`accepted_regression`, `expected_change`, `evaluator_issue`,
+`data_issue`, `action_required`), an `outcome` (`approved`, `blocked`,
+`accepted_with_limitations`), a `scope` (`block`, `case`, `run`, `launch`) with
+the `scope_ref` it names, a note, who decided and when, and the comment thread it
+resolves. Decisions are appended and never edited: a later decision on the same
+scope stands, and the earlier one stays as what was thought at the time.
+
+| Route | Role |
+| --- | --- |
+| `POST /reports/{id}/decisions`, `POST /investigations/{id}/decisions` | Reviewer; a word outside the vocabularies is `422` |
+| `GET /reports/{id}/decisions`, `GET /investigations/{id}/decisions` | Viewer; in the order they were made |
+
+Each decision writes an `evals.decision.record` audit row (a refused one too) and
+a `decision.recorded` line on the activity feed. The Markdown report of a launch
+ends with a **Decisions** section listing the decisions recorded against that
+launch, and the benchmark's Markdown report lists every decision on the
+benchmark (`agent_runtimes.evals.report.render_decisions_markdown`); a report
+with no decision has no such section.
+
+### Saved views of an investigation
+
+What an investigation's page shows is in its address: the surface
+(`?surface=report|notebook|chat`) and the evidence it is open on (`?block=`,
+`?case=`, `?cell=`). A saved view keeps that under a name, in the
+investigation's `metadata.views`, for everybody working on it (B4-11):
+
+| Route | Role | Does |
+| --- | --- | --- |
+| `POST /investigations/{id}/views` `{"name", "query"}` | Reviewer | Keep the view, with who saved it and when; only the page's own parameters are kept, a view of the same name is replaced, and a query that keeps nothing or names another surface is `422` |
+| `DELETE /investigations/{id}/views?name=` | Reviewer | Forget it; `404` when no view has that name |
+
+The investigation page's collaboration rail lists them beside who has the
+report's room open (its awareness), the comment threads on the report
+(Spacer's comments), the people on the investigation, its decisions, and what
+happened. What happened is read from the comments, the decisions and the
+investigation — records every collaborator can read — rather than from one
+person's activity feed, which nobody else can read.
 
 ## Sharing and permissions of benchmarks
 
@@ -192,6 +308,7 @@ published stays anybody's to run, in their own account.
 | --- | --- |
 | `GET`, `PUT /evalsets/{id}/sharing`, same for `/launches/{id}` and `/investigations/{id}` | Owner |
 | `GET /evalsets/{id}/permissions`, same for launches and investigations | any role; answers `role` and what it allows |
+| `GET /shared` | the caller | the reports and investigations other people shared with them, through them, their teams or their organizations, newest first: each with its title, its owner, the caller's role, its state and the app page it opens (Shared with Me lists them) |
 
 `PUT …/sharing` takes `{"access": {"execute": {"userUids": [], "teamUids": [], "organizationUids": []}}}`,
 replaces the levels it names and keeps the others; anything that is not
@@ -223,7 +340,12 @@ evals API is. It holds the commands, the canonical state and the event
 stream, and it does not dispatch. An execution it accepts is started as an
 `OrchestrationWorkflow` on the durable service's `orchestration` queue, keyed
 on the execution id, with the account and the person in its arguments; the
-workflow's worker speaks A2A and ACP.
+workflow's worker speaks A2A and ACP. An attempt the worker lost is retried by
+the durable service on a successor run keyed `<execution>:attempt-<n>`
+(O1-05), so the control plane wakes and stops the run of the newest attempt,
+walking the keys down from it (`datalayer_common.orchestration_runs`); what a
+command asks is in the store either way, where any run of the execution reads
+it.
 
 | Operation | Route |
 | --- | --- |

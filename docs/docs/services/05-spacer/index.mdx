@@ -125,6 +125,80 @@ version and then drops the warm copy, so the next editor opens what was
 restored. Nothing here starts the Loro server: a process where nobody has
 opened a document has no room to consult.
 
+## Comments
+
+A document's or a notebook's comments are records of the `spaces`
+collection (`type_s: comment`, `datalayer_solr/spaces_comments.py`), beside
+the item rather than inside it, so they can be listed, assigned and notified
+without opening the document. The editor's comment plug-in used to keep its
+threads as nodes of the document; a platform document now reads and writes
+them through these routes, and only the highlight of the commented text stays
+in the document.
+
+A **thread** is its first comment. It names one anchor — `mark_id` (the
+highlighted text), `block_id` (a report's evidence block), `case_id` (a task)
+or `datum` on a document; `cell_id`, `case_id` or `datum` on a notebook — the
+text it quotes, and its state, `open` or `resolved`. A **reply** names its
+thread. Records are top-level documents, never children of the space, so no
+listing of a space's items finds one, and deleting an item deletes its
+comments.
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/lexicals/{id}/comments?status=` | `view` | The comments in the order written, deleted ones in their place; with `status`, the threads in that state with their replies |
+| `POST …/comments` `{"body", "anchor", "quote", "link", "mentions", "assignee_uid"}` or `{"body", "thread_uid", "mentions"}` | whoever the item is shared with | Open a thread, or reply in one; the author is whom the token names |
+| `GET` and `POST /api/spacer/v1/notebooks/{id}/comments` | the same | The same on a notebook |
+| `PATCH /api/spacer/v1/comments/{uid}` `{"body", "mentions", "assignee_uid", "deleted"}` | see below | Changes only what the request names; `"assignee_uid": null` unassigns |
+| `POST …/comments/{uid}/resolve` `{"resolution"}` and `…/reopen` | see below | Settle a thread, recording who and why |
+
+Reading the comments is reading the item, a public item included. Writing
+one needs the item shared with you — its owner, a member of its space, a
+grantee at any level — and never only the public, or every signed-in person
+could write on every public document. A comment's words and mentions are its
+author's. Deleting is the author's or of whoever may `update` the item, and a
+deleted comment keeps its place and loses its words. Assigning, resolving and
+reopening a thread are its author's, its assignee's or an editor's. A comment
+on an item the caller cannot read is `404`, a malformed one `422`; a reply in
+a resolved or deleted thread, a second resolve and a reopen of an open thread
+are `409`.
+
+**Mentions and assignees** (B4-02). A comment's `mentions` and a thread's
+assignee are people, by uid, and each must be able to read the item: anybody
+else — or a uid that is nobody — is refused `422` by name, rather than sent a
+link that fails with the words of a comment on something they cannot read.
+Each person newly mentioned, and a thread's new assignee, gets a notification
+Spacer writes itself (`comment.mentioned`, `comment.assigned`, through
+`datalayer_solr.evals_notifications`), linking to the page the thread was
+opened on — its `link`, a path of the app, which a thread that names somebody
+must give — with its evidence as `?block=`, `?case=` or `?cell=`. Nobody is
+told of their own doing, and a notice that cannot be written is logged and
+never fails the comment. The answer names the assignee as a person (`uid`,
+`handle`, `name`), looked up in IAM. A comment written by an agent acting for
+somebody names the agent too (`author.agent_uid`, from the token), so what
+happened on a document is attributed to both.
+
+**Live.** `/api/spacer/v1/comments/ws/{item_uid}?token=` admits whom the item
+admits, as the rooms do (`4001` without a token, `4003` otherwise), says
+`{"type": "subscribed"}` once it listens, and then sends `{"type": "comment",
+"comment": …}` for every comment written through the routes. A client reads
+the comments again on `subscribed`, since what was written before it listened
+was not heard. The channel lives in the process, as the Loro rooms do: Spacer
+runs one replica, and a second replica would need the channel carried between
+processes.
+
+Comments are stamped at least a millisecond apart within a process, so a
+reply an agent writes in its thread's millisecond still reads after it.
+
+**Counted** (B4-12). The comment lines of the benchmark funnel's collaboration
+measures are Spacer's, where comments are written: `spacer.comments.written`
+(thread or reply, the item type, a thread's anchor kind, and `through` a
+person or an agent), `spacer.comments.mentions` (people newly mentioned) and
+`spacer.comments.resolved` (with `evidence` true for a thread about a block, a
+task or a cell). They ride on the OTEL providers `instrument` installs when
+Spacer starts (`datalayer_spacer.telemetry`), as the evals counters do in AI
+Agents; reports shared, reviewers invited, approvals, reopened reports and
+decisions are counted there.
+
 ## Sharing with an agent
 
 An item can be shared with an **agent** at any of the three levels, beside
