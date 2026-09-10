@@ -24,20 +24,85 @@ only sign would be a task that says `working` forever.
 start, describe, signal and cancel; a client never talks to it and sees the
 result through `mcp-tasks`.
 
+The clean separation is:
+
+- **Temporal owns the durable workflow:** state, timers, retries, cancellation, pause/resume, and multi-step agent execution.
+- **The Datalayer Operator owns Kubernetes resources:** Pods, Jobs, Services, volumes, networking, readiness, and cleanup.
+- **Temporal never creates Pods directly.** Its workers call the Datalayer API or create/update Operator CRDs.
+
+```mermaid
+sequenceDiagram
+    participant API as Datalayer API
+    participant T as Temporal
+    participant O as Operator
+    participant R as Sandbox / Agent
+
+    API->>T: Start durable workflow
+    T->>O: Create desired resource
+    O->>R: Reconcile Kubernetes resources
+    O-->>T: Report readiness
+    T->>R: Run agent or sandbox task
+    R-->>T: Result or failure
+    T->>O: Pause, resume, or delete
+    O->>R: Reconcile desired state
+```
+
+For example, when starting an agent:
+
+1. The Datalayer API starts a Temporal workflow and returns its durable run ID.
+2. A Temporal activity requests an `Agent` or `CodeSandbox` resource through the Operator's declarative API.
+3. The Operator creates the Kubernetes resources and continuously reconciles them.
+4. Temporal waits durably for the resource to become ready—without holding an API process or worker thread open.
+5. Temporal runs the agent's higher-level lifecycle: initialize, execute steps, await approvals, retry recoverable failures, and persist progress.
+6. The Operator reports infrastructure failures; Temporal decides whether the business operation should retry, resume, fail, or compensate.
+7. On completion, cancellation, timeout, or retention expiry, Temporal requests deletion or suspension; the Operator performs the Kubernetes cleanup.
+
+The important distinction is that **Operator reconciliation is durable infrastructure management**, while **Temporal durability is application-level execution**. Kubernetes can restore a crashed agent Pod, but Temporal remembers what the agent was doing, which step completed, what approval it was awaiting, and what should happen next.
+
+## Pause and resume
+
+- **Pause compute:** Temporal records the workflow state and asks the Operator to suspend or snapshot the sandbox or agent.
+- **Resume:** Temporal asks the Operator to restore the resource, waits for readiness, and continues from the recorded workflow step.
+- **Human approval:** Temporal can wait for a signal indefinitely without keeping compute running.
+- **Infrastructure retry:** The Operator repairs the resource; Temporal retries the activity only when application semantics require it.
+
+> **Temporal orchestrates the durable journey; the Datalayer Operator materializes and maintains the compute needed for each step.**
+
 ## The engine is a value
+
+The engine is one of three values, and evals — the first product that runs
+whole on this service — must run on each: `none`, `dbos`, `temporal`.
+
+`engine: none` — the service's default when nothing sets `DATALAYER_DURABLE_ENGINE`; the chart sets `dbos` for a cluster — runs the catalog in the durable process and keeps nothing: a
+workflow it holds is gone when the process is, and `/operations` says so
+(`durable: false`, `serving: true`). It needs no database, so `readyz`
+does not ask for one. It is what `plane local` sets, and it is how a
+benchmark runs end to end on a laptop — ai-agents starts the
+`EvalRunWorkflow` over HTTP at `localhost:9450`, the steps run on a task of
+that process, the pool of sandboxes is launched through the local Runtimes
+service, and the run is projected back. A start is answered at once, as
+every engine answers: the steps hold the pool for as long as the tasks
+take, and a caller that had to wait for them would read the run as refused.
+Never in a cluster.
 
 `engine: dbos` is what is deployed. There is no server: each worker process
 runs the `dbos` runtime against one PostgreSQL database, recovers whatever was
 pending when it starts, and takes work from a queue. One Deployment per queue
 and one database is the whole of it.
 
-`engine: temporal` is **implemented in the service and not yet deployed**.
-The engine, its workflows and its workers are here and tested; what is not
-here is everything a Temporal server needs around it — the chart branch, the
-`datalayer-postgresql-temporal` cluster, the UI behind the admin ingress,
-mTLS, and the recovery drill repeated on it in staging. Setting
-`engine: temporal` in a cluster today reaches no server and says so through
-`/operations` rather than pretending. See [The Temporal engine](#the-temporal-engine).
+`engine: temporal` is **implemented, and its server is deployed on prod1
+beside the live engine without serving anything yet**. `datalayer-temporal`
+is a thin chart over the pinned `temporal/temporal` 1.6.0 chart (Temporal
+1.31), with its own store — the `datalayer-postgresql-temporal` cluster and
+its `temporal` and `temporal_visibility` databases, made by `plane
+postgresql-temporal-create` before `plane up datalayer-temporal`. The
+milestone-2 catalog drill (`tests/test_temporal_stack.py`, over a
+port-forward to the frontend) passed against it on 2026-09-09. Nothing on
+prod1 sets `engine: temporal`: the workers stay on `dbos`, and switching is a
+value change plus the fork-adoption of whatever is pending. Not there yet:
+the authenticated UI ingress (the UI is `ClusterIP`), frontend mTLS (the
+engine connects in the clear inside the cluster), and worker versioning
+turned on for real. See [The Temporal engine](#the-temporal-engine).
 
 Both are *values* of the same chart rather than two services, and that is the
 point: the seam exists so a caller cannot tell which engine served it. Every
@@ -154,7 +219,7 @@ Three namespaces, one for each thing that has its own lifecycle:
 | --- | --- | --- |
 | `datalayer-durable` | The workers, their Service and their Secrets | The workers go; the workflows do not |
 | `datalayer-dbos` | What the DBOS engine needs to exist: the `datalayer-postgresql-dbos` cluster and its two databases | Every workflow is gone |
-| `datalayer-temporal` | What the Temporal engine will need — a server and its own store. Empty today | — |
+| `datalayer-temporal` | The Temporal server (`plane up datalayer-temporal`) and its own store, the `datalayer-postgresql-temporal` cluster (`plane postgresql-temporal-create`) | The server goes with the release and leaves the history; `plane postgresql-temporal-terminate` deletes the store, and every Temporal workflow with it |
 
 The engine is a **value** (`DATALAYER_DURABLE_ENGINE`), so the workers must not
 live in the namespace of the engine they happen to be using: switching engines
@@ -188,6 +253,7 @@ takes milliseconds do not belong in the same line.
 | `contents` | `ContentsOperationWorkflow` | Transfers and queries, mirrored as tasks |
 | `approval` | `ApprovalWorkflow` | Waits on people; costs nothing while waiting, so its concurrency is high |
 | `agent` | `AgentRunWorkflow` | An agent run: blocks for as long as the agent works, and holds a sandbox through a child workflow |
+| `evals` | `EvalRunWorkflow` | A benchmark run: holds a pool of sandboxes through child workflows for as long as its tasks take, and must neither queue behind an agent run nor hold one up |
 
 ### Any worker accepts any start; only its own queues are run
 
@@ -243,6 +309,8 @@ afterwards.
 | `ContentsOperationWorkflow` | `contents` | `claim_operation` → `run_operation` → `mirror_state` → `project_task` | A transfer, query or materialization, mirrored as a task. Heartbeats every 60 s |
 | `ApprovalWorkflow` | `approval` | `request_approval` → `await_decision` → `project_task` | Waits on a person. A timeout is a decision, not a crash |
 | `AgentRunWorkflow` | `agent` | `mint_run_credential` → `launch_compute` → `await_agent` → `release_compute` → `project_task` | An agent's run, the first non-gateway user of this service. Blocks until ai-agents signals `agent_done`. Heartbeats every 60 s |
+| `ScheduledNotebookRunWorkflow` | `agent` | `mint_run_credential` → `launch_compute` → `run_notebook` → `release_compute` → `report_schedule_run` | A scheduled notebook run handed over by the scheduler: a runtime launched as the person, the notebook run with `datalayer exec` and no agent, the outcome handed to the scheduler's outcome route, which persists the executed notebook and marks the run. `run_notebook` is not idempotent and is cancellable; `report_schedule_run` is retried until the scheduler takes it. Heartbeats every 60 s |
+| `EvalRunWorkflow` | `evals` | `mint_eval_credential` → `resolve_definition` → `launch_pool` → `run_cases` → `aggregate` → `release_pool` → `project_run` | One run of a benchmark experiment. The experiment's **subject** decides how: an `agentspec` runs on a pool of sandboxes as child `SandboxWorkflow`s (one per slot, the dataset revision mounted into each, launched as the person), every task on a fresh session of a slot once Runtimes reports the slot's ingress — a slot that never comes up is left out, a pool with no slot at all ends the run `blocked` (`no_compute`); a `model` is asked over AI Inference `chat/completions` as the person, with no sandbox. Every task is graded — the LLM judge asks AI Inference as the person — and written down as it finishes with its snapshot (sandboxes only) and its evidence notebook. A `budget_limit` stops the run taking tasks once the credits consumed reach it: the tasks left are `blocked`, the run ends `blocked` with what it has (`budget_reached`), and its launch with it. The run is aggregated and projected into the `evals` collection with its `cost_credits` and `elapsed_ms`. Heartbeats every 30 s |
 
 Two properties every entry carries:
 
@@ -288,16 +356,36 @@ service.
 | `reserve` / `launch` / `terminate` | Runtimes |
 | `await_expiry` | Nothing. It is a timer, and it costs a worker nothing while it waits |
 | `project_task` | **Solr directly**, `mcp-tasks` |
+| `mint_eval_credential` | IAM — a temporary key for the person the run is for |
+| `resolve_definition` | ai-agents — the evalset version the run pinned, the experiment's subject, the cases, the space the evidence goes to. Reads only |
+| `launch_pool` / `release_pool` | Runtimes, through one child `SandboxWorkflow` per slot. Each slot's sandbox is launched under a name derived from the run and the slot (`benchmark-<run>-slot-<n>`) and found by that name in the person's runtime listing: a requested uid is honoured only for a launch that brings attachments made for it, and a warm pool pod keeps the uid it has, so the cases run on the uid Runtimes answered |
+| `run_cases` | Each slot's runtime session for an `agentspec` subject, AI Inference `chat/completions` for a `model`; the LLM judge asks AI Inference; every task written to ai-agents as it finishes |
+| `aggregate` | Nothing. The evaluators over what `run_cases` wrote |
+| `project_run` | **Solr directly**, the `evals` collection |
 
 `project_task` writing Solr rather than calling the gateway is deliberate and
-is why `DATALAYER_SOLR_ZK_HOST` is required here. A run's outcome must reach
+is why `DATALAYER_SOLR_ZK_HOST` is required here. **Which Solr** is the
+open question of running this service on the runtimes plane: what it writes
+— `mcp-tasks`, `evals` — lives on the platform plane's Solr (prod1), and
+r1's Solr holds only the runtime collections (`runtime-checkpoints`,
+`runtime-registrations`, `sandbox-snapshots`). A durable worker on r1 given
+r1's ZooKeeper projects into a collection that is not there. Until the
+projections go through the platform's own APIs, the service must be given
+the platform's Solr; `plane local` does exactly that (prod1's forward on
+2181/8983, while the operator and Runtimes read r1's on 2182/8984). A run's outcome must reach
 the task a client is polling even when the gateway that started it is being
 rolled — a projection routed through the gateway would be lost exactly when
 the run needed it most.
 
-Every step acts with **this service's** identity, never a credential
-belonging to the person the work is for. A user token in a workflow history
-is a token that outlives its reasons.
+A step acts with **this service's** identity, or with a credential minted
+for the person the work is for and **held on the context, never recorded**:
+a user token in a workflow history is a token that outlives its reasons.
+The agent run, the scheduled notebook run and the benchmark run mint a
+temporary key from IAM for the person at their first step and work with it
+— the runtime is launched as the person (the child `SandboxWorkflow` is told
+`user_uid` and mints its own key), the notebook is read from Spacer as them,
+the evidence is written into their benchmarks space, the dataset is attached
+as them, the judge asks as them. A replay on another worker mints again.
 
 #### A sandbox that goes away mid-cell
 
@@ -378,11 +466,39 @@ key — so a leaked Contents key cannot start workflows.
 | `contents` | `DATALAYER_CONTENTS_API_KEY` | start, read, cancel — not signal |
 | `operator` | `DATALAYER_OPERATOR_API_KEY` | read. It watches; it never starts anything |
 | `scheduler` | `DATALAYER_SCHEDULER_DURABLE_API_KEY` | start, read, signal, cancel — a due run started as a workflow instead of run inline. A workload key, not the scheduler's administrator JWT |
+| `ai-agents` | `DATALAYER_AI_AGENTS_API_KEY` | start, read, signal, cancel — one `EvalRunWorkflow` per run of a benchmark launch, and a `SandboxWorkflow` when a task's sandbox is restored for an investigation. Its answer to a launch says `executes: true` only when every run was actually started here |
 
 **An unset key refuses that caller** rather than admitting all of them:
 absence is a refusal, not a wildcard. The keys are read on each request, not
 when the route is defined, so a rotated key takes effect without a restart —
 which matters most in the case you usually rotate for.
+
+### Who starts what, today
+
+What actually goes through this service, as of 2026-09-10 — and, as
+important, what does not. **No agent is launched through it, anywhere.**
+Agents are launched by ai-agents and Runtimes directly, as before
+`datalayer-durable` existed; `AgentRunWorkflow` is in the catalog and has
+no caller in any service. **No MCP session sandbox is launched through
+it either**: the gateway launches a session's sandbox through Runtimes
+itself, and `NotebookRunWorkflow` only *finds* the session's runtime
+(`resolve_session_sandbox`). The sandboxes this service launches are the
+pool of a benchmark run, and a task's sandbox restored for an
+investigation — both evals.
+
+| Caller | Starts | When |
+| --- | --- | --- |
+| ai-agents | `EvalRunWorkflow`, one per run of a benchmark launch | Only with `DATALAYER_DURABLE_URL` set. On `plane local`: yes, on the `none` engine. On prod1: not yet — durable on r1 waits on its reup, and the launch says `executes: false` |
+| ai-agents | `SandboxWorkflow`, to restore a task's sandbox from its snapshot for an investigation (B3-05) | Same |
+| this service | `SandboxWorkflow` children of an `EvalRunWorkflow` — the run's pool, one per slot, each runtime created through Runtimes **as the person** | Inside a benchmark run only |
+| jupyter-mcp-server | `NotebookRunWorkflow` for cell executions (`execute_code`), `ApprovalWorkflow` for approvals | Only with `DATALAYER_DURABLE_URL` set: `plane local` yes; prod1 keeps the in-process fake (`durable: false`) |
+| scheduler | nothing | `DATALAYER_SCHEDULER_USE_DURABLE` is off; the starter exists, `ScheduledNotebookRunWorkflow` waits on it |
+| contents | `ContentsOperationWorkflow` | When configured with the service; see [Mirroring Contents](#mirroring-contents) |
+
+A line in `readyz` says the same per replica: the gateway's `workflows`
+dependency names what is routed here (`running execute_code durably`),
+and ai-agents' launch answer says `executes: true` only when every run of
+the launch was actually taken.
 
 :::info Which keys the chart carries
 All four are on the Deployment as **optional** secret references, so listing
@@ -434,6 +550,9 @@ already has one.
 | `DATALAYER_RUNTIMES_URL` | Where Runtimes is, at its **public** URL — the workers and Runtimes are not guaranteed to share a cluster, and an in-cluster name works right up until they do not |
 | `DATALAYER_RUNTIMES_API_KEY` | This service's own key for Runtimes. A step acts with this service's identity, never with a credential belonging to the person the work is for: a user token in a workflow history is a token that outlives its reasons |
 | `DATALAYER_IAM_URL`, `DATALAYER_IAM_API_KEY` | Where IAM is, at its public URL, and this service's key for it — what a task's grant is issued and released against, and what mints the temporary key an agent run works with. Empty means "not configured": the run goes on with the service key and says so in the log. The key comes from `datalayer-durable-secret` |
+| `DATALAYER_SPACER_URL` | Where Spacer is, at its public URL. The benchmark run asks it for the account's `benchmarks` space and writes each task's evidence notebook into it; the scheduled notebook run reads the notebook to run from it. Both as the person. Empty means no evidence notebooks and no scheduled run that can read its notebook, said in the outcome rather than pretended |
+| `DATALAYER_AI_INFERENCE_URL` | Where AI Inference is, at its public URL: the LLM judge of a benchmark asks `POST /api/ai-inference/v1/chat/completions` as the person, and so does a run whose subject is a `model`. Empty means a task graded by `llm-judge` fails and says it had no judge, rather than claiming one, and a model run fails at its definition saying the URL is not configured |
+| `DATALAYER_SCHEDULER_URL` | Where the scheduler's outcome route is (`POST /api/scheduler/v1/schedules/runs/{uid}/outcome`), at its public URL, called as the person. Empty means the notebook still runs and the report step retries until the URL is there: an outcome is never dropped |
 | `DATALAYER_AI_AGENTS_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where ai-agents is — it shares the IAM host — and the key it accepts from services, which is the IAM key: ai-agents authenticates services through the shared auth. Told when a task waits, resumes or fails. Same rule when empty; the key comes from the same secret. **The key does not cover the feed entry a finished run makes**: `POST /agents/{id}/events` asks for a *person*, so that one call is made with the run's own credential — the token its task grant was exchanged for — and answers `401` for any service key however well configured. A run with no grant makes no entry and is not failed for it |
 | `DATALAYER_DURABLE_CALL_TIMEOUT` | Seconds any one call may take; default `30`. Bounded so a step that is waiting is reported as waiting rather than holding a worker forever — and, on `engine: temporal`, so a client that would retry a failing call indefinitely cannot make `start` wait for ever with the gateway waiting on it |
 | `DATALAYER_DURABLE_PORT` | The API port; default `4406`. The DBOS admin endpoints are on `4407` and are deliberately not on the Service |
@@ -702,10 +821,11 @@ hypothetical — it is exactly what happened to the MCP gateway.
 
 ## Metrics and alerts
 
-Five instruments, written by the workers under `service.name`
-`datalayer-durable` and read through the Datalayer OTEL service. Labels are
-bounded to closed sets — the workflow catalog and each workflow's steps — and
-the task uid goes on the span, never on a metric everybody scrapes.
+Five instruments about workflows, and three about benchmark runs, written by
+the workers under `service.name` `datalayer-durable` and read through the
+Datalayer OTEL service. Labels are bounded to closed sets — the workflow
+catalog and each workflow's steps — and the task uid goes on the span, never on
+a metric everybody scrapes.
 
 | Instrument | Kind | Labels | What it says |
 | --- | --- | --- | --- |
@@ -714,6 +834,27 @@ the task uid goes on the span, never on a metric everybody scrapes.
 | `durable.recoveries` | counter | `workflow` | Workflows resumed after the worker running them was lost |
 | `durable.runs` | counter | `workflow`, `status` | Workflows that reached a terminal state |
 | `durable.steps` | counter | `workflow`, `step`, `outcome` | Steps that finished |
+
+The benchmark ones are the **execution** half of the funnel in
+`BENCHMARK.md` section 22 (B2-25), and they are written here rather than by
+`ai-agents` for one reason: a benchmark run's outcome is written straight to
+the `evals` collection by `EvalRunWorkflow`, so no service upstream sees the
+transition.
+
+| Instrument | Kind | Labels | What it says |
+| --- | --- | --- | --- |
+| `evals.runs.settled` | counter | `status`, `run_mode`, `infrastructure` | Benchmark runs that ended. `infrastructure` is `ok` when the run kept the compute it asked for; `failed` when the pool went away under it or every task failed before producing anything |
+| `evals.tasks_per_run` | histogram | `status`, `run_mode` | Tasks the run executed. A blocked run records zero rather than nothing: a missing point reads as a run nobody measured |
+| `evals.time_to_first_task` | histogram (s) | `status`, `run_mode` | From the run being queued to its first task running — the queue and the provisioning together, as the person waiting experiences them |
+
+Two lines of section 22 are deliberately **not** instrumented here. Queue and
+provisioning time are already `durable.queue.wait` and
+`durable.step.duration{step="launch_pool"}` from the engine's own side, and a
+second pair measuring the same seconds would be two numbers to reconcile. And
+**retry rate is not recorded because nothing retries a task**: a run whose
+sandbox goes away records the task as an infrastructure failure and retires the
+slot, so a retry counter would sit at zero and be read as "retries never help"
+rather than "retries do not happen".
 
 `sandbox.launch_seconds{provider}` is the Runtimes path's and sits beside
 these in the Observability view: it says how long an agent waited for a

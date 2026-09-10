@@ -60,6 +60,72 @@ open https://${DATALAYER_RUN_HOST}/api/ai-agents/version
 open https://${DATALAYER_RUN_HOST}/api/ai-agents/v1/ping
 ```
 
+## Configuration
+
+Beside the model, SMTP, Solr and OTEL settings `plane up` supplies, the
+service reaches five other services for the benchmarks (evals) API:
+
+| Setting | Meaning |
+| --- | --- |
+| `DATALAYER_DURABLE_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where `datalayer-durable` is, on the runtimes plane, and the key this service is known by there (the `ai-agents` caller: start, read, signal, cancel). A benchmark launch creates its runs `queued` and starts one `EvalRunWorkflow` per run; the workflow projects the run's life into the `evals` collection itself. Which engine the durable service runs — `none` on `plane local` (`http://localhost:9450`, nothing kept), `dbos` in a cluster, `temporal` — is that service's business; this one speaks only `/api/durable/v1`. Unset, runs stay `queued` and the launch answers `executes: false` rather than pretending. Set but not answering — the workflow start refused or unreachable — is the same answer: `executes` is true only when every run was actually taken, and `unstarted_run_ids` names the ones that were not, so a client never watches a launch nobody will run |
+| — | A launch's `config.git` — `sha`, `ref`, `pr_number`, `run_id`, `repository`, set by the GitHub action — is kept as sent and indexed on the launch as `git_sha_s`, `git_ref_s`, `pr_number_i` and `action_run_id_s`, so the launches of one commit or one pull request are one query |
+| `DATALAYER_SPACER_URL` | Where Spacer is: the account's `benchmarks` space, the report documents and the investigation notebooks are written there as the person, with the request's own credential |
+| `DATALAYER_RUNTIMES_URL` | Where Runtimes is: a task's sandbox snapshot is checked, restored (through durable's `SandboxWorkflow`) and deleted as the person; the pre-launch validation (`POST /evalsets/{id}/launches/validate`) reads the environments this account is offered and their burning rate from it to estimate a launch's cost |
+| `DATALAYER_CONTENTS_URL` | Where Contents is: a benchmark's `dataset_ref` is validated against a dataset revision with the request's credential before it is saved, and again by the pre-launch validation |
+| `DATALAYER_AI_INFERENCE_URL` | Where AI Inference is: `GET /evals/subjects` lists the models it offers as the person, for an experiment whose subject is a `model` (run by durable over `chat/completions`, no sandbox), and the validation checks a model subject against that list. Unset, the subjects answer `models_available: false` rather than a made-up list |
+
+An **anonymous trial** (`BENCHMARK.md`, B2-14) reaches this service as a
+principal carrying `platform_guest` whose uid names a trial in the `iam`
+collection. A launch made by one must be the trial's own public benchmark,
+open, unexpired and inside its cap — the cap is read from the trial's own
+launches at launch time rather than kept as a running total, so there is one
+writer of what a launch cost and no second number to drift. A budget asked
+for is capped to what the trial has left. `POST /evals/trials/claim` gives
+that work to a person who has signed in, after IAM has accepted the claim;
+it moves the records rather than copying them, so a link the visitor kept
+still opens, and repeating it moves nothing. IAM's page carries the settings
+that turn trials on.
+
+The validation also asks IAM as the person for the account's credits
+(`GET /api/iam/v1/usage/credits`, on `DATALAYER_IAM_URL`) and for the secrets a
+launch names; a service that cannot be reached leaves its figure unknown in
+the plan, with a warning, never a guessed number.
+
+The `evals` Solr collection holds the benchmark records — `evalset`,
+`evalset_version`, `evalset_experiment`, `evalset_run`, `evalset_launch`,
+`evalset_case_result`, `evalset_investigation`, `evalset_live_event` — and
+`python -m datalayer_ai_agents.backfill_evals [--dry-run]` gives every run
+recorded before launches existed its evalset, a single-run launch and its
+task documents, once.
+
+### The benchmark funnel is measured, and one measure comes from a browser
+
+The counters ride on the OTEL providers `instrument` installs at startup, so
+they leave the pod like every other metric and are read account-scoped in the
+OTEL service. This service writes the **activation** half of the funnel
+(`BENCHMARK.md` section 22, B2-25):
+
+| Instrument | What it says |
+| --- | --- |
+| `evals.launches.created` | Launches submitted, by run mode, origin and `from_library` — true when the benchmark's owner is not the caller, which is what taking one from the Library means |
+| `evals.tasks_per_launch` | Tasks a launch submitted across its experiments |
+| `evals.product.events` | What somebody did that leaves no record, by event and funnel line: the wizard opened and completed, a task read, a question asked of the agent, a follow-up cell run, evidence pinned |
+| `evals.investigations.opened` | Investigations opened, by scope — once per investigation, so re-opening one is not a second failure investigated |
+| `evals.sandboxes.restored` | Task sandboxes brought back from a snapshot, by outcome; a sandbox reused is `reused` rather than a second restore |
+| `evals.runs.created`, `evals.reports.generated`, `evals.comparisons.requested`, `evals.live_events.ingested` | The B0-07 baseline |
+
+The **execution** half is `datalayer-durable`'s, because a benchmark run's
+outcome is written straight to Solr and nothing here sees the transition; its
+page lists those.
+
+`POST /evals/measures` is the one route that exists so a page can report a
+measure, because how many people open the wizard or read a task is not
+observable from any record. It is deliberately narrow: the event is one of
+`telemetry.PRODUCT_EVENTS` and anything else is ignored rather than recorded,
+nothing is stored, and no identity is attached beyond the account the request
+already carries. A free-form label from a browser would be a cardinality bomb
+with an authenticated route in front of it.
+
 ## Tear Down Datalayer AI Agents
 
 If needed, tear down.

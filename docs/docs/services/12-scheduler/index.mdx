@@ -85,22 +85,38 @@ plane local
 
 By default the scheduler runs each due run inline in a worker thread, so a run
 is lost if the pod moves mid-execution. It can instead hand each due run to
-[`datalayer-durable`](/services/system/durable/) as a workflow, which
-outlives the worker that started it. This is **off by default** and gated on all
-three variables below; unset any of them and the inline path stays.
+[`datalayer-durable`](/services/system/durable/) as a
+`ScheduledNotebookRunWorkflow`, which outlives the worker that started it:
+the workflow mints a temporary key for the schedule's owner, launches a
+runtime as them through a child `SandboxWorkflow`, reads the notebook from
+Spacer, runs it with `datalayer exec` on that runtime — no agent — releases
+the runtime, and hands the outcome to this service's outcome route,
+`POST /api/scheduler/v1/schedules/runs/{uid}/outcome`, called as the owner.
+That route persists the executed notebook and the result in object storage
+and marks the run through the same function the inline path uses, so a run
+reads the same whichever way it ran; a run already recorded is answered, not
+recorded twice. The run's record passes through the `dispatched` state on
+the way.
+
+This is **off by default** and gated on all three variables below; unset any
+of them and the inline path stays.
 
 - `DATALAYER_SCHEDULER_USE_DURABLE` (default: `false`) — the cut-over switch.
 - `DATALAYER_DURABLE_URL` — the `/api/durable` ingress of the durable service on the runtimes plane.
 - `DATALAYER_SCHEDULER_DURABLE_API_KEY` — this service's own **workload** key to the durable API, which durable knows as the `scheduler` caller. Not the same as `DATALAYER_SCHEDULER_API_KEY`, which is an administrator JWT; the durable key is a separate variable on purpose. The same value is written into the durable Secret as `serviceApiKeys.scheduler`.
-- `DATALAYER_SCHEDULER_DURABLE_WORKFLOW` (default: `AgentRunWorkflow`) and `DATALAYER_SCHEDULER_DURABLE_QUEUE` (default: `agent`) — which workflow a due run is started as, and on which queue. Overridable so the notebook-run workflow can be targeted without a code change.
+- `DATALAYER_SCHEDULER_DURABLE_WORKFLOW` (default: `ScheduledNotebookRunWorkflow`) and `DATALAYER_SCHEDULER_DURABLE_QUEUE` (default: `agent`) — which workflow a due run is started as, and on which queue. Overridable so a deployment can retarget without a code change.
 
-:::warning
-Leave `DATALAYER_SCHEDULER_USE_DURABLE` at `false` in production for now.
-`AgentRunWorkflow` blocks on an agent signal that a scheduled notebook run never
-sends and needs a sandbox that is already bound, so a run handed to it today
-would hang and leak its compute. The switch turns on only once a durable
-workflow that runs a scheduled notebook (launching its own runtime, no agent)
-lands.
+Durable, for its part, needs `DATALAYER_SCHEDULER_URL` (the outcome route's
+public origin) and `DATALAYER_SPACER_URL`; `plane up datalayer-durable`
+supplies both from the environment.
+
+:::note Turning it on
+Set the three variables on the scheduler and the `scheduler` key on durable,
+`plane up` both, and walk one scheduled run: its record moves `planned` →
+`dispatched` → `executed`, its executed notebook lands in object storage
+under the run, and the runtime the workflow launched is gone afterwards.
+An unreachable durable service never fails a run: the poll worker falls
+through to the inline path and says so in its log.
 :::
 
 ## Ingress

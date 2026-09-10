@@ -2026,9 +2026,13 @@ platform` says the opposite. That reads as not-ready, because it is a
 misconfiguration rather than an intent; the same fake in standalone mode is
 what that deployment asked for, and reads as ready with a detail saying
 nothing survives a restart. A real `datalayer-durable` is ready when it says
-it can durably accept work — it answers that honestly, so a launched engine
-whose system database cannot be read says `durable: false`, and a gateway that
-called it ready anyway would repeat the failure one layer up. None of this
+it can accept work — it answers that honestly, so a launched engine whose
+system database cannot be read says `durable: false` and nothing else, and a
+gateway that called it ready anyway would repeat the failure one layer up.
+The service's `none` engine — what `plane local` runs — answers `durable:
+false, serving: true`: it takes work in its own process and keeps nothing,
+and the gateway routes to it, with the detail saying "not durable" so the
+line reads as what it is rather than as an outage. None of this
 gates: a durable outage costs the long-running calls and leaves everything
 else working, and gating readiness on it would turn that into a total outage.
 

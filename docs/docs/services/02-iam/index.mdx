@@ -312,6 +312,29 @@ authenticating with an API key has **no roles at all**, so requiring
 membership there would refuse every service-to-service call in the platform.
 Giving service identities a role is what that would need first.
 
+### `platform_features_previewer` gates a rollout, not a secret
+
+The benchmark navigation ships to previewers before it ships to everyone
+(`PLAN_BENCHMARK.md` B1-14). The role is `platform_features_previewer`, granted
+with `PUT /users/{id}/roles/{role}` like any other, and the web application
+reads it from the account it already has — IAM has nothing new to enforce.
+
+Three things about it are worth knowing when somebody reports that a page is
+missing:
+
+- **A `platform_admin` sees previews too.** An administrator who cannot see a
+  preview cannot answer a question about it or reproduce what a previewer
+  reported.
+- **The roles are read in four spellings** — `roles`, `roles_ss`,
+  `effective_roles` and `effective_roles_ss` — because a record that came from
+  Solr or a role resolved through a group arrives under one of the last three.
+  A gate reading only the first refuses an administrator and looks like a
+  permissions bug.
+- **Nothing is hidden, only staged.** The routes stay routed and an account
+  without the role is redirected to the home page, so a link somebody saved
+  still resolves. This is not an access control: a preview is unfinished, not
+  confidential, and nothing behind it is data another account may not see.
+
 ### A disconnected agent stops within seconds
 
 Revoking a grant stops the refresh at once. The **access token already in the
@@ -433,6 +456,43 @@ to it and an operator should know:
   Identity Working Group's finalized MCP profile. Sender-constrained tokens
   are the right answer to a stolen bearer token, and building against a draft
   that then changes would leave a deployed proof format nobody else speaks.
+
+## Anonymous trials
+
+A visitor who has never signed in can be allowed to run one public benchmark
+before deciding whether to sign up (`BENCHMARK.md`, B2-14). What they get is
+a **trial**: a principal of its own — `type_s: platform_trial` in the `iam`
+collection — with one benchmark it may run, a credit cap, an expiry, and a
+short-lived key carrying `platform_guest`. The work they make is owned by
+that principal, so when they sign up the same records are given to them
+rather than recreated.
+
+`POST /api/iam/v1/trials` is the only unauthenticated route in this service
+that mints a credential. Three things bound it:
+
+| Bound | How |
+| --- | --- |
+| It is off unless you turn it on | No `DATALAYER_TRIAL_EVALSET_UID`, no trials. `GET /trials/offer` answers `offered: false` and `POST /trials` answers `404`. Deploying the code exposes nothing |
+| It is capped | `DATALAYER_TRIAL_CREDITS` (default 25) is all a trial may spend, checked against the trial's own launches each time it asks to run something |
+| It expires | `DATALAYER_TRIAL_TTL_SECONDS` (default 1800) is how long the trial and its key live |
+
+Issuance is rate limited to five per calling address per ten minutes, by the
+forwarded address where there is one. That address is a header a determined
+caller can set, which is why it limits the rate and authorizes nothing.
+
+| Setting | Meaning |
+| --- | --- |
+| `DATALAYER_TRIAL_EVALSET_UID` | The uid of the public benchmark a trial may run. Empty — the default — means this deployment offers no trials |
+| `DATALAYER_TRIAL_CREDITS` | Credits one trial may spend; default `25`. A value that is not a positive number is a misconfiguration and the default is used rather than an uncapped trial |
+| `DATALAYER_TRIAL_TTL_SECONDS` | How long a trial and its key live; default `1800` |
+
+**Claiming.** `POST /trials/{uid}/claim` takes two credentials: the person's,
+which authenticates the request, and the trial's own key in
+`X-Datalayer-Trial-Token`, because a trial uid appears in a URL and knowing
+one must not be enough to take somebody's work. IAM records the claim once —
+a second person is refused — and the AI Agents service then moves what it
+owns, which is every benchmark record the trial made. Both halves are
+idempotent, so a lost answer is harmless.
 
 ## Where IAM's own audit rows go
 
