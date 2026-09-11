@@ -494,6 +494,38 @@ a second person is refused — and the AI Agents service then moves what it
 owns, which is every benchmark record the trial made. Both halves are
 idempotent, so a lost answer is harmless.
 
+## Task grants narrowed to resources
+
+A task grant may name exactly the resources its tokens reach
+(`ORCHESTRATOR.md`, O1-06), as OAuth Rich Authorization Requests details
+(RFC 9396) in `authorization_details` on `POST /api/iam/v1/oauth/task-grants`:
+
+```json
+[{"type": "datalayer_context", "kind": "notebook", "uid": "01J…", "actions": ["read"]}]
+```
+
+The kind is one of the context reference kinds (`notebook`, `document`,
+`cell`, `dataset`, `artifact`, `sandbox`, `snapshot`, `file`, `execution`),
+and the actions `read` or `write`, which includes `read`. A detail that does
+not say precisely what it allows is refused, never trimmed. The grant keeps
+each resource once (`authorization_details_s` in the `mcp-gateway`
+collection, mapping version 17).
+
+The token a grant is exchanged for carries `task_grant_uid` and, when the grant
+names resources, `authorization_details` — an empty list for a grant naming
+none, which reaches nothing, and absent for a grant naming nothing, which is
+not narrowed. Every service reads both through `datalayer_common.auth`: a
+request is allowed only when the person may **and** the token names the
+resource, and a narrowed token whose grant was revoked, expired or is gone is
+refused `401`. A service asks
+`GET /api/iam/v1/oauth/task-grants/live` with the token itself, which answers
+about the bearer's own grant; answers are cached ten seconds, and an IAM that
+does not answer refuses nobody, since the token still reaches only what it
+names. IAM answers its own grants directly.
+
+Deploy order: Solr's mapping, then IAM, then the services that read tokens,
+then durable, which issues narrowed grants.
+
 ## Execution tree reservations
 
 The credits a tree of orchestration executions may spend are held by IAM, in

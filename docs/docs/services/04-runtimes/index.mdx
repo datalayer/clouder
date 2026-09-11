@@ -284,6 +284,17 @@ its `share_sandbox` and `unshare_sandbox` tools write here with the
 caller's own credential, and its gateway asks `permissions` on every call a
 grantee makes.
 
+## A token narrowed to resources
+
+A token carrying `authorization_details` (IAM's task grants, O1-06) reaches
+the sandboxes and snapshots it names, by name. A dependency in front of every
+router but the probes (`api/v1/narrowing.py`) lets a request naming a sandbox
+(`runtime_name`) or a snapshot (`id`) go on only when the token names it with
+the action its method needs — `404` otherwise — and refuses `403` anything
+else a narrowed token asks, a listing or a creation, since a manifest names
+resources and never the collections they are in. A request whose token is not
+narrowed, or that carries none, is left to the route as before.
+
 ## Tear Down Datalayer Runtimes
 
 If needed, tear down.

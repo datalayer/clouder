@@ -256,6 +256,24 @@ token yet, so a token-less lexical client is still admitted by document id
 alone — logged on every such join. Closing that door is a UI change: the
 editor's `websocketUrl` carrying `?token=`.
 
+## A token narrowed to resources
+
+A token carrying `authorization_details` (IAM's task grants, O1-06 — what an
+orchestration execution holds) reaches the notebooks, documents and cells it
+names, with the actions it names, and nothing else. `can_user_access_item_service`
+answers that first, before any grant and before the platform administrator's
+pass, and then decides as ever — so the token never adds to what the person
+may do; the space an item is in is checked as the person, since the token
+already named the item. `can_user_access_space_service` refuses a narrowed
+token outright: it lists, creates and opens no space. The routes, the rooms'
+admission and the permissions answer all go through those two checks.
+
+The person-wide listings read the same way: the items the Solr query finds
+for the person (`get_items_accessible_by_user_service`, behind "Shared with
+me" and the item listings) keep only what a narrowed token names, and the
+spaces listing answers it none — a listing would otherwise name the person's
+other items to a token that may not open them.
+
 ## Tear Down Datalayer Spacer
 
 If needed, tear down.

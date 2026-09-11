@@ -403,8 +403,10 @@ never more scope. Exchanged tokens are cached until shortly before they expire.
 Without that key, OAuth callers reach nothing.
 
 Enforcement is layered and deny-by-default. `enforcement.py` reads `Mcp-Method`
-and `Mcp-Name` and refuses a call the scope does not cover *before* the body is
-read, then cross-validates the body against the headers; a tool absent from the
+and `Mcp-Name` and refuses a call the rate limit, the scope or the
+organization's, team's or personal policy does not allow *before* the body is
+read — a call announced in headers skipped the policy until 2026-09-11 — then
+cross-validates the body against the headers; a tool absent from the
 policy table is treated as requiring the strongest scope. A caller that cannot
 be attributed to a user is refused (`-32001`), never served. The per-item
 `read`/`write`/`execute` decision is asked of Spacer or Contents on every call

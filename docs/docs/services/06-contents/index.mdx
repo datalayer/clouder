@@ -115,6 +115,18 @@ carries `client_id` instead and matches no agent grant — so sharing with an
 agent cannot widen into "everyone who uses that client", which is what it
 would mean if the claim were the client id.
 
+## A token narrowed to resources
+
+A token carrying `authorization_details` (IAM's task grants, O1-06) reaches
+the datasets and files it names, with the actions it names, and no other
+source. `AccessContext.authorization_details` carries them from the token, and
+`can_access_source` and the permissions answer apply them before the grants on
+the source, so the token narrows the person's access and never adds to it. A
+source of another kind — a data server, cloud storage — is reached by no
+narrowed token, since a manifest cannot name it. Contents answers `404` both
+for a source that is not there and for one the caller may not see, so to an
+execution's resolver such a dataset is missing.
+
 ## Dependencies
 
 - SolrCloud with `contents`, `content-objects`, `content-operations` and
