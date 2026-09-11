@@ -8,7 +8,7 @@ sidebar_position: 2
 A User Environment is a versioned definition that an account or an organization builds into immutable artifacts and launches, on Datalayer and on the E2B, Daytona and Modal providers. This page is the operator's side of it: what is deployed where, in which order, and how to check it.
 
 :::info What runs today
-The registry API, its four Solr collections, and the environment recorded on reservations. A build is recorded `queued` and nothing runs it yet: the build workflow, the BuildKit builder, the ECR registry on the plane, signing, and the Operator's launch of a user environment each arrive with their own change, and this page grows with them.
+The registry API, its four Solr collections, and the environment recorded on reservations. A build is recorded `queued` and nothing runs it yet: the build workflow, the BuildKit builder, the ECR registry on the plane and signing each arrive with their own change, and this page grows with them. The Operator's side of a launch is written and described below, and deploys once Runtimes sends it an artifact.
 :::
 
 ## Where it lives
@@ -74,6 +74,34 @@ curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer $DATALAYER_API_KEY" "$BA
 ```
 
 The second call reads the `environments` collection. A `500` there usually means the collections are missing on the plane, or were created from an image without `*_stored`.
+
+## Launching a user environment
+
+The Operator launches a user environment only when Runtimes asks for it. Runtimes presents `DATALAYER_RUNTIMES_API_KEY` in `X-API-Key`, which `plane up` sets on the Operator from the rc. The launch is cold, with no pool of its own: the pod pulls the ECR digest Runtimes resolved, `IfNotPresent`, with the `ecr-environments` pull secret beside `reg-creds`.
+
+The size class gives the pod its resources and its burning rate:
+
+| Class | CPU | Memory | Credits a second |
+| --- | --- | --- | --- |
+| `small` | 1 | 2 GiB | 0.0008 |
+| `medium` | 4 | 8 GiB | 0.0016 |
+| `large` | 8 | 16 GiB | 0.0032 |
+
+Requests equal limits, on any runtime node. The rates live in `datalayer_common.size_classes`, in the Operator chart's `operator.env`, and in `up.sh`, and a test fails when they disagree. To change one on a plane, set `DATALAYER_SIZE_CLASS_SMALL_BURNING_RATE`, or the `MEDIUM` or `LARGE` variable, in the rc and reinstall the Operator.
+
+What the Operator refuses, before anything is reserved:
+
+| Code | Status | When |
+| --- | --- | --- |
+| `DL_ENV_CAPABILITY_UNSUPPORTED` | 422 | A GPU class. Datalayer runs no GPU nodes, so the error names Modal and Daytona. |
+| `DL_ENV_PULL_SECRET_STALE` | 503 | The `ecr-environments` secret is missing, or was last refreshed more than 11 hours ago (`DATALAYER_ECR_ENVIRONMENTS_PULL_SECRET_MAX_AGE_HOURS`). This applies to every pod pulling from ECR, warm-pool and restored pods included. Check the refresher CronJob. |
+| `DL_ENV_SIZE_CLASS_UNPRICED` | 503 | The class has no positive rate; the error names the variable to set. |
+| `DL_ENV_FORBIDDEN` | 403 | The request did not present the Runtimes key. |
+| `DL_ENV_SPEC_INVALID`, `DL_ENV_ARTIFACT_MISSING` | 422 | The artifact is malformed or absent. |
+
+A user environment's pod is labelled `environments.datalayer.io/uid` and `environments.datalayer.io/version`, and annotated with its digest. The Operator culls it when its credits expire, from the timer the warm pools already run, so a plane needs at least one RuntimePool. It is not culled for idleness.
+
+The Operator deploys after IAM, which already accepts the environment on reservations, and after a Runtimes that sends the artifact.
 
 ## Usage by environment
 
