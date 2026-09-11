@@ -10,7 +10,7 @@ import ModalImage from "react-modal-image";
 
 Runtime Environments define:
 
-- The available libraries which are available in a Docker Image. The Docker Image can be compared to a [Conda Environment](#conda2docker).
+- The libraries available in its Docker image.
 - The mounted [Runtime Contents](./runtime-contents).
 - Some Environment Variables.
 - The default number of CPU/GPU and memory resources.
@@ -81,23 +81,9 @@ The Platform Administrator is responsible for provisioning the Platform Environm
 
 :::note
 
-Users can create their own Runtime Environments.
+User Environments, which accounts and organizations define, version and build themselves, are on the [Environments](/services/runtimes/environments/) page, with what of them runs today.
 
 :::
-
-## CVE based on Software Bill of Materials
-
-The environments are scanned for `CVE` (Cybersecurity Vulnerabilities) based on their Docker Image `Software Bill of Materials`.
-
-As the scanning is done at the Docker level, it covers all Linux libraries as the various packages installed e.g. in a Conda Environment defined in that Docker Image.
-
-## Conda2Docker
-
-`Runtime Environments` can be seen as an extension, in the cloud era, of well-known [Conda Environments](https://docs.conda.io/projects/conda).
-
-Actually, Conda Environments are more similar to a Docker Image and we are working on `Conda2Docker`, a solution to automatically create a Docker Image from a Conda Environment.
-
-With Runtime Environments, Datalayer allows you to specify, on top of Conda Environments, Contents, Environment Variables, Snippets, Examples, CPU/GPU and memory resources, the Runtime naming template, and other cloud-native features.
 
 ## The home
 
