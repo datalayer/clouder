@@ -116,10 +116,11 @@ The platform's images, Environments and Operator left the Jupyter images' `jovya
    unzip -p /tmp/core/datalayer_core-<version>-*.whl datalayer_core/contents_node_mount_gateway.py | grep RUNTIME_HOME_MOUNT_PATH
    ```
 
-2. **Build and push the runtime images**, each after its base: `jupyter-python` 0.2.0, then `jupyter-python-cuda` 0.3.0, then `jupyter-ai-cuda` 0.3.0 and `jupyter-pytorch-cuda` 0.1.0, and `jupyter-geocat` 0.1.0 and `jupyter-server` 0.1.0 on `jupyter-python`. The tags are in each Makefile.
+2. **Build and push the runtime images**, each after its base: `jupyter-python` 0.2.0, then `jupyter-python-cuda` 0.3.0, then `jupyter-ai-cuda` 0.3.0 and `jupyter-pytorch-cuda` 0.1.0, and `jupyter-geocat` 0.1.0 and `jupyter-server` 0.1.0 on `jupyter-python`. The tags are in each Makefile. The CUDA images, `jupyter-python-cuda`, `jupyter-ai-cuda` and `jupyter-pytorch-cuda`, matter only on a plane with GPU nodes. No Datalayer plane has one today, so leave them out there: their Environments are applied with the rest and cannot be scheduled on their GPU request, as before the move.
 
    ```bash
-   for image in jupyter-python jupyter-python-cuda jupyter-ai-cuda jupyter-pytorch-cuda jupyter-geocat jupyter-server; do
+   # With GPU nodes: jupyter-python jupyter-python-cuda jupyter-ai-cuda jupyter-pytorch-cuda jupyter-geocat jupyter-server
+   for image in jupyter-python jupyter-geocat jupyter-server; do
      (cd plane/etc/dockerfiles/$image && make build-dev push) || break
    done
    ```
@@ -139,7 +140,7 @@ The platform's images, Environments and Operator left the Jupyter images' `jovya
    kubectl get runtime-environments -n datalayer-runtimes -o yaml > before-environments.yaml
    ```
 
-4. **Pre-pull the new images** on the runtime nodes, so the first launches do not wait for them: `plane k8s-prepull-cpu` and `plane k8s-prepull-gpu-cuda`.
+4. **Pre-pull the new images** on the runtime nodes, so the first launches do not wait for them: `plane k8s-prepull-cpu`, and `plane k8s-prepull-gpu-cuda` on a plane with GPU nodes.
 
 ### The cut
 
@@ -180,7 +181,7 @@ The platform's images, Environments and Operator left the Jupyter images' `jovya
 
 ### Check
 
-Launch a runtime of every Environment. In each, `id` answers `uid=1000(datalayer) gid=100(users)`, `echo $HOME` answers `/home/datalayer`, `ls /home` lists `datalayer` alone, and the home folder and the Environment's Contents are mounted under `/home/datalayer`.
+Launch a runtime of every Environment the plane can schedule: without GPU nodes, the GPU Environments cannot be scheduled, whatever their home. In each, `id` answers `uid=1000(datalayer) gid=100(users)`, `echo $HOME` answers `/home/datalayer`, `ls /home` lists `datalayer` alone, and the home folder and the Environment's Contents are mounted under `/home/datalayer`.
 
 ### Roll back
 
