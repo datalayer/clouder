@@ -197,6 +197,17 @@ notifies the reviewers named (`report.ready`); publishing notifies the author
 when somebody else publishes (`report.published`) and adds `report.published`
 to the activity feed.
 
+A report in `published_public` is in the Library (B5-01), as the kind `report`
+at `/public/reports/{id}`. The move into that state publishes its document in
+Spacer with it, and the move out of it — to `published_private`, or
+superseded — makes the document private again (`evals_reports.update_report`,
+through `evals.set_items_public`). The document is read through its report: the
+Library does not list it as a document of its own, because Spacer keeps the
+report document's metadata (`kind: benchmark-report`) and
+`library_sync.ATTACHED_ITEM_KINDS` names it. A reader sees the document live,
+including an edit saved after publication. The public page shows the report's
+title, state, version and the runs and launches it covers, never its reviewers.
+
 The report builder (`agent_runtimes.evals.lexical`) writes each block's
 provenance into the node state `$.evidence`, which Lexical keeps through a
 load, a save and the Loro binding; the report editor locks the blocks that
@@ -287,7 +298,7 @@ The roles are a ladder, each allowing what the ones below it allow:
 | Reviewer | `review` | decide a task left in review, open and update an investigation |
 | Runner | `execute` | launch, validate, stop, and bring a task's sandbox back from its snapshot |
 | Editor | `update` | change the definition and its tasks, archive a run, write the report document |
-| Owner | — | delete the benchmark, make it public, share anything |
+| Owner | — | delete the benchmark, make it or an investigation public, share anything |
 
 The **owner** is the account itself, a platform administrator, or an owner of
 the organization the account is or belongs to (a team is owned through its
@@ -308,6 +319,7 @@ published stays anybody's to run, in their own account.
 | --- | --- |
 | `GET`, `PUT /evalsets/{id}/sharing`, same for `/launches/{id}` and `/investigations/{id}` | Owner |
 | `GET /evalsets/{id}/permissions`, same for launches and investigations | any role; answers `role` and what it allows |
+| `PATCH /investigations/{id}/public` `{"is_public"}` | Owner; audited as `evals.investigation.publish`, allowed and refused. A public investigation is in the Library (B5-01), its document and notebooks published with it and made private with it (`evals_investigations.update_investigation`); the Library lists the investigation, not them, and its public page shows its scope, status and decision, never who is assigned or the sandbox restored for it |
 | `GET /shared` | the caller | the reports and investigations other people shared with them, through them, their teams or their organizations, newest first: each with its title, its owner, the caller's role, its state and the app page it opens (Shared with Me lists them) |
 
 `PUT …/sharing` takes `{"access": {"execute": {"userUids": [], "teamUids": [], "organizationUids": []}}}`,
@@ -548,6 +560,23 @@ it.
   `OrchestrationRenderersContext`: the app's literate editor renders the tree
   live from `executions.collect` and `executions.subscribe`, with a notebook
   artifact's outputs through `jupyter-react`'s `Output`.
+- **The tree in the app** (O2-10): `executions.collect` also answers
+  `attempts`, every attempt of the execution and of the children it collected,
+  and an attempt carries the `usage` its worker reported with its end — its
+  tokens, and a cost where the worker priced its model. The worker says it as
+  `datalayer.usage`, on the A2A task's final status or in the ACP answer's
+  `_meta`, and the adapter records it on the attempt with the move that ends
+  it. Nothing else records what one execution spent: a budget's `cost` is a
+  limit, and IAM's credits are the tree's. The execution page draws the same
+  live tree the report embeds: each node's elapsed time, from its attempts'
+  start and end, its spend, and the actions its state allows — steer and pause
+  while a worker is on it, resume once paused, cancel until it ends, and **Run
+  again** once it has. Run again delegates the node's agent, objective, context
+  and policy as a new execution, under its parent while the parent still runs
+  and as a new root otherwise, since a finished execution cannot move again.
+  Each action is the command it names (`executions.steer`, `pause`, `resume`,
+  `cancel` with `cascade`, `delegate`), so it reaches the control plane the same
+  way from either surface, and whoever watches the other sees it on the stream.
 - **Credits** (O1-07) are the tree's, held by IAM in one `execution-tree`
   reservation keyed on the root (see the IAM page). `policy.budget.credits` is
   set on the root; a child that sets its own is refused `invalid_command`.

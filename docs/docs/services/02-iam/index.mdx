@@ -312,15 +312,17 @@ authenticating with an API key has **no roles at all**, so requiring
 membership there would refuse every service-to-service call in the platform.
 Giving service identities a role is what that would need first.
 
-### `platform_features_previewer` gates a rollout, not a secret
+### `platform_features_previewer` stages a rollout, and nothing is staged
 
-The benchmark navigation ships to previewers before it ships to everyone
-(`PLAN_BENCHMARK.md` B1-14). The role is `platform_features_previewer`, granted
-with `PUT /users/{id}/roles/{role}` like any other, and the web application
-reads it from the account it already has — IAM has nothing new to enforce.
+The role is `platform_features_previewer`, granted with
+`PUT /users/{id}/roles/{role}` like any other, and the web application reads it
+from the account it already has — IAM has nothing to enforce. It staged the
+benchmark navigation (`PLAN_BENCHMARK.md` B1-14). The benchmark, MCP and
+orchestration pages have since shipped to every account, so no page of the web
+application is behind the role today, and a report that a page is missing is
+not a question about it.
 
-Three things about it are worth knowing when somebody reports that a page is
-missing:
+When a feature is staged through it again, three things are worth knowing:
 
 - **A `platform_admin` sees previews too.** An administrator who cannot see a
   preview cannot answer a question about it or reproduce what a previewer
