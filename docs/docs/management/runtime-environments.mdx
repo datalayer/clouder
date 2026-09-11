@@ -109,7 +109,7 @@ The platform's images, Environments and Operator left the Jupyter images' `jovya
 
 ### Before the cut
 
-1. **Release `datalayer-core` with the new home.** The Operator and Contents images install `datalayer-core` from PyPI, and an Operator on a core whose `RUNTIME_HOME_MOUNT_PATH` is still the old home refuses every Environment that declares `/home/datalayer`. Cut the release from `main`, raise `datalayer-core` to it in `common/pyproject.toml` and `contents/pyproject.toml`, and check the wheel:
+1. **Release `datalayer-core` with the new home.** The Operator and Contents images install `datalayer-core` from PyPI, and an Operator on a core whose `RUNTIME_HOME_MOUNT_PATH` is still the old home refuses every Environment that declares `/home/datalayer`. Cut the release, raise `datalayer-core` to it in `common/pyproject.toml` and `contents/pyproject.toml`, and give the Operator and Contents images new tags: in their Makefiles and in the `--set …image=` lines of `plane/datalayer_plane/sbin/up.sh`. Then the cut overwrites no image, and a rollback is the previous tags. Check the wheel:
 
    ```bash
    pip download datalayer-core==<version> --no-deps -d /tmp/core
@@ -192,7 +192,7 @@ git archive e3df065f^ plane/etc/specs/runtime-environments | tar -x -C /tmp/befo
 kubectl apply -n datalayer-runtimes -f /tmp/before/plane/etc/specs/runtime-environments/prod/
 ```
 
-Then put the Operator and Contents back on the images recorded in `before-images.txt`, through their `--set …image=` lines in `up.sh` and `p reup`, and replace the warm pool pods again. The previous runtime images keep their tags and are never overwritten by the move.
+Then put the Operator and Contents back on their previous tags, the `--set …image=` lines of `up.sh` before the move, whose digests `before-images.txt` records. Run `p reup` for both, and replace the warm pool pods again. The previous runtime images keep their tags and are never overwritten by the move.
 
 ## Simple Environment Example
 
