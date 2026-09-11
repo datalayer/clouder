@@ -219,6 +219,28 @@ A document built before the builder wrote `$.evidence` is not locked;
 regenerating the report rebuilds it. The ai-agents image gets the builder
 change with the next `agent-runtimes` release.
 
+### Cloning a benchmark
+
+`POST /evalsets/{id}/clone` `{name?}` takes a benchmark into the account the
+request names (`datalayer_solr.evals.clone_eval`). The result is a new, private
+evalset at version 1:
+
+- **Copied:** the source's definition, meaning its cases, evaluators, schema,
+  category, kind, tags and dataset reference.
+- **Recorded:** `derived_from_uid_s` and `derived_from_version_i` name the
+  source and the version that was taken.
+- **Not copied:** its runs and launches, its sharing, and the source account's
+  metadata. The caller's principal metadata is written instead.
+
+A published benchmark is anybody's to clone. An unpublished one needs the Viewer
+role on it, and answers `404` without one. The dataset reference is not
+validated when the benchmark is cloned: the launch review says whether the new
+owner may read it.
+
+The clone writes a `fork` derivation into the Library (see the Library page).
+The public page also counts it as a reuse, through
+`POST /api/library/v1/items/{id}/reused`.
+
 ### Imported CI reports
 
 A report the evals CLI or the GitHub action wrote can be imported on its

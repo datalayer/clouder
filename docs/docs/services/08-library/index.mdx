@@ -73,6 +73,35 @@ If needed, tear down.
 plane down datalayer-library
 ```
 
+## What was made of an artifact
+
+Beside each artifact's orbits, the Library keeps the **derivations** that came
+of it: `type_s:derivation` documents in the `library` collection. Each one has
+a deterministic id (`derivation-<kind>-<from>-<to>`), so recording the same
+derivation twice writes one edge. Each edge names:
+
+- the source (`from_uid_s`) and the version taken, when there is one
+  (`from_version_i`);
+- the result (`to_uid_s`);
+- the kind (`kind_s`): `fork`, `reproduce`, `compare`, `cite` or `revise`;
+- the artifact type, and who made it (`actor_uid_s`).
+
+The service that makes the result writes the edge through
+`datalayer_solr.library.add_derivation`. Today a benchmark clone in ai-agents
+writes a `fork`.
+
+`GET /api/library/v1/items/{id}/derivations?offset=&max=` answers anybody,
+signed in or not, for a public artifact, and `404` for any other. It returns:
+
+- `counts`: every derivation, by kind;
+- `derivations`: newest first, naming only the results that are public
+  themselves, each with `kind`, `fromVersion`, `derivedAt`, and the `item` as a
+  search result;
+- `total`: how many edges there are.
+
+A clone somebody keeps private adds one to the count and is never named. The
+public pages draw these as **Reused by**.
+
 ## OpenAPI Specification
 
 The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/library/v1/docs).
