@@ -1,0 +1,98 @@
+---
+title: Environments
+sidebar_position: 2
+---
+
+# Environments
+
+A User Environment is a versioned definition that an account or an organization builds into immutable artifacts and launches, on Datalayer and on the E2B, Daytona and Modal providers. This page is the operator's side of it: what is deployed where, in which order, and how to check it.
+
+:::info What runs today
+The registry API, its four Solr collections, and the environment recorded on reservations. A build is recorded `queued` and nothing runs it yet: the build workflow, the BuildKit builder, the ECR registry on the plane, signing, and the Operator's launch of a user environment each arrive with their own change, and this page grows with them.
+:::
+
+## Where it lives
+
+- **Runtimes**, on each runtimes plane (`r1`), serves the registry beside `/environments`. There is no new service, chart or ingress.
+- **Solr**, in the Runtimes collection set, holds `environments`, `environment-versions`, `environment-artifacts` and `environment-builds`. A build's log chunks are child documents of the build, and a version's lock is kept in a `*_stored` field, stored and never indexed.
+- **IAM**, on prod1, accepts the environment on every reservation, as `environment_uid_s` and `environment_version_s`, and filters usage by it.
+- **Durable** knows Runtimes as a caller of its own, keyed on `DATALAYER_RUNTIMES_DURABLE_API_KEY`. That caller starts nothing until builds run.
+
+## Deploy order
+
+1. **The collections**, on the runtimes plane, with the Runtimes set of `plane solr-init`. The init image must carry the current configset, `*_stored` included, as the [Solr page](/services/system/solr/) explains.
+2. **IAM**, before any Operator that sends the environment on reservations. IAM refuses a metadata key it does not know, and every runtime start fails if the Operator is deployed first.
+3. **Runtimes**, on `code-sandboxes` 1.5.0 or later, since its writes import `code_sandboxes.environments`. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships.
+4. **Durable and the key**, when builds run: `DATALAYER_RUNTIMES_DURABLE_API_KEY` goes in the plane's rc, and `plane up` sets it into the durable release's Secret and into the Runtimes Deployment, beside `DATALAYER_DURABLE_URL`.
+
+```bash
+source ~/.datalayer/datalayerrc-r1
+plane solr-init    # choose 2) Runtimes
+
+source ~/.datalayer/datalayerrc-prod1
+(cd plane/etc/dockerfiles/datalayer-iam && make build-dev push) && p reup datalayer-iam
+
+source ~/.datalayer/datalayerrc-r1
+(cd plane/etc/dockerfiles/datalayer-runtimes && make build-dev push) && p reup datalayer-runtimes
+```
+
+Both images are rebuilt under the tag they already have. Record the digest each pod runs before the deploy: it is the rollback.
+
+```bash
+kubectl get pods -n datalayer-api \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}' \
+  | grep -E '^datalayer-(iam|runtimes)-'
+```
+
+## The API
+
+Every route is under `/api/runtimes/v1`. Who may do what follows the owner of the environment: the account itself, or the owners of the organization that holds it. The organization's members read an environment and launch its promoted version; anybody else is answered `404`, never `403`, so a stranger cannot tell an environment from none.
+
+| Route | Answer |
+| --- | --- |
+| `GET /environments` | The platform environments, unchanged, then the environments of the caller's account and organizations, with `uid`, `origin`, `owner`, `promotedVersion` and `variants`. |
+| `POST /environments` | Creates one; owners of the account named only. |
+| `GET`, `PATCH`, `DELETE /environments/{uid}`; `POST …/archive`; `PUT …/promoted-version` | Reads for members, writes for owners. `DELETE` refuses while an artifact is referenced. |
+| `POST`, `GET /environments/{uid}/versions` | A new draft version, or the versions. |
+| `GET`, `PATCH /environment-versions/{uid}`; `…/validate`, `…/builds`, `…/artifacts`, `…/deprecate` | The version, its capability report per variant, its builds and artifacts. |
+| `…/resolve`, `…/trial` | `501` until the resolver and trial sandboxes ship. |
+| `GET /environment-builds/{uid}`; `…/logs`, `…/cancel`, `…/retry` | The build and its log. `logs?follow=true` answers `501` until logs stream. |
+
+A write takes `If-Match` with the ETag read before it, which is the document's `_version_`: without it the answer is `428`, and with a stale one `412`. A replayed `Idempotency-Key` answers the first result instead of creating a second. An error body carries a `DL_ENV_*` code and a `correlationId`.
+
+`GET /environments` calls IAM once per request, to find the caller's organizations. When IAM or Solr cannot be read, it still answers the platform list.
+
+## Check
+
+```bash
+BASE="${DATALAYER_RUNTIMES_URL%/}/api/runtimes/v1"
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $DATALAYER_API_KEY" "$BASE/environments"
+# 200
+curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer $DATALAYER_API_KEY" "$BASE/environments/01jzzzzzzzzzzzzzzzzzzzzzzz"
+# {"code": "DL_ENV_NOT_FOUND", ...}
+# 404
+```
+
+The second call reads the `environments` collection. A `500` there usually means the collections are missing on the plane, or were created from an image without `*_stored`.
+
+## Usage by environment
+
+```bash
+curl -s -H "Authorization: Bearer $DATALAYER_API_KEY" \
+  "$DATALAYER_IAM_URL/api/iam/v1/usage/user?environment_uid=<uid>&environment_version=<uid>:<n>"
+```
+
+`environment_uid` keeps the runs of one environment, and `environment_version` narrows it to a version. A version without its environment is refused with `422`. The environment rides on the usage record's metadata, a child document the parent query cannot filter on, so the filter applies to the rows the route reads, the newest first.
+
+## Roll back
+
+Put back the digest recorded before the deploy under the tag, then reinstall:
+
+```bash
+docker pull $DATALAYER_DOCKER_REGISTRY/runtimes@sha256:<recorded>
+docker tag $DATALAYER_DOCKER_REGISTRY/runtimes@sha256:<recorded> $DATALAYER_DOCKER_REGISTRY/runtimes:<tag>
+docker push $DATALAYER_DOCKER_REGISTRY/runtimes:<tag>
+p reup datalayer-runtimes
+```
+
+The collections can stay: nothing else reads them. IAM keeps accepting the environment dimensions after a Runtimes rollback, and an IAM rollback must wait until no Operator sends them.
