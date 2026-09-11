@@ -103,6 +103,97 @@ With Runtime Environments, Datalayer allows you to specify, on top of Conda Envi
 
 Every Environment declares **`spec.home`**, where its image's user lives: `/home/datalayer` for every platform image, as `sandbox-contract/v1` fixes it. The Operator mounts home folders, Contents and Volumes under it. It refuses to spawn any runtime of an Environment that declares no home, or a different one, because the Node Mount Gateway delivers under `/home/datalayer` whatever the image expects. The custom resource requires the field, so an Environment without it is refused when it is applied.
 
+## Moving the platform to `/home/datalayer`
+
+The platform's images, Environments and Operator left the Jupyter images' `jovyan` home for `/home/datalayer` in one change, the identity of `sandbox-contract/v1`. On each plane it ships as one cut, in the order below, and rolls back the same way. Run everything from the Services repository with the plane's rc sourced, `source ~/.datalayer/datalayerrc-r1` for r1.
+
+### Before the cut
+
+1. **Release `datalayer-core` with the new home.** The Operator and Contents images install `datalayer-core` from PyPI, and an Operator on a core whose `RUNTIME_HOME_MOUNT_PATH` is still the old home refuses every Environment that declares `/home/datalayer`. Cut the release from `main`, raise `datalayer-core` to it in `common/pyproject.toml` and `contents/pyproject.toml`, and check the wheel:
+
+   ```bash
+   pip download datalayer-core==<version> --no-deps -d /tmp/core
+   unzip -p /tmp/core/datalayer_core-<version>-*.whl datalayer_core/contents_node_mount_gateway.py | grep RUNTIME_HOME_MOUNT_PATH
+   ```
+
+2. **Build and push the runtime images**, each after its base: `jupyter-python` 0.2.0, then `jupyter-python-cuda` 0.3.0, then `jupyter-ai-cuda` 0.3.0 and `jupyter-pytorch-cuda` 0.1.0, and `jupyter-geocat` 0.1.0 and `jupyter-server` 0.1.0 on `jupyter-python`. The tags are in each Makefile.
+
+   ```bash
+   for image in jupyter-python jupyter-python-cuda jupyter-ai-cuda jupyter-pytorch-cuda jupyter-geocat jupyter-server; do
+     (cd plane/etc/dockerfiles/$image && make build-dev push) || break
+   done
+   ```
+
+   `jupyter-pytorch-cuda` pre-downloads a gated model only when `HF_TOKEN` is set. Its Makefile passes the token as the `hf_token` build secret, so it never reaches a layer. Without it, the image builds without the model. Check each image before going on: nothing is left in the old home.
+
+   ```bash
+   docker run --rm --entrypoint tini $DATALAYER_DOCKER_REGISTRY/jupyter-python:0.2.0 -- sh -c 'id; ls -A /home'
+   # uid=1000(datalayer) gid=100(users) groups=100(users)
+   # datalayer
+   ```
+
+3. **Record what runs**, for the rollback: the Operator's and Contents' images by digest, and the definition and Environments as they are.
+
+   ```bash
+   kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}' | grep -E 'operator|contents' > before-images.txt
+   kubectl get runtime-environments -n datalayer-runtimes -o yaml > before-environments.yaml
+   ```
+
+4. **Pre-pull the new images** on the runtime nodes, so the first launches do not wait for them: `plane k8s-prepull-cpu` and `plane k8s-prepull-gpu-cuda`.
+
+### The cut
+
+1. **The definition**, which now requires `spec.home`. The Operator chart carries the same definition, so a later `p reup operator` keeps it.
+
+   ```bash
+   kubectl apply -f operator/etc/crd/runtime-environment.yaml
+   ```
+
+2. **The Environments**, each declaring `home: /home/datalayer` and the new image. `oss/llama-cpp-cuda.yaml` stays out of the cut: its image cannot be rebuilt, it declares no home, and the definition refuses it.
+
+   ```bash
+   kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+   ```
+
+   On a plane that runs the dev or oss set, apply that directory the same way, leaving `llama-cpp-cuda.yaml` out.
+
+3. **The Operator**, built on the released core. Until it runs, launches of the new Environments get their mounts in the wrong home, so keep steps 2 and 3 close together.
+
+   ```bash
+   (cd plane/etc/dockerfiles/datalayer-operator && make build-dev push) && p reup operator
+   plane logs datalayer-operator | grep startup_check
+   ```
+
+4. **Contents**, built on the released core. Its API, worker and bridge share the image.
+
+   ```bash
+   (cd plane/etc/dockerfiles/datalayer-contents && make build-dev push) && p reup contents
+   ```
+
+5. **The warm pools**, whose pods still run the old images until they are replaced:
+
+   ```bash
+   kubectl delete pods -n datalayer-runtimes -l datalayer.io/app=runtime-pools
+   ```
+
+6. **Jupyter Server and the jump hosts**, when they move in the same window: raise `jupyter-server` to 0.1.0 and `ssh` to 0.0.7 in `plane/datalayer_plane/sbin/up.sh`, editing the `--set …image=` lines by their pattern, and reinstall those releases with `p reup`. The jump host's login becomes `datalayer@`.
+
+### Check
+
+Launch a runtime of every Environment. In each, `id` answers `uid=1000(datalayer) gid=100(users)`, `echo $HOME` answers `/home/datalayer`, `ls /home` lists `datalayer` alone, and the home folder and the Environment's Contents are mounted under `/home/datalayer`.
+
+### Roll back
+
+Everything goes back together, the definition first, because the previous Environments declare no home. Take the definition and the Environments from the Services revision before the move, `e3df065f^`:
+
+```bash
+git show e3df065f^:operator/etc/crd/runtime-environment.yaml | kubectl apply -f -
+git archive e3df065f^ plane/etc/specs/runtime-environments | tar -x -C /tmp/before
+kubectl apply -n datalayer-runtimes -f /tmp/before/plane/etc/specs/runtime-environments/prod/
+```
+
+Then put the Operator and Contents back on the images recorded in `before-images.txt`, through their `--set …image=` lines in `up.sh` and `p reup`, and replace the warm pool pods again. The previous runtime images keep their tags and are never overwritten by the move.
+
 ## Simple Environment Example
 
 ```bash
