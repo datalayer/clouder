@@ -591,6 +591,20 @@ def test_destroy_removes_the_registry_its_keys_and_its_workspace(
     assert not tfvars_of(root, SCRATCH).exists()
 
 
+def test_destroy_removes_a_default_key_directory_with_its_workspace_directory(
+    root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scratch registry's destroy left `~/.clouder/ecr-environments/<workspace>/` behind, empty."""
+    a_scratch_registry(root, tmp_path, monkeypatch, [])
+    monkeypatch.setattr(cli, "DEFAULT_KEYS_ROOT", tmp_path / "ecr-environments")
+    keys = write_keys(tmp_path / "ecr-environments" / SCRATCH / "keys")
+    arguments = ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--terraform-dir", str(root)]
+    result = runner.invoke(cli.ecr_environments_app, arguments)
+    assert result.exit_code == 0, result.output
+    assert not keys.parent.exists()
+    assert (tmp_path / "ecr-environments").is_dir()
+
+
 def test_destroy_refuses_the_default_workspace_and_a_registry_holding_environments(
     root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:

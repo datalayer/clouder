@@ -1208,6 +1208,9 @@ def destroy(
         (directory / f"{name}.env").unlink(missing_ok=True)
     if directory.is_dir() and not any(directory.iterdir()):
         directory.rmdir()
+    # The default layout gives each workspace a directory of its own around its keys.
+    if keys_dir is None and directory.parent.is_dir() and not any(directory.parent.iterdir()):
+        directory.parent.rmdir()
     tfvars.unlink()
     print(
         f"[green]Registry {workspace} is destroyed.[/green] Its KMS keys are scheduled for deletion "
