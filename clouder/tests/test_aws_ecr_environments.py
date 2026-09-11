@@ -733,6 +733,47 @@ def test_cosign_runs_in_its_pinned_image_with_the_login_in_a_private_config(
     assert not any("registry-password" in part or "principal-secret" in part for part in sign)
 
 
+class FreshKeyECR(FakeECR):
+    """ECR behind a key IAM has just created: refused a few times, then accepted."""
+
+    def __init__(self, refusals: int = 2) -> None:
+        super().__init__()
+        self.refusals = refusals
+
+    def get_authorization_token(self):
+        if self.refusals > 0:
+            self.refusals -= 1
+            raise ClientError(
+                {"Error": {"Code": "UnrecognizedClientException", "Message": "The security token included in the request is invalid."}},
+                "GetAuthorizationToken",
+            )
+        return super().get_authorization_token()
+
+
+def test_the_check_waits_for_keys_iam_has_just_created(
+    root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first deploy against a real account ran its check at once, and ECR refused the new key."""
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    stub_sessions(monkeypatch, FreshKeyECR(), FakeECR())
+    steps = cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
+    assert [step.name for step in steps if not step.ok] == []
+
+
+def test_a_key_that_never_becomes_usable_fails_the_check_rather_than_crashing(
+    root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(cli, "NEW_KEY_TIMEOUT", 0)
+    stub_sessions(monkeypatch, FreshKeyECR(refusals=1_000), FakeECR())
+    steps = cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
+    assert [(step.name, step.ok) for step in steps] == [("log in as the builder", False)]
+    assert "security token" in steps[0].detail
+    result = runner.invoke(cli.ecr_environments_app, ["check", "--terraform-dir", str(root)])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+
+
 @pytest.mark.parametrize(
     ("principal", "base_reader", "step"),
     [

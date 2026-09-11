@@ -48,6 +48,11 @@ PRINCIPALS = ("builder", "puller", "reader")
 #: What AWS answers when a policy refuses a call.
 DENIED = {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation"}
 
+#: What AWS answers while an access key IAM has just created is not usable yet.
+NOT_YET_VALID = {"InvalidClientTokenId", "UnrecognizedClientException", "SignatureDoesNotMatch", "AuthFailure"}
+#: How long a new key is given to become usable.
+NEW_KEY_TIMEOUT = 120
+
 DEFAULT_REGION = "us-east-1"
 DEFAULT_PROBE_IMAGE = "public.ecr.aws/docker/library/busybox:1.36"
 #: Where each workspace keeps its key files: `<root>/<workspace>/keys`.
@@ -824,6 +829,27 @@ def _denied(error: ClientError) -> bool:
     return error.response.get("Error", {}).get("Code") in DENIED
 
 
+def _code(error: ClientError) -> str:
+    return str(error.response.get("Error", {}).get("Code") or "")
+
+
+def await_new_key(call: Any, *, interval: float = 5) -> Any:
+    """Make a call with a key IAM has just created, retrying until the key is usable.
+
+    A new access key is refused for a while as IAM propagates it. The first
+    deploy of a registry ran its check at once, and ECR answered that the
+    security token was invalid.
+    """
+    deadline = time.monotonic() + NEW_KEY_TIMEOUT
+    while True:
+        try:
+            return call()
+        except ClientError as error:
+            if _code(error) not in NOT_YET_VALID or time.monotonic() >= deadline:
+                raise
+        time.sleep(interval)
+
+
 def _registry_password(ecr: Any) -> str:
     token = ecr.get_authorization_token()["authorizationData"][0]["authorizationToken"]
     return base64.b64decode(token).decode().split(":", 1)[1]
@@ -893,8 +919,11 @@ def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_tim
         return any(not step.ok for step in steps)
 
     digest = ""
+    try:
+        builder_password = await_new_key(lambda: _registry_password(builder))
+    except ClientError as error:
+        return [Step("log in as the builder", False, str(error))]
     with tempfile.TemporaryDirectory() as builder_directory, tempfile.TemporaryDirectory() as puller_directory:
-        builder_password = _registry_password(builder)
         builder_config = _docker_config(Path(builder_directory), registry, builder_password)
         login = _login(registry, builder_password)
         steps.append(Step("log in as the builder", login.ok, login.detail))
@@ -933,19 +962,23 @@ def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_tim
                     env=_environment(sessions["builder"], region, builder_config),
                 )
             )
-            puller_password = _registry_password(puller)
-            puller_config = _docker_config(Path(puller_directory), registry, puller_password)
-            login = _login(registry, puller_password)
-            steps.append(Step("log in as the puller", login.ok, login.detail))
-            steps.append(_command("pull by digest as the puller", ["docker", "pull", pinned]))
-            verify = ["verify", "--insecure-ignore-tlog=true", "--key", signing, pinned]
-            steps.append(
-                _command(
-                    "verify the signature as the puller",
-                    [*cosign_command(puller_config), *verify],
-                    env=_environment(sessions["puller"], region, puller_config),
+            try:
+                puller_password = await_new_key(lambda: _registry_password(puller))
+            except ClientError as error:
+                steps.append(Step("log in as the puller", False, str(error)))
+            else:
+                puller_config = _docker_config(Path(puller_directory), registry, puller_password)
+                login = _login(registry, puller_password)
+                steps.append(Step("log in as the puller", login.ok, login.detail))
+                steps.append(_command("pull by digest as the puller", ["docker", "pull", pinned]))
+                verify = ["verify", "--insecure-ignore-tlog=true", "--key", signing, pinned]
+                steps.append(
+                    _command(
+                        "verify the signature as the puller",
+                        [*cosign_command(puller_config), *verify],
+                        env=_environment(sessions["puller"], region, puller_config),
+                    )
                 )
-            )
     if digest:
         steps.append(_scan(reader, repository, digest, scan_timeout))
     try:
@@ -977,7 +1010,9 @@ def _scan(reader: Any, repository: str, digest: str, timeout: int) -> Step:
             if status in {"FAILED", "UNSUPPORTED_IMAGE"}:
                 return Step("read the scan as the reader", False, status)
         except ClientError as error:
-            if error.response.get("Error", {}).get("Code") != "ScanNotFoundException":
+            # A scan not started yet, or a reader key IAM has not finished propagating,
+            # is waited for; anything else is the answer.
+            if _code(error) not in {"ScanNotFoundException", *NOT_YET_VALID}:
                 return Step("read the scan as the reader", False, str(error))
         if time.monotonic() >= deadline:
             return Step("read the scan as the reader", False, f"no scan result after {timeout} s")

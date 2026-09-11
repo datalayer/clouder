@@ -105,7 +105,7 @@ clouder aws ecr-environments check
 | Create a repository outside the prefix | Refused to the builder |
 | Read the probe as the base-reader | Refused: that role reads bases only |
 
-It removes the probe image when it is done. A scan can take a few minutes, and `--scan-timeout` sets how long to wait.
+It removes the probe image when it is done. A scan can take a few minutes, and `--scan-timeout` sets how long to wait. A key IAM has just created is refused for a while as it propagates, so a check run straight after `deploy` created the keys waits up to two minutes for them.
 
 cosign signs with `--tlog-upload=false` and verifies with `--insecure-ignore-tlog=true`. The signature of a private environment is not written to the public transparency log, where anyone could read its digest and its repository. The key is the trust anchor.
 
