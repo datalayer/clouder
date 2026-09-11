@@ -88,6 +88,23 @@ The second call reads the `environments` collection. A `500` there usually means
 
 ## Launching a user environment
 
+A launch names a user environment on `POST /api/runtimes/v1/runtimes` with `environment.name`: `<account-handle>/<name>`, or the environment uid. `environment.version` is optional: a number or a version uid, and without it the promoted version launches. Any other name is a platform environment and launches as it always has, with no Solr or IAM call.
+
+For a user environment, Runtimes:
+- checks that the caller may use the version: the owner may launch any version that takes sandboxes, and an organization member one that has been promoted;
+- finds the version's `ready` Datalayer artifact for its plane, `DATALAYER_RUNTIMES_PLANE` (`r1` by default);
+- drops any artifact a client sent.
+
+It then asks the Operator, as described below.
+
+| Status | Code | When |
+| --- | --- | --- |
+| 404 | `DL_ENV_NOT_FOUND` | A stranger, or an unknown or deleted environment or version. A stranger cannot tell an environment from none. |
+| 403 | `DL_ENV_FORBIDDEN` | A member pinning a version that was never promoted. |
+| 409 | `DL_ENV_CONFLICT` | A version that takes no new sandbox, such as `deprecated` or `building`, or an environment with no promoted version. |
+| 422 | `DL_ENV_ARTIFACT_MISSING` | No ready Datalayer artifact on the plane. The body lists the variants and planes that have one. |
+| 503 | `DL_ENV_UNAVAILABLE` | `DATALAYER_RUNTIMES_API_KEY` is not set on Runtimes. |
+
 The Operator launches a user environment only when Runtimes asks for it. Runtimes presents `DATALAYER_RUNTIMES_API_KEY` in `X-API-Key`, which `plane up` sets on the Operator from the rc. The launch is cold, with no pool of its own: the pod pulls the ECR digest Runtimes resolved, `IfNotPresent`, with the `ecr-environments` pull secret beside `reg-creds`.
 
 The size class gives the pod its resources and its burning rate:
