@@ -353,6 +353,7 @@ it.
 | `executions.delegate`, `steer`, `pause`, `resume`, `cancel`, `checkpoint`, `collect`, `terminate` | `POST /orchestration/executions/{command}` |
 | `executions.subscribe` | `GET /orchestration/executions/{execution_id}/events`, Server-Sent Events |
 | Reads | `GET /orchestration/executions` (`rootExecutionId`, `parentExecutionId`, `status`), `GET /orchestration/executions/{execution_id}` |
+| `executions.report` | `POST /orchestration/executions/{execution_id}/report`, the execution's live report |
 
 - **State** is the `orchestration` Solr collection
   (`DATALAYER_SOLR_ORCHESTRATION_COLLECTION`), through a store opened per
@@ -379,7 +380,10 @@ it.
   `Last-Event-ID` resumes there, and ends with `end` once every execution it
   covers is terminal. A connection dropped mid-stream and resumed receives
   every missed event exactly once (`tests/test_orchestration_api.py` drops
-  one at the ASGI level).
+  one at the ASGI level). The app's execution page
+  (`/orchestration/:executionId`) reads it through `core`'s
+  `subscribeToExecution`, and the execution and its artifacts through
+  `executions.get` and `executions.collect`.
 - **The user channel** (`/ws`, `user:{uid}`) carries an `orchestration.tree`
   event — the tree at a glance: each execution's state, agent and goal, the
   counts by state, and whether it is over — never the event stream itself.
@@ -389,6 +393,87 @@ it.
   `broadcast` reaches the clients of the replica that sends it, so with more
   than one ai-agents replica a client may miss an announcement; the
   subscription is what a page watching one tree relies on.
+- **Approvals** a run waits on are tool approvals (O1-08). The durable worker
+  asks for one as the person, `POST /tool-approvals` with the `task_id` of the
+  approval run and the `expires_at` of the wait, and a second request for the
+  same task answers with the approval already made. Deciding it — `POST
+  /tool-approvals/{id}/approve` or `/reject`, or the Tool Approvals page's
+  `tool_approval_decision` on `/ws` — signals that run's `input` before the
+  approval is recorded as decided. With no durable service to tell, the answer
+  is `503` and nothing is decided; a run already over is `409`, and the
+  approval is marked `expired` (`tool_approval_expired` on the user channel).
+  A pending approval past its `expires_at` reads `expired` and leaves the
+  pending count. The MCP gateway's approval gate names the person too, so the
+  tool calls it pauses are decided on the same page, and the page's "Runs
+  waiting on you" leaves out a run whose approval has a card there.
+- **The CLI** of `datalayer-core` calls these routes: `datalayer agents
+  discover`, and `datalayer executions run`, `watch`, `steer`, `cancel` and
+  `artifacts`, with `--account` for an organization or team. Its paths come
+  from `datalayer_core/orchestration/api.py`, generated from the contract
+  beside the TypeScript table; a mutating command without
+  `--idempotency-key` carries one derived from what it asks. `agent-runtimes`
+  adds its agent runtime commands to the same `agents` group.
+- **Measures** are taken by the execution store's rules, so in this service
+  and in the durable worker alike (O1-14), and filed under the account the
+  store is opened for (`usage_account_uid`): `orchestration.delegations`
+  (`created` or `duplicate`), `orchestration.acceptance_seconds` and
+  `orchestration.first_worker_event_seconds` by protocol, from the execution's
+  creation to its first milestone at or past `accepted` and to the first
+  milestone a worker reported, `orchestration.executions.settled` by protocol,
+  state and `recovery` (`disconnected` when the watcher lost sight of the
+  worker and asked again, `worker_lost` when the execution moved because the
+  worker no longer had the work, `none`), `orchestration.execution.duration`,
+  `orchestration.artifacts` (`committed` or `superseded`), and, from the
+  conformance suite, `orchestration.conformance.scenarios` by scenario,
+  binding and outcome. A re-attach leaves a progress event carrying
+  `reattached`, which is what `recovery` reads. The OTEL service's
+  `orchestration` built-in dashboard draws them, and the app's Executions page
+  reads the six measures from it through `core`'s `fetchOrchestrationMeasures`.
+- **Artifacts** a worker produces are written by the durable worker, as the
+  person, into the account's orchestration space — Spacer's
+  `GET /spaces/orchestration`, one per account and made on first use like the
+  benchmarks space (O1-10). A body that is an nbformat document becomes a
+  notebook and anything else a Lexical document headed by the agent and the
+  objective. The artifact is recorded with that object's reference,
+  `datalayer:<document|notebook>/<uid>@<content hash>`, which
+  `executions.collect` returns and the execution page links to. Every
+  attempt's artifacts are written, and the commit marks a later attempt's
+  superseded, so nothing is overwritten; an artifact Spacer cannot take keeps
+  no reference, and the execution still completes.
+- **Reports** (O1-15): `executions.report` writes, as the person and the first
+  time only, a Lexical document into the same space
+  (`agent_runtimes.orchestration.reports`): the goal, one `execution-tree`
+  node storing the execution id and nothing the run did, and room for notes.
+  It registers the document on the execution as its `orchestration-report`
+  artifact, `art_report-<execution>`, referenced
+  `datalayer:document/<uid>@live`; asking again answers that artifact. The
+  artifact has no provenance, so neither the commit rule nor the
+  `orchestration.artifacts` measure touches it. Spacer not taking the document
+  is `502` with a retryable `internal` error, and nothing is registered. The
+  node is `jupyter-lexical`'s `ExecutionTreeNode`, drawn through
+  `OrchestrationRenderersContext`: the app's literate editor renders the tree
+  live from `executions.collect` and `executions.subscribe`, with a notebook
+  artifact's outputs through `jupyter-react`'s `Output`.
+- **Credits** (O1-07) are the tree's, held by IAM in one `execution-tree`
+  reservation keyed on the root (see the IAM page). `policy.budget.credits` is
+  set on the root; a child that sets its own is refused `invalid_command`.
+  `agents.create` with an `executionId` whose root holds credits starts the
+  worker's `SandboxWorkflow` with `parent_reservation_uid`, so its runtime
+  draws on the tree. The durable worker opens and closes the reservation and
+  records a spent tree as `budget_exhausted` with `details.budget: platform`;
+  the control plane itself never calls IAM for it.
+- **Model budget** (O1-07): `policy.budget.inputTokens`, `outputTokens` and
+  `cost` travel with the delegation — under `datalayer.budget` in the A2A
+  message's `metadata` and in the ACP prompt's `_meta` — and agent-runtimes
+  holds the run to them as pydantic-ai's own `UsageLimits`. A limit reached
+  comes back where the budget went: a failed A2A status whose message
+  `metadata` carries `datalayer.error`, or an ACP `max_tokens` or
+  `max_turn_requests` stop reason with the same in `_meta`. The adapters record
+  `budget_exhausted` with `details.budget: model` and the limit — `delegated:
+  false` for an ACP agent's own limit — not retryable, and the durable worker
+  cancels what the execution delegated. The execution page and the report's
+  tree say which of the two budgets it was. Conformance scenario 11 runs it on
+  every binding.
 - **The contract** is
   `datalayer_ai_agents/contracts/v1/orchestration-openapi.json`, generated
   from the routes with each command's test fixture as its example

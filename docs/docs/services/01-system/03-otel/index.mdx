@@ -109,7 +109,7 @@ The FastAPI query service exposes the following endpoints under `/api/otel/v1`:
 | `/query/sql` | POST | JWT | Run ad-hoc SQL via DataFusion |
 | `/system/stats` | GET | Admin | Storage statistics |
 | `/ws` | WS | Token | Real-time WebSocket stream |
-| `/dashboards/` | GET, POST | JWT | The built-in MCP dashboards, then the account's own |
+| `/dashboards/` | GET, POST | JWT | The built-in MCP and orchestration dashboards, then the account's own |
 | `/dashboards/{id}` | GET, PUT, DELETE | JWT | One dashboard; built-ins are read-only (`409`) |
 | `/dashboards/{id}/data` | GET | JWT | Every panel, answered under the caller's account scope |
 
@@ -119,19 +119,63 @@ API docs are available at `https://<RUN_HOST>/api/otel/v1/docs` (Swagger) and `/
 
 The MCP gateway keeps its metrics catalogue and serves no telemetry route:
 this service is where its signals are read, so its dashboards live here,
-beside the platform's others. Five are built in, one per marketed area —
-**calls and refusals**, **runs**, **sandboxes by provider**, **data access**,
-**agents by organization** — and they are *generated* from a copy of the
-gateway's catalogue (`datalayer_otel/dashboards.py`) that a contract test
-holds equal to the gateway's `telemetry.CATALOGUE`. An instrument the
-gateway adds without a panel fails a test rather than going undrawn; a
-panel naming a label the gateway does not emit fails at import.
+beside the platform's others. Seven are built in. Six are the gateway's —
+**service levels**, the four SLIs the app's Observability view and `datalayer
+mcp metrics` read, and one per marketed MCP area: **calls and refusals**,
+**runs**, **sandboxes by provider**, **data access**, **agents by
+organization** — *generated* from a copy of the gateway's catalogue
+(`datalayer_otel/dashboards.py`) that a contract test holds equal to the
+gateway's `telemetry.CATALOGUE`. The seventh,
+**orchestration**, is generated the same way from a copy of agent-runtimes'
+`orchestration_measures.CATALOGUE`: the measures the execution store records
+wherever executions are held, in the agents service and in durable. An
+instrument a writer adds without a panel fails a test rather than going
+undrawn; a panel naming a label its writer does not emit fails at import.
 
 A dashboard is a list of panels. A panel is one metric, optionally split by
-one of its labels, summarised one way: counters add up (`sum`), a gauge is
-its latest reading (`last`), a duration is averaged (`avg`); `max` and
-`count` exist. No percentile is promised — the metrics rows carry what the
-exporter wrote per interval, not histogram buckets.
+one of its labels (`by`) and narrowed to some label values (`where`, as
+`{"recovery": "disconnected"}`), summarised one way: `sum`, `last`, `avg`,
+`max` or `count`. The orchestration dashboard narrows its settled executions
+to those that lost sight of their worker and to those whose worker was lost,
+each split by how they ended, which is what the share that completed is read
+from.
+
+### How a panel reads its series
+
+Services export counters as running totals, the OpenTelemetry default: every
+export repeats everything counted since the process started, so a service
+handling one call a minute reports 1, 2, 3, 4 and 5 over five minutes. Adding
+those reports up says 15; the answer is 5. A panel therefore reads each
+**series** — one process's running total for one set of labels — and only
+then combines the series:
+
+- a counter is how much its running total went up over the window: its last
+  reading minus its reading when the window opened, and all of it when its
+  process started inside the window;
+- a change reported as a delta adds up;
+- a gauge, or an up-down counter, is its latest reading;
+- a duration is its total over its count.
+
+`sum` adds the series' values; `avg` and `max` are over series, except for a
+duration, whose `avg` is its total time over its total count; `count` is how
+many things were counted, or how many series a gauge has. `p50`, `p95` and
+`p99` read a percentile from a histogram's buckets: each series' bucket
+increases over the window, added across processes, and the rank interpolated
+within the bucket it falls in, as Prometheus's `histogram_quantile` does. A
+rank in the last bucket, which has no upper bound, reads as that bucket's
+lower bound. A panel whose aggregation is not its metric's default names it
+in its id (`mcp-call-duration-p95`).
+
+The consumer keeps what makes a point part of a series:
+`start_time_unix_nano` (when its running total started, so a restarted
+process is a new series rather than a counter that went down),
+`aggregation_temporality` (`cumulative` or `delta`), `is_monotonic` (a sum
+that only goes up), and for an explicit-bucket histogram its `bucket_counts`
+and `explicit_bounds`. Points stored before those columns existed read as
+running totals from an unknown start. Each panel is two aggregate queries,
+one row per series, so a window of any length is read whole; the `points` a
+chart draws — each export's step — are what `limit` can cut, and
+`points_truncated` says when it did.
 
 `GET /dashboards/{id}/data?start=&end=&account_uid=` answers every panel
 under the caller's resolved account scope, the same scope every other query
@@ -142,9 +186,11 @@ fails answers with its `error` and the other panels still answer.
 Whose account a point is under decides who sees it. The gateway exports
 with a service credential, so its platform-level points — workers,
 dependencies, jobs — are filed under the gateway's own account, and a
-platform administrator asking for a built-in dashboard **with no
+platform administrator asking for a built-in MCP dashboard **with no
 `account_uid`** reads that account rather than their personal one, where the
-gateway has never written a point. The account is found in the store, from
+gateway has never written a point. The orchestration dashboard is never
+redirected: its points carry `usage_account_uid`, the account whose
+executions they count. The account is found in the store, from
 the instruments only the gateway writes about itself, not configured. A call
 made in an organization carries `usage_account_uid` as a label, and the
 consumer files that point under the organization instead: that is what

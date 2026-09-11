@@ -2385,7 +2385,7 @@ conventions forbid.
 | Instrument | Kind | Labels | What it says |
 | --- | --- | --- | --- |
 | `mcp.calls` | counter | `tool`, `method`, `outcome`; `usage_account_uid` when the call was made in an organization | Tool calls the gateway forwarded |
-| `mcp.call.duration` | histogram | `tool`; `usage_account_uid` when the call was made in an organization | How long a tool call took, end to end — the latency SLI |
+| `mcp.call.duration` | histogram | `tool`; `usage_account_uid` when the call was made in an organization | How long a tool call took, end to end, in seconds — the latency SLI, its p95 read from the buckets |
 | `mcp.tasks` | counter | `status`; `usage_account_uid` when the call was made in an organization | Tasks that reached a terminal state — a rate, because an SLO is written against one |
 | `mcp.task.duration` | histogram | `tool`; `usage_account_uid` when the call was made in an organization | How long a task ran before reaching a terminal state |
 | `sandbox.launch_seconds` | histogram | `provider`, `environment` | How long a sandbox took to become usable |
@@ -2428,7 +2428,12 @@ endpoint looks identical to a healthy one from outside, so check the startup
 line rather than assuming.
 :::
 
-Still missing: the MCP dashboards and alert rules on the OTEL service, and a
+The dashboards are the OTEL service's built-ins (see the OTEL service's
+Dashboards): **service levels** — the four SLIs, which the Observability view
+and `datalayer mcp metrics` read rather than adding metric points up, since the
+gateway exports running totals — and one per marketed area. The alert rules
+run in the gateway (`jobs.evaluate_alerts`) over its own stores: open and
+failed tasks, audit write failures, agent spend and budgets. Still missing: a
 `PrometheusRule` in this chart. A gateway outage is caught today by the
 ordinary Kubernetes deployment and ingress alerts, not by an MCP-specific one.
 

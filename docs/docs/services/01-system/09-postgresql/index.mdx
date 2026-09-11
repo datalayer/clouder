@@ -162,6 +162,25 @@ Default integration settings:
 If `DATALAYER_POSTGRESQL_AGENT_MEMORIES_URI` is not explicitly set, the operator builds
 it from the discovered username/password and host/port/db defaults.
 
+### Agent runtime protocol state
+
+The same database holds what an agent runtime on Kubernetes promised over its
+protocols, so it outlives the pod: the A2A tasks it issued (with their history
+and artifacts), their conversation contexts, the runs still owed, and its ACP
+sessions with each turn of their conversations. They live in one table,
+`agent_runtime_protocol_state` (`kind`, `key`, `value` JSONB, `updated_at`),
+which the runtime creates on first use; keys are scoped by agent (`<agent>/<task>`)
+and by session (`<session>/<turn>`). A runtime that starts finds the tasks a
+client polls and the sessions a client loads again, and runs again the A2A
+tasks the previous pod left submitted or working.
+
+The runtime picks this database with the rule its memory backends use: on
+Kubernetes (`KUBERNETES_SERVICE_HOST` set) and with the agent-memories variables
+above, PostgreSQL; otherwise a SQLite file at
+`AGENT_RUNTIMES_PROTOCOL_STATE_PATH` (default
+`~/.datalayer/agent-runtimes/protocol-state.sqlite`), which does not survive a
+pod. The driver is `psycopg`, a dependency of `agent-runtimes` itself.
+
 ### Per-User Memory Isolation
 
 Memories are stored in a **single shared** `mem0` database and `agent_memories`

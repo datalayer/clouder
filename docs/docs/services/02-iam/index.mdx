@@ -494,6 +494,47 @@ a second person is refused — and the AI Agents service then moves what it
 owns, which is every benchmark record the trial made. Both halves are
 idempotent, so a lost answer is harmless.
 
+## Execution tree reservations
+
+The credits a tree of orchestration executions may spend are held by IAM, in
+one reservation for the whole tree (`ORCHESTRATOR.md`, O1-07), rather than
+added up by the control plane.
+
+- **The tree's reservation** is a reservation like any other, of
+  `resource_type` `execution-tree`, keyed on the root execution's id, with a
+  `burning_rate` of `0`: it holds its credits out of the account's balance —
+  and is refused like any reservation when the balance does not have them —
+  and burns nothing itself. `DELETE /api/iam/v1/usage/reservations/{id}`
+  closes it, charging nothing.
+- **A runtime of the tree** names it: `parent_reservation_uid` on
+  `POST /api/iam/v1/usage/reservations`, which the Operator sends from the
+  runtime request's own `parent_reservation_uid`. The tree already holds the
+  credits, so the balance is not asked a second time and the runtime holds
+  none of its own while the tree is open. It is granted no more than the tree
+  has left — its limit, less what its ended runtimes were charged, less what
+  its open ones hold at their limit — which is how the runtime stops when the
+  tree's credits are spent. A postpaid account is bounded by its tree all the
+  same: the limit is the one somebody set on the work.
+- **Refusals** have the shape of `insufficient_credits` (`200`,
+  `success: false`), with a reason of their own:
+  `execution_tree_credits_exhausted` with the tree's `credits_limit`,
+  `consumed_credits`, `held_credits` and `remaining_credits`, or
+  `execution_tree_not_open` when the parent is not an open tree of the
+  billing account. Nothing is written for either.
+- **Reading a tree** is `GET /api/iam/v1/usage/reservations/{id}/tree`, an
+  internal route like creating and deleting a reservation (`X-Forwarded-User`,
+  with `billing_entity_uid` for an organization or team): whether it is open
+  and what it consumed, holds and has left. A tree billed to another account
+  is `404`.
+- **External checkouts.** Where credits are checked out externally (the
+  Anaconda addon), a tree is refused and the checkout it just made is ended:
+  the checkout would hold the credits and IAM could not draw the tree's
+  runtimes against it. A runtime of a tree never checks anything out.
+
+The record is `parent_reservation_uid_s` on the usage document. Deploy IAM
+before the Operator: an IAM that does not know the field would grant a
+runtime of a tree its full request.
+
 ## Where IAM's own audit rows go
 
 IAM records its security decisions — a token issued, refused, exchanged or

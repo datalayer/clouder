@@ -505,6 +505,24 @@ kubectl -n datalayer-runtimes get secret -l contents.datalayer.io/mount-attachme
 kubectl -n datalayer-api logs deploy/datalayer-operator | grep 'mounted bucket session'
 ~~~
 
+## Runtimes of an execution tree
+
+A runtime requested with `parent_reservation_uid` is metered against that
+execution tree (`ORCHESTRATOR.md`, O1-07). The Operator names the tree on the
+reservation it asks IAM for, and IAM grants no more than the tree has left —
+possibly less than the `credits_limit` the request asked. The pod expires on
+what was granted (`runtime-pools.datalayer.io/expired-at`), not on what was
+asked, so it stops when the tree's credits are spent.
+
+A tree with nothing left answers `402` with `reason:
+execution_tree_credits_exhausted`, or `execution_tree_not_open` for a tree
+that is not open, beside `insufficient_credits` for an account's own balance.
+
+The reservation sweeps — `check_usage` per pool and the global scan — stop a
+reservation whose pod is gone. An `execution-tree` reservation has no pod: both
+leave it alone, and it is closed when its tree ends. IAM ships before the
+Operator for this change.
+
 ## Tear Down Datalayer Operator
 
 If needed, tear down.
