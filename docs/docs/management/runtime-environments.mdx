@@ -170,10 +170,10 @@ The platform's images, Environments and Operator left the Jupyter images' `jovya
    (cd plane/etc/dockerfiles/datalayer-contents && make build-dev push) && p reup contents
    ```
 
-5. **The warm pools**, whose pods still run the old images until they are replaced:
+5. **The warm pools**, whose idle pods still run the old images until they are replaced. Replace only the `available` ones. A pool pod `assigned` to somebody is that person's running runtime, and it keeps its old image until the session ends.
 
    ```bash
-   kubectl delete pods -n datalayer-runtimes -l datalayer.io/app=runtime-pools
+   kubectl delete pods -n datalayer-runtimes -l runtime-pools.datalayer.io/pod-status=available
    ```
 
 6. **Jupyter Server and the jump hosts**, when they move in the same window: raise `jupyter-server` to 0.1.0 and `ssh` to 0.0.7 in `plane/datalayer_plane/sbin/up.sh`, editing the `--set …image=` lines by their pattern, and reinstall those releases with `p reup`. The jump host's login becomes `datalayer@`.
