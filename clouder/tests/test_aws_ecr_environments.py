@@ -43,6 +43,24 @@ def said(result) -> str:
     return " ".join(result.output.split())
 
 
+class FakeRegistry:
+    """An account's ECR registry, as far as its scanning configuration goes; fresh by default."""
+
+    def __init__(self, scan_type: str = "BASIC", filters: tuple[str, ...] = ()) -> None:
+        self.configuration = {
+            "scanType": scan_type,
+            "rules": [
+                {"scanFrequency": "CONTINUOUS_SCAN", "repositoryFilters": [{"filter": item, "filterType": "WILDCARD"}]}
+                for item in filters
+            ],
+        }
+        self.reads = 0
+
+    def get_registry_scanning_configuration(self):
+        self.reads += 1
+        return {"registryId": "123456789012", "scanningConfiguration": self.configuration}
+
+
 class Recorder:
     """Every command the CLI runs, answered as if it succeeded."""
 
@@ -87,6 +105,7 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> Recorder:
     recording = Recorder()
     monkeypatch.setattr(cli, "_run", recording)
     monkeypatch.setattr(cli, "_which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(cli, "_client", lambda service, region=None: FakeRegistry())
     monkeypatch.delenv("DATALAYER_ECR_ENVIRONMENTS_REGION", raising=False)
     monkeypatch.delenv("DATALAYER_ECR_ENVIRONMENTS_REGISTRY", raising=False)
     monkeypatch.delenv("DATALAYER_DURABLE_NAMESPACE", raising=False)
@@ -172,6 +191,59 @@ def test_without_terraform_or_docker_the_command_says_so(
     assert result.exit_code == 1
     assert "docker" in result.output
     assert recorder.commands == []
+
+
+def use_registry(monkeypatch: pytest.MonkeyPatch, registry: FakeRegistry) -> None:
+    monkeypatch.setattr(cli, "_client", lambda service, region=None: registry)
+
+
+def test_scanning_that_already_covers_the_prefix_is_left_as_it_is(
+    root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account this was first run against scanned `*` continuously; replacing it would have stopped that."""
+    use_registry(monkeypatch, FakeRegistry("ENHANCED", ("*",)))
+    result = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
+    assert result.exit_code == 0, result.output
+    assert "manage_registry_scanning = false" in (root / cli.TFVARS).read_text()
+    assert "left as it is" in said(result)
+
+
+def test_other_scanning_rules_are_replaced_only_when_they_are_named_again(
+    root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_registry(monkeypatch, FakeRegistry("ENHANCED", ("services/*",)))
+    refused = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
+    assert refused.exit_code == 1
+    assert "services/*" in said(refused) and recorder.commands == []
+    kept = runner.invoke(
+        cli.ecr_environments_app, ["plan", "--extra-scan-filter", "services/*", "--terraform-dir", str(root)]
+    )
+    assert kept.exit_code == 0, kept.output
+    tfvars = (root / cli.TFVARS).read_text()
+    assert 'extra_scan_filters = ["services/*"]' in tfvars
+    assert "manage_registry_scanning = true" in tfvars
+
+
+def test_a_fresh_account_gets_enhanced_scanning_and_an_opt_out_reads_nothing(
+    root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = FakeRegistry()
+    use_registry(monkeypatch, registry)
+    assert runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]).exit_code == 0
+    assert "manage_registry_scanning = true" in (root / cli.TFVARS).read_text()
+    registry.reads = 0
+    arguments = ["plan", "--no-manage-registry-scanning", "--terraform-dir", str(root)]
+    assert runner.invoke(cli.ecr_environments_app, arguments).exit_code == 0
+    assert registry.reads == 0
+    assert "manage_registry_scanning = false" in (root / cli.TFVARS).read_text()
+
+
+@pytest.mark.parametrize(
+    ("repository_filter", "covered"),
+    [("*", True), ("environments/*", True), ("env*", True), ("environments*", True), ("services/*", False), ("*/base", False), ("environments/u/*", False)],
+)
+def test_a_filter_covers_the_prefix_only_when_it_matches_everything_under_it(repository_filter: str, covered: bool) -> None:
+    assert cli._covers(repository_filter, "environments") is covered
 
 
 # --- Keys --------------------------------------------------------------------------------
@@ -332,6 +404,7 @@ def test_the_refresher_needs_the_puller_secret(recorder: Recorder, monkeypatch: 
     def run(command, **kwargs):
         if "get" in command and "secret" in command:
             recorder.commands.append(list(command))
+            recorder.inputs.append(None)
             return subprocess.CompletedProcess(command, 1, "", "NotFound")
         return recorder(command, **kwargs)
 
@@ -348,7 +421,7 @@ def test_the_refresher_needs_the_puller_secret(recorder: Recorder, monkeypatch: 
 @pytest.fixture
 def aws(monkeypatch: pytest.MonkeyPatch) -> FakeIAM:
     iam = FakeIAM()
-    monkeypatch.setattr(cli, "_client", lambda service, region=None: iam)
+    monkeypatch.setattr(cli, "_client", lambda service, region=None: iam if service == "iam" else FakeRegistry())
     monkeypatch.setattr(cli, "get_aws_identity", lambda: {"account_id": "123456789012", "arn": "arn:aws:iam::123456789012:user/owner"})
     monkeypatch.setattr(cli, "run_check", lambda values, keys_dir, probe_image, scan_timeout: [cli.Step("push by the builder", True)])
     return iam

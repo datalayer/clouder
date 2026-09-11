@@ -40,7 +40,11 @@ Every policy is scoped to the `environments/` prefix. A user environment gets it
 4. `docker` and [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) for the final check, unless you pass `--skip-check`.
 
 :::caution Registry scanning is one per region
-An AWS account has one registry scanning configuration per region, and by default the command owns it. Pass every other scanning rule of that region with `--extra-scan-filter`, or keep the configuration you have with `--no-manage-registry-scanning`.
+An AWS account has one registry scanning configuration per region, and applying the registry replaces it. So the command reads it first:
+
+- Enhanced scanning that already covers `environments/`, such as a rule for `*`, is left as it is.
+- A configuration that scans anything else is never replaced silently. The command stops and names what it scans; pass each of those filters with `--extra-scan-filter` to keep them, or pass `--no-manage-registry-scanning` to leave the configuration alone.
+- A region with no scanning rules gets enhanced scanning for `environments/`.
 :::
 
 ## Deploy

@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -156,6 +156,46 @@ def _settings(
     )
 
 
+def _covers(repository_filter: str, repository_prefix: str) -> bool:
+    """Whether an ECR wildcard filter matches every repository under the prefix."""
+    if repository_filter.count("*") != 1 or not repository_filter.endswith("*"):
+        return False
+    return f"{repository_prefix}/".startswith(repository_filter[:-1])
+
+
+def registry_scanning(ecr: Any, settings: Settings) -> Settings:
+    """Whether this root may own the account's registry scanning configuration.
+
+    There is one configuration per account and region, and applying this root
+    replaces it. Enhanced scanning that already covers the prefix is left as
+    it is; a configuration scanning anything else is replaced only when every
+    one of its filters is passed again with `--extra-scan-filter`.
+    """
+    if not settings.manage_registry_scanning:
+        return settings
+    current = ecr.get_registry_scanning_configuration().get("scanningConfiguration", {})
+    filters = [
+        item.get("filter", "")
+        for rule in current.get("rules", [])
+        for item in rule.get("repositoryFilters", [])
+    ]
+    if current.get("scanType") == "ENHANCED" and any(_covers(item, settings.repository_prefix) for item in filters):
+        print(
+            f"Enhanced scanning already covers {settings.repository_prefix}/ ({', '.join(filters)}); "
+            "the account's scanning configuration is left as it is."
+        )
+        return replace(settings, manage_registry_scanning=False)
+    lost = [item for item in filters if item not in settings.extra_scan_filters]
+    if lost:
+        print(
+            "[red]Applying would replace this account's registry scanning, which scans "
+            f"{', '.join(lost)}. Pass each with --extra-scan-filter to keep it, or pass "
+            "--no-manage-registry-scanning to leave the configuration alone.[/red]"
+        )
+        raise typer.Exit(1)
+    return settings
+
+
 def _hcl(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -282,6 +322,7 @@ def plan(
     settings = _settings(
         region, project_name, repository_prefix, base_channel, manage_registry_scanning, extra_scan_filter
     )
+    settings = registry_scanning(_client("ecr", region=settings.region), settings)
     changed = plan_registry(root, settings)
     if json_output:
         (root / "tfplan.json").write_text(_terraform(root, "show", "-json", PLAN_FILE).stdout)
@@ -907,6 +948,7 @@ def deploy(
     settings = _settings(
         region, project_name, repository_prefix, base_channel, manage_registry_scanning, extra_scan_filter
     )
+    settings = registry_scanning(_client("ecr", region=settings.region), settings)
     if plan_registry(root, settings):
         if not yes and not typer.confirm("Apply this plan?"):
             raise typer.Exit(1)
