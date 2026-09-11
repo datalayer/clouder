@@ -52,15 +52,18 @@ Every route is under `/api/runtimes/v1`. Who may do what follows the owner of th
 | --- | --- |
 | `GET /environments` | The platform environments, unchanged, then the environments of the caller's account and organizations, with `uid`, `origin`, `owner`, `promotedVersion` and `variants`. |
 | `POST /environments` | Creates one; owners of the account named only. |
-| `GET`, `PATCH`, `DELETE /environments/{uid}`; `POST …/archive`; `PUT …/promoted-version` | Reads for members, writes for owners. `DELETE` refuses while an artifact is referenced. |
+| `GET`, `PATCH`, `DELETE /environments/{uid}`; `POST …/archive`; `PUT …/promoted-version` | Reads for members, writes for owners. `PUT …/promoted-version` promotes a version, or rolls back to an older one, without a build; a `partially_ready` version needs `acknowledgeUnavailableVariants` to name exactly its unavailable variants. `DELETE` refuses while a version is promoted, an artifact is referenced, or a runtime of the environment runs. |
 | `POST`, `GET /environments/{uid}/versions` | A new draft version, or the versions. |
 | `GET`, `PATCH /environment-versions/{uid}`; `…/validate`, `…/builds`, `…/artifacts`, `…/deprecate` | The version, its capability report per variant, its builds and artifacts. |
-| `…/resolve`, `…/trial` | `501` until the resolver and trial sandboxes ship. |
+| `…/resolve` | `501` until the resolver ships. |
+| `POST /environment-versions/{uid}/trial` | Launches a `ready` or `partially_ready` version before promotion, for its owners only, with credits capped by `DATALAYER_RUNTIMES_TRIAL_CREDITS_LIMIT` (5 by default). |
 | `GET /environment-builds/{uid}`; `…/logs`, `…/cancel`, `…/retry` | The build and its log. `logs?follow=true` streams the log as server-sent events: `chunk` events whose id is the chunk's sequence, resumed from `Last-Event-ID`, and `end` once the build is terminal. |
 
 A write takes `If-Match` with the ETag read before it, which is the document's `_version_`: without it the answer is `428`, and with a stale one `412`. A replayed `Idempotency-Key` answers the first result instead of creating a second. An error body carries a `DL_ENV_*` code and a `correlationId`.
 
 `GET /environments` calls IAM once per request, to find the caller's organizations. When IAM or Solr cannot be read, it still answers the platform list.
+
+`DELETE` asks the Operator which runtimes of the environment are running, on `GET /api/operator/v1/environments/{uid}/runtimes`, with the Runtimes key. When the Operator cannot answer, the deletion is refused with `503` and nothing is deleted. So the Operator deploys with Runtimes, or before it.
 
 ## Build logs
 
