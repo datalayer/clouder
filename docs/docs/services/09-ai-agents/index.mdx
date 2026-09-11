@@ -418,6 +418,31 @@ it.
   `executions.collect` with `includeChildren` answers every artifact of the
   tree, each attributed to the execution that produced it (conformance
   scenario 15, `durable/tests/test_scenario_15_mixed_protocol_children.py`).
+- **One ACP agent in front of a tree** (O2-08): `agent-runtimes serve
+  --orchestrator-root <agentspec | endpoint>` registers the orchestrator on
+  the runtime's ACP route as `orchestrator`. Each `session/prompt` is a root
+  execution, delegated as the person the connection's token names to that
+  agent: an agentspec is brought up as a child's worker is (O2-06), an
+  `http(s)` endpoint is an A2A agent and a `ws(s)` one an ACP agent. Its
+  worker asks for the children. The turn's thoughts are the tree's state
+  changes and its message is what the root produced, so the client never
+  names an execution. The root's idempotency key is the session and the
+  prompt (`acp:<session>:<16 hex of its SHA-256>`), so the same prompt in a
+  session loaded after a restart is answered from the same tree, and a
+  cancelled turn cancels its root.
+- **Teams** (O2-09): `executions.delegate` naming a catalogued team, with
+  `agent` `{agentId: <team>, protocol: datalayer}`, is rooted on the team's
+  supervisor. The control plane rewrites the binding to the supervisor's
+  seat, `team:<team>/supervisor`, over A2A with no endpoint, before anything
+  is created. A sequential or parallel team's run then places its members as
+  the root's children, one seat each (`team:<team>/<member>`, the member as
+  its slot), in `depends_on` order, and the supervisor answers from their
+  work. A supervisor team is rooted the same way; its run places no member,
+  and its supervisor asks for the members it routes work to, each a seat.
+  An unknown team is `not_found`; one delegated under another execution,
+  with no supervisor, or whose members cannot be ordered is
+  `invalid_command`; a team in a mode the control plane does not run is
+  `unsupported_operation`.
 - **Delegation** (O2-02) is the control plane's half of a delegation token,
   decided on `executions.delegate` without asking anybody. A child's
   references are in its parent's manifest (by kind and uid), a read-only one

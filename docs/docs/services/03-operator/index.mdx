@@ -82,6 +82,10 @@ export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
   </TabItem>
 </Tabs>
 
+### When a reservation dimension is added: IAM first
+
+IAM refuses a reservation whose metadata names a key it does not know. A release that adds a dimension therefore deploys IAM first, then Runtimes, then the Operator. An Operator deployed ahead of IAM makes every runtime start fail on its reservation. The environment dimensions `environment_uid_s` and `environment_version_s`, which name the user environment and version a runtime runs, are added this way.
+
 ### After the upgrade: re-apply the Runtime Contents and the Environments
 
 Since Environments select their Runtime Contents **by uid**, the Operator
