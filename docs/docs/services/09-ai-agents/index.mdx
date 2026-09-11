@@ -245,9 +245,9 @@ The wizard sends `reproduces_launch_id` when it was opened with
 
 ### Cloning a benchmark
 
-`POST /evalsets/{id}/clone` `{name?}` takes a benchmark into the account the
-request names (`datalayer_solr.evals.clone_eval`). The result is a new, private
-evalset at version 1:
+`POST /evalsets/{id}/clone` `{name?, derivation?}` takes a benchmark into the
+account the request names (`datalayer_solr.evals.clone_eval`). The result is a
+new, private evalset at version 1:
 
 - **Copied:** the source's definition, meaning its cases, evaluators, schema,
   category, kind, tags and dataset reference.
@@ -261,7 +261,9 @@ role on it, and answers `404` without one. The dataset reference is not
 validated when the benchmark is cloned: the launch review says whether the new
 owner may read it.
 
-The clone writes a `fork` derivation into the Library (see the Library page).
+The clone writes a derivation into the Library (see the Library page). It is a
+`fork` by default, and a `compare` when the body says `derivation: compare`,
+which is what **Compare my agent** sends before it opens the wizard on the copy.
 The public page also counts it as a reuse, through
 `POST /api/library/v1/items/{id}/reused`.
 
