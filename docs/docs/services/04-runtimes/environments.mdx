@@ -56,11 +56,22 @@ Every route is under `/api/runtimes/v1`. Who may do what follows the owner of th
 | `POST`, `GET /environments/{uid}/versions` | A new draft version, or the versions. |
 | `GET`, `PATCH /environment-versions/{uid}`; `…/validate`, `…/builds`, `…/artifacts`, `…/deprecate` | The version, its capability report per variant, its builds and artifacts. |
 | `…/resolve`, `…/trial` | `501` until the resolver and trial sandboxes ship. |
-| `GET /environment-builds/{uid}`; `…/logs`, `…/cancel`, `…/retry` | The build and its log. `logs?follow=true` answers `501` until logs stream. |
+| `GET /environment-builds/{uid}`; `…/logs`, `…/cancel`, `…/retry` | The build and its log. `logs?follow=true` streams the log as server-sent events: `chunk` events whose id is the chunk's sequence, resumed from `Last-Event-ID`, and `end` once the build is terminal. |
 
 A write takes `If-Match` with the ETag read before it, which is the document's `_version_`: without it the answer is `428`, and with a stale one `412`. A replayed `Idempotency-Key` answers the first result instead of creating a second. An error body carries a `DL_ENV_*` code and a `correlationId`.
 
 `GET /environments` calls IAM once per request, to find the caller's organizations. When IAM or Solr cannot be read, it still answers the platform list.
+
+## Build logs
+
+The durable worker appends a build's log through `POST /api/runtimes/v1/internal/environment-builds/{uid}/logs`. That route answers only durable's own key, `DATALAYER_DURABLE_RUNTIMES_API_KEY`. A person's token and the shared `DATALAYER_RUNTIMES_API_KEY` are refused with `401`.
+
+- **Chunks:** at most 64 KiB each and 16 per call, numbered from 0 with no gap.
+- **Redaction:** the build's secret values, in every encoding, and anything shaped like a credential are redacted before a chunk is written.
+- **Replays:** a replayed chunk answers `200` and stores nothing twice.
+- **Conflicts:** a gap, or a new chunk after the build ended, answers `409` with `nextSequence`.
+
+The redactor ships in a `code-sandboxes` release after 1.5.0. On a Runtimes image without it, the append route answers `503` with `DL_ENV_UNAVAILABLE` and stores nothing; reading and following a log work either way. `DATALAYER_DURABLE_RUNTIMES_API_KEY` goes in the plane's rc when the build worker ships.
 
 ## Check
 
