@@ -181,7 +181,17 @@ The platform's images, Environments and Operator left the Jupyter images' `jovya
 
 ### Check
 
-Launch a runtime of every Environment the plane can schedule: without GPU nodes, the GPU Environments cannot be scheduled, whatever their home. In each, `id` answers `uid=1000(datalayer) gid=100(users)`, `echo $HOME` answers `/home/datalayer`, `ls /home` lists `datalayer` alone, and the home folder and the Environment's Contents are mounted under `/home/datalayer`.
+Launch a runtime of every Environment the plane can schedule. Without GPU nodes, the GPU Environments cannot be scheduled, whatever their home, and an Environment that no pool names cannot be spawned at all. In each, `id` answers `uid=1000(datalayer) gid=100(users)`, `echo $HOME` answers `/home/datalayer`, `ls /home` lists `datalayer` alone, and the home folder and the Environment's Contents are under `/home/datalayer`.
+
+A runtime from a pool is one pod of several containers, and the Environment's image runs in the container named `jupyter`; the `agent-runtimes` container beside it keeps `HOME=/tmp`. Claim a runtime, read that container, and terminate the runtime by its pod name:
+
+```bash
+datalayer sandboxes create datalayer --environment ai-agents-env
+kubectl exec -n datalayer-runtimes runtime-<id> -c jupyter -- sh -c 'id; echo $HOME; ls -A /home; find $HOME -maxdepth 2 -type l'
+datalayer agents delete runtime-<id>
+```
+
+The Contents arrive as links under the home, `datasets/<name>` and `models/<name>`, each pointing at its mount under `/mnt/datalayer`. If `sandboxes create` has not returned after a minute, the runtime is usually already there: the newest `assigned` pod of the pool is yours.
 
 ### Roll back
 
