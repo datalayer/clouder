@@ -219,6 +219,30 @@ A document built before the builder wrote `$.evidence` is not locked;
 regenerating the report rebuilds it. The ai-agents image gets the builder
 change with the next `agent-runtimes` release.
 
+### Reproducing a launch
+
+`POST /evalsets/{id}/launches`, and its `validate`, take `reproduces_launch_id`:
+the launch to run again. The service reads that launch in one of two ways:
+
+- **With a role:** the caller holds a role on the launch.
+- **Published benchmark:** the launch is one its publisher made.
+
+It refuses a launch that is not a launch of this benchmark, with `404`.
+
+**Pinned to the version it ran.** The new launch and its runs are pinned to the
+evalset version the reproduced launch ran (`evalset_version_i`). Their
+definition is read from that version's snapshot, so durable resolves the same
+tasks, evaluators and thresholds, whatever the benchmark has become since. A
+version no longer kept answers `409` rather than running the current one.
+
+**Recorded.** The launch records `reproduces_launch_uid_s`, and
+`evals_launches.create_launch` writes a `reproduce` derivation from the
+benchmark into the Library. That derivation has `artifact_type_s: launch`, so
+the public page counts it without naming it.
+
+The wizard sends `reproduces_launch_id` when it was opened with
+`?reproduce=<launch>`.
+
 ### Cloning a benchmark
 
 `POST /evalsets/{id}/clone` `{name?}` takes a benchmark into the account the
