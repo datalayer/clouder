@@ -1,0 +1,173 @@
+---
+title: AWS ECR for Environments
+---
+
+# AWS ECR for Environments
+
+Datalayer Environments are the images users and platform administrators build for their runtimes and sandboxes. They are pushed to AWS ECR, while the images of the Datalayer services stay in the [Docker registry](../1-docker-registry/index.mdx).
+
+One Clouder command deploys everything the registry needs, from an empty AWS account to a plane that pulls from it:
+
+```bash
+clouder aws ecr-environments deploy
+```
+
+Nothing is created in the AWS console, and nobody runs `terraform` by hand: the command drives the Terraform root under `terraform/environments-registry` itself.
+
+## What gets deployed
+
+With the default options:
+
+| Piece | Name | What it is for |
+|---|---|---|
+| Enhanced scanning | every repository under `environments/` | Amazon Inspector scans each push, and promotion reads the findings |
+| Base channel repositories | `environments/base/python-cpu`, `environments/base/python-cuda` | The approved bases every environment builds from |
+| KMS encryption key | `alias/datalayer-environments-ecr` | Encrypts every repository under `environments/` |
+| KMS signing key | `alias/datalayer-environments-signing` | cosign signs each image with it, and the operator verifies the signature before it starts a pod |
+| IAM user `datalayer-environments-builder` | Secret `ecr-environments-builder` in `datalayer-durable` | Creates repositories, pushes and signs, from the durable worker |
+| IAM user `datalayer-environments-reader` | Secret `ecr-environments-reader` in `datalayer-api` | Reads images and scan findings, from Runtimes |
+| IAM user `datalayer-environments-puller` | Secret `ecr-environments-puller` in `datalayer-runtimes` | Pulls, through the refresher |
+| IAM role `datalayer-environments-base-reader` | assumed by the builder only | Reads `environments/base/` for one managed-provider build, never a user's image |
+| CronJob `ecr-environments-refresher` | in `datalayer-runtimes` | Rewrites the pull secret `ecr-environments` every 6 hours |
+
+Every policy is scoped to the `environments/` prefix. A user environment gets its repository, `environments/u/<owner>/<environment>`, from the builder the first time it is built, and platform environments live under `environments/platform/`. Tags are immutable, and images are pulled by digest.
+
+## Prerequisites
+
+1. AWS credentials allowed to create ECR, KMS and IAM resources in the account. `clouder aws info` shows the account and identity the command will use, and `clouder aws configure` lists the ways to set them.
+2. Terraform, or docker. Without a `terraform` binary, the command runs the pinned `hashicorp/terraform` image, with `~/.aws` mounted read-only and the `AWS_*` variables passed by name.
+3. `kubectl` pointing at the plane, unless you pass `--skip-kubernetes`.
+4. `docker` and [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) for the final check, unless you pass `--skip-check`.
+
+:::caution Registry scanning is one per region
+An AWS account has one registry scanning configuration per region, and by default the command owns it. Pass every other scanning rule of that region with `--extra-scan-filter`, or keep the configuration you have with `--no-manage-registry-scanning`.
+:::
+
+## Deploy
+
+```bash
+clouder aws ecr-environments deploy --region us-east-1 --context <plane-context>
+```
+
+The command:
+
+1. Prints the AWS account and the Kubernetes context it is about to change, and asks before going on.
+2. Writes the Terraform variables from its options into `clouder.auto.tfvars`, plans, shows the plan, and applies it once you confirm.
+3. Creates an access key for each of the builder, the puller and the reader that has none, each in a file only you can read under `~/.clouder/ecr-environments/keys`. Keys are never printed.
+4. Creates the three Secrets by server-side apply, so no key is copied into an annotation.
+5. Installs the refresher in each runtime namespace and runs it once, so the `ecr-environments` pull secret exists straight away.
+6. Runs the [check](#check).
+7. Prints the two lines to add to the datalayerrc of each plane that launches environments:
+
+```bash
+export DATALAYER_ECR_ENVIRONMENTS_REGION=us-east-1
+export DATALAYER_ECR_ENVIRONMENTS_REGISTRY=123456789012.dkr.ecr.us-east-1.amazonaws.com
+```
+
+`--yes` answers every question, for an unattended run. Running `deploy` again is safe: it plans no changes when nothing changed, keeps the key files it finds, and applies the Secrets and the refresher again.
+
+| Option | Default | Notes |
+|---|---|---|
+| `--region` | `DATALAYER_ECR_ENVIRONMENTS_REGION`, then `us-east-1` | |
+| `--project-name` | `datalayer` | The first part of every IAM and KMS name |
+| `--repository-prefix` | `environments` | A scratch prefix tries the setup beside a real one |
+| `--base-channel` | `python-cpu` and `python-cuda` | Repeat it for several |
+| `--keys-dir` | `~/.clouder/ecr-environments/keys` | Use one directory per AWS account |
+| `--builder-namespace` | `DATALAYER_DURABLE_NAMESPACE`, then `datalayer-durable` | |
+| `--reader-namespace` | `datalayer-api` | |
+| `--runtime-namespace` | `datalayer-runtimes` | Repeat it for several |
+| `--kubeconfig`, `--context` | the current context | |
+| `--skip-kubernetes`, `--skip-check` | off | |
+
+The Terraform state is local: `terraform/environments-registry/terraform.tfstate`, on the machine that ran `deploy`. Keep it. Git ignores it, and without it the next run plans to create what already exists.
+
+## Check
+
+```bash
+clouder aws ecr-environments check
+```
+
+`check` uses the principals' own keys, not yours, to prove what the platform relies on:
+
+| Step | Proves |
+|---|---|
+| Log in, create `environments/u/clouder-check/probe`, push a probe image | The builder creates and pushes under the prefix |
+| Sign with the KMS key | The builder signs |
+| Log in, pull by digest, verify the signature | The puller pulls and verifies |
+| Read the scan | The reader sees the enhanced scanning findings |
+| Create a repository outside the prefix | Refused to the builder |
+| Read the probe as the base-reader | Refused: that role reads bases only |
+
+It removes the probe image when it is done. A scan can take a few minutes, and `--scan-timeout` sets how long to wait.
+
+## Step by step
+
+Every step of `deploy` is also a command of its own:
+
+| Command | Does |
+|---|---|
+| `clouder aws ecr-environments plan` | Plans into `tfplan`, and with `--json` also writes `tfplan.json` |
+| `clouder aws ecr-environments apply` | Applies the saved `tfplan` |
+| `clouder aws ecr-environments outputs` | Shows the registry, the key ARNs and the IAM names |
+| `clouder aws ecr-environments rotate-keys` | Creates a new key per principal, or deletes the older ones with `--retire-old` |
+| `clouder aws ecr-environments secrets` | Creates the Secrets from the key files |
+| `clouder aws ecr-environments refresher` | Installs and runs the refresher |
+| `clouder aws ecr-environments check` | Runs the check |
+
+### In CI
+
+Plan and apply are split, so a person or a policy can approve in between:
+
+```bash
+# Keep tfplan and tfplan.json as artifacts of this stage.
+clouder aws ecr-environments plan --json
+# After the approval: applies exactly that plan.
+clouder aws ecr-environments apply
+```
+
+`plan` takes the same Terraform options as `deploy`. Git ignores both files, and they should stay out of it: a plan can carry sensitive values.
+
+## Rotate keys
+
+IAM allows two keys per user, so a rotation never leaves a plane without a working key:
+
+```bash
+# 1. New key files for the three principals.
+clouder aws ecr-environments rotate-keys
+# 2. The Secrets carry the new keys.
+clouder aws ecr-environments secrets
+```
+
+Once the pods that read the Secrets have restarted, retire the old keys:
+
+```bash
+clouder aws ecr-environments rotate-keys --retire-old
+```
+
+## Another plane
+
+A plane that launches environments without building them needs only the pull secret. With the puller's key file on the machine:
+
+```bash
+clouder aws ecr-environments secrets --principal puller --context <other-plane>
+clouder aws ecr-environments refresher --context <other-plane> \
+  --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
+```
+
+## An expired pull secret
+
+An ECR token lasts 12 hours and the refresher rewrites it every 6, so a single failed run goes unnoticed. When runtimes on `environments/` images fail with `ImagePullBackOff` and an event such as `no basic auth credentials` or `authorization token has expired`, look at the refresher:
+
+```bash
+kubectl -n datalayer-runtimes get cronjob ecr-environments-refresher
+kubectl -n datalayer-runtimes get pods -l app.kubernetes.io/part-of=datalayer-environments
+kubectl -n datalayer-runtimes logs <refresher-pod> --all-containers
+```
+
+and run it now:
+
+```bash
+kubectl -n datalayer-runtimes create job --from=cronjob/ecr-environments-refresher ecr-environments-refresher-manual
+```
+
+If the `password` container fails, the puller's key is wrong or deleted, and `clouder aws ecr-environments check` names the step that breaks. If the `secret` container answers `403`, the refresher's Role was changed, and `clouder aws ecr-environments refresher` applies it again.

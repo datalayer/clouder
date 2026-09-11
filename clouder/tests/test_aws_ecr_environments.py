@@ -38,6 +38,11 @@ def denied(operation: str) -> ClientError:
     return ClientError({"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, operation)
 
 
+def said(result) -> str:
+    """The output with Rich's line wrapping undone."""
+    return " ".join(result.output.split())
+
+
 class Recorder:
     """Every command the CLI runs, answered as if it succeeded."""
 
@@ -63,7 +68,7 @@ class Recorder:
 
     def applied(self) -> list[dict]:
         documents = []
-        for command, text in zip(self.commands, self.inputs):
+        for command, text in zip(self.commands, self.inputs, strict=True):
             if "apply" in command and "--server-side" in command:
                 documents += [json.loads(part) for part in text.split("\n---\n")]
         return documents
@@ -250,11 +255,13 @@ def test_secrets_go_to_their_namespaces_by_server_side_apply(tmp_path: Path, rec
         ("ecr-environments-reader", "datalayer-api"),
         ("ecr-environments-puller", "datalayer-runtimes"),
     }
-    assert [item["metadata"]["name"] for item in documents if item["kind"] == "Namespace"] == [
+    kinds = [item["kind"] for item in documents]
+    assert {item["metadata"]["name"] for item in documents if item["kind"] == "Namespace"} == {
         "datalayer-durable",
         "datalayer-api",
         "datalayer-runtimes",
-    ]
+    }
+    assert max(index for index, kind in enumerate(kinds) if kind == "Namespace") < kinds.index("Secret")
     builder = next(item for item in documents if item["metadata"]["name"] == "ecr-environments-builder")
     assert "stringData" not in builder
     assert base64.b64decode(builder["data"]["AWS_SECRET_ACCESS_KEY"]).decode() == "secret-of-builder"
@@ -331,7 +338,7 @@ def test_the_refresher_needs_the_puller_secret(recorder: Recorder, monkeypatch: 
     monkeypatch.setattr(cli, "_run", run)
     result = runner.invoke(cli.ecr_environments_app, ["refresher", "--registry", "r", "--yes"])
     assert result.exit_code == 1
-    assert "--principal puller" in result.output
+    assert "--principal puller" in said(result)
     assert recorder.applied() == []
 
 
@@ -381,7 +388,7 @@ def test_deploy_stops_when_a_principal_has_a_key_nobody_kept(
         ["deploy", "--keys-dir", str(tmp_path / "keys"), "--yes", "--skip-check", "--terraform-dir", str(root)],
     )
     assert result.exit_code == 1
-    assert "rotate-keys --principal puller" in result.output
+    assert "rotate-keys --principal puller" in said(result)
     assert recorder.applied() == []
 
 

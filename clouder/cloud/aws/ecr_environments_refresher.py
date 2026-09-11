@@ -16,7 +16,7 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 
 SERVICE_ACCOUNT = "/var/run/secrets/kubernetes.io/serviceaccount"
 LABELS = {"app.kubernetes.io/managed-by": "clouder", "app.kubernetes.io/part-of": "datalayer-environments"}
@@ -57,7 +57,7 @@ def refresh(send: Send, api: str, namespace: str, name: str, registry: str, pass
 def sender(token: str, context: ssl.SSLContext) -> Send:
     def send(method: str, url: str, body: bytes) -> None:
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        request = urllib.request.Request(url, data=body, method=method, headers=headers)
+        request = urllib.request.Request(url, data=body, method=method, headers=headers)  # noqa: S310 - always https
         with urllib.request.urlopen(request, context=context, timeout=30) as response:  # noqa: S310
             response.read()
 

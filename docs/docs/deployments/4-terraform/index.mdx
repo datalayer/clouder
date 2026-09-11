@@ -26,6 +26,8 @@ For AWS today, Terraform creates:
 5. Optional AWS Client VPN endpoint for secure private operator access.
 6. Helper scripts to run Clouder Kubeadm setup and Plane service deployment.
 
+The registry of Datalayer Environments is a separate root, `terraform/environments-registry`, and is not deployed with this stack's Makefile: `clouder aws ecr-environments deploy` runs it end to end. See [AWS ECR for Environments](../../cluster/2-registries/3-aws-ecr-environments/index.mdx).
+
 ## Kubeadm mode (not EKS)
 
 This Terraform stack deploys Kubernetes on AWS EC2 using **Clouder + Kubeadm**.

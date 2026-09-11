@@ -314,11 +314,11 @@ retention window the gateway reports in `GET /api/mcp/v1/audit`
 with their own TTLs — bindings expire on `BINDING_TTL_SECONDS`, rate windows
 sooner — so it stays small and hot and must not contend with the other two.
 
-### Runtimes Collections (8)
+### Runtimes Collections (12)
 
-Collections specific to the runtimes plane, Contents included — the Contents
-service is deployed there, beside the NFS that backs the Home Folder and the
-Volumes:
+Collections specific to the runtimes plane, Contents and the Environments
+registry included — the Contents service is deployed there, beside the NFS that
+backs the Home Folder and the Volumes, and the registry belongs to Runtimes:
 
 | Collection | Purpose |
 |---|---|
@@ -330,8 +330,12 @@ Volumes:
 | `content-objects` | Contents object/version and materialization metadata |
 | `content-operations` | Contents jobs, transfers, sync, query and reconciliation state |
 | `content-audit` | Immutable Contents audit and provenance events |
+| `environments` | Environments: one document per owner and name, which its `id` makes unique |
+| `environment-versions` | Environment versions, whose `id` is `<environment_uid>:<n>`, and the locks they resolve to, each stored whole under its digest |
+| `environment-artifacts` | Built artifacts per version, variant and region, with the cache key and the retention state the collector scans |
+| `environment-builds` | Environment builds, and their logs as chunks written once each |
 
-The inventory is 18 Core plus 7 AI plus 8 Runtimes collections, 33 in total.
+The inventory is 18 Core plus 7 AI plus 12 Runtimes collections, 37 in total.
 Always verify the arrays and manifests rather than relying on these numbers
 alone (`scripts/check_solr_collections_parity.py` in the Services repository
 asserts them against both canonical lists, and refuses a collection that
@@ -469,8 +473,8 @@ narrowest one that covers what is missing.
 plane solr-init
 # Select:
 #   1) Core       - Platform collections (18 collections)
-#   2) Runtimes   - Runtimes collections (8 collections, Contents included)
-#   3) All        - All collections (33 collections)
+#   2) Runtimes   - Runtimes collections (12 collections, Contents and Environments included)
+#   3) All        - All collections (37 collections)
 #   4) AI         - AI collections (7 collections: ai-agents, evals, orchestration,
 #                   tool-approvals, mcp-gateway, mcp-tasks, mcp-audit)
 #
@@ -511,7 +515,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants orchestration outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit
+for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants orchestration outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit environments environment-versions environment-artifacts environment-builds
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -531,10 +535,10 @@ resource names so their coordinated schedules can run beside the full backup:
 
 | File | Scope | CR Name |
 |------|-------|---------|
-| `datalayer-backup-s3.yaml` | All 33 collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3.yaml` | All 37 collections | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-ai.yaml` | The 7 AI collections | `datalayer-solr-ai-backups` |
 | `datalayer-backup-s3-core.yaml` | 18 Core collections | `datalayer-solr-collection-backups` |
-| `datalayer-backup-s3-runtimes.yaml` | 8 Runtimes collections, the four Contents ones included | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-runtimes.yaml` | 12 Runtimes collections, the four Contents and four Environments ones included | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
 | `datalayer-backup-s3-mcp.yaml` | 3 Jupyter MCP Server collections | `datalayer-solr-mcp-backups` |
 
@@ -602,6 +606,10 @@ spec:
     - runtime-registrations
     - runtime-checkpoints
     - sandbox-snapshots
+    - environments
+    - environment-versions
+    - environment-artifacts
+    - environment-builds
   recurrence:
     schedule: "*/10 * * * *" # every 10 minutes
     maxSaved: 200
