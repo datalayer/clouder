@@ -32,6 +32,8 @@ OUTPUTS = {
     "puller_user": "datalayer-environments-puller",
     "reader_user": "datalayer-environments-reader",
 }
+WORKSPACE = "datalayer-environments"
+SCRATCH = "datalayer-scratch-environments-scratch"
 
 
 def denied(operation: str) -> ClientError:
@@ -41,6 +43,10 @@ def denied(operation: str) -> ClientError:
 def said(result) -> str:
     """The output with Rich's line wrapping undone."""
     return " ".join(result.output.split())
+
+
+def tfvars_of(root: Path, workspace: str = WORKSPACE) -> Path:
+    return root / cli.tfvars_argument(workspace)
 
 
 class FakeRegistry:
@@ -101,11 +107,12 @@ def root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def recorder(monkeypatch: pytest.MonkeyPatch) -> Recorder:
+def recorder(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Recorder:
     recording = Recorder()
     monkeypatch.setattr(cli, "_run", recording)
     monkeypatch.setattr(cli, "_which", lambda tool: f"/usr/bin/{tool}")
     monkeypatch.setattr(cli, "_client", lambda service, region=None: FakeRegistry())
+    monkeypatch.setattr(cli, "DEFAULT_KEYS_ROOT", tmp_path / "clouder-keys")
     monkeypatch.delenv("DATALAYER_ECR_ENVIRONMENTS_REGION", raising=False)
     monkeypatch.delenv("DATALAYER_ECR_ENVIRONMENTS_REGISTRY", raising=False)
     monkeypatch.delenv("DATALAYER_DURABLE_NAMESPACE", raising=False)
@@ -124,23 +131,46 @@ def write_keys(directory: Path) -> Path:
 # --- Terraform ---------------------------------------------------------------------------
 
 
-def test_plan_writes_the_variables_from_its_options_and_a_plan(root: Path, recorder: Recorder) -> None:
+def test_plan_writes_the_variables_of_its_workspace_and_a_plan(root: Path, recorder: Recorder) -> None:
     result = runner.invoke(
         cli.ecr_environments_app,
         ["plan", "--region", "eu-west-3", "--base-channel", "python-cpu", "--json", "--terraform-dir", str(root)],
     )
     assert result.exit_code == 0, result.output
-    tfvars = (root / cli.TFVARS).read_text()
+    tfvars = tfvars_of(root).read_text()
     assert 'aws_region = "eu-west-3"' in tfvars
     assert 'base_channels = ["python-cpu"]' in tfvars
     assert "manage_registry_scanning = true" in tfvars
     assert "extra_scan_filters = []" in tfvars
+    assert "kms_deletion_window_in_days = 30" in tfvars
     assert recorder.terraform() == [
         ["init", "-input=false", "-no-color"],
-        ["plan", "-input=false", "-no-color", "-detailed-exitcode", "-out=tfplan"],
+        ["workspace", "select", "-or-create", WORKSPACE],
+        ["plan", "-input=false", "-no-color", "-detailed-exitcode", f"-var-file=workspaces/{WORKSPACE}.tfvars", "-out=tfplan"],
         ["show", "-json", "tfplan"],
     ]
     assert (root / "tfplan.json").exists()
+
+
+def test_a_scratch_registry_has_a_workspace_of_its_own(root: Path, recorder: Recorder) -> None:
+    """Two registries in one state would plan to replace each other; a workspace each keeps them apart."""
+    arguments = [
+        "plan", "--project-name", "datalayer-scratch", "--repository-prefix", "environments-scratch",
+        "--kms-deletion-window", "7", "--terraform-dir", str(root),
+    ]
+    result = runner.invoke(cli.ecr_environments_app, arguments)
+    assert result.exit_code == 0, result.output
+    assert ["workspace", "select", "-or-create", SCRATCH] in recorder.terraform()
+    tfvars = tfvars_of(root, SCRATCH).read_text()
+    assert 'repository_prefix = "environments-scratch"' in tfvars
+    assert "kms_deletion_window_in_days = 7" in tfvars
+    assert not tfvars_of(root).exists()
+
+
+def test_a_deletion_window_kms_does_not_allow_is_refused(root: Path, recorder: Recorder) -> None:
+    result = runner.invoke(cli.ecr_environments_app, ["plan", "--kms-deletion-window", "3", "--terraform-dir", str(root)])
+    assert result.exit_code != 0
+    assert recorder.commands == []
 
 
 def test_the_region_comes_from_the_rc_when_no_option_sets_it(
@@ -148,14 +178,14 @@ def test_the_region_comes_from_the_rc_when_no_option_sets_it(
 ) -> None:
     monkeypatch.setenv("DATALAYER_ECR_ENVIRONMENTS_REGION", "ca-central-1")
     assert runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]).exit_code == 0
-    assert 'aws_region = "ca-central-1"' in (root / cli.TFVARS).read_text()
+    assert 'aws_region = "ca-central-1"' in tfvars_of(root).read_text()
 
 
 def test_a_plan_without_changes_says_so(root: Path, recorder: Recorder) -> None:
     recorder.plan_code = 0
     result = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
     assert result.exit_code == 0
-    assert "No changes" in result.output
+    assert "No changes" in said(result)
 
 
 def test_apply_needs_a_saved_plan(root: Path, recorder: Recorder) -> None:
@@ -165,6 +195,12 @@ def test_apply_needs_a_saved_plan(root: Path, recorder: Recorder) -> None:
     applied = runner.invoke(cli.ecr_environments_app, ["apply", "--terraform-dir", str(root)])
     assert applied.exit_code == 0
     assert recorder.terraform()[-1] == ["apply", "-input=false", "-no-color", "tfplan"]
+
+
+def test_outputs_of_a_named_workspace_select_it_first(root: Path, recorder: Recorder) -> None:
+    result = runner.invoke(cli.ecr_environments_app, ["outputs", "--workspace", SCRATCH, "--terraform-dir", str(root)])
+    assert result.exit_code == 0, result.output
+    assert recorder.terraform() == [["init", "-input=false", "-no-color"], ["workspace", "select", SCRATCH], ["output", "-json"]]
 
 
 def test_terraform_runs_in_its_pinned_image_when_it_is_not_installed(
@@ -204,7 +240,7 @@ def test_scanning_that_already_covers_the_prefix_is_left_as_it_is(
     use_registry(monkeypatch, FakeRegistry("ENHANCED", ("*",)))
     result = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
     assert result.exit_code == 0, result.output
-    assert "manage_registry_scanning = false" in (root / cli.TFVARS).read_text()
+    assert "manage_registry_scanning = false" in tfvars_of(root).read_text()
     assert "left as it is" in said(result)
 
 
@@ -219,7 +255,7 @@ def test_other_scanning_rules_are_replaced_only_when_they_are_named_again(
         cli.ecr_environments_app, ["plan", "--extra-scan-filter", "services/*", "--terraform-dir", str(root)]
     )
     assert kept.exit_code == 0, kept.output
-    tfvars = (root / cli.TFVARS).read_text()
+    tfvars = tfvars_of(root).read_text()
     assert 'extra_scan_filters = ["services/*"]' in tfvars
     assert "manage_registry_scanning = true" in tfvars
 
@@ -230,17 +266,25 @@ def test_a_fresh_account_gets_enhanced_scanning_and_an_opt_out_reads_nothing(
     registry = FakeRegistry()
     use_registry(monkeypatch, registry)
     assert runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]).exit_code == 0
-    assert "manage_registry_scanning = true" in (root / cli.TFVARS).read_text()
+    assert "manage_registry_scanning = true" in tfvars_of(root).read_text()
     registry.reads = 0
     arguments = ["plan", "--no-manage-registry-scanning", "--terraform-dir", str(root)]
     assert runner.invoke(cli.ecr_environments_app, arguments).exit_code == 0
     assert registry.reads == 0
-    assert "manage_registry_scanning = false" in (root / cli.TFVARS).read_text()
+    assert "manage_registry_scanning = false" in tfvars_of(root).read_text()
 
 
 @pytest.mark.parametrize(
     ("repository_filter", "covered"),
-    [("*", True), ("environments/*", True), ("env*", True), ("environments*", True), ("services/*", False), ("*/base", False), ("environments/u/*", False)],
+    [
+        ("*", True),
+        ("environments/*", True),
+        ("env*", True),
+        ("environments*", True),
+        ("services/*", False),
+        ("*/base", False),
+        ("environments/u/*", False),
+    ],
 )
 def test_a_filter_covers_the_prefix_only_when_it_matches_everything_under_it(repository_filter: str, covered: bool) -> None:
     assert cli._covers(repository_filter, "environments") is covered
@@ -283,6 +327,17 @@ def test_rotate_keys_writes_private_files_and_never_prints_a_secret(
         assert f"AWS_SECRET_ACCESS_KEY=secret-of-datalayer-environments-{name}" in path.read_text()
         assert "AWS_REGION=us-east-1" in path.read_text()
     assert keys.stat().st_mode & 0o777 == 0o700
+
+
+def test_key_files_live_under_their_workspace_by_default(
+    root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_client", lambda service, region=None: FakeIAM())
+    (root / ".terraform").mkdir()
+    (root / ".terraform" / "environment").write_text(SCRATCH)
+    result = runner.invoke(cli.ecr_environments_app, ["rotate-keys", "--terraform-dir", str(root)])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "clouder-keys" / SCRATCH / "keys" / "builder.env").is_file()
 
 
 def test_a_third_key_is_refused_and_old_keys_are_retired_on_request(
@@ -383,7 +438,7 @@ def test_the_refresher_is_a_hardened_cronjob_scoped_to_its_secret() -> None:
     assert pod["initContainers"][0]["envFrom"] == [{"secretRef": {"name": "ecr-environments-puller"}}]
     environment = {item["name"]: item["value"] for item in pod["containers"][0]["env"]}
     assert environment["REGISTRY"] == OUTPUTS["registry"]
-    assert environment["SECRET_NAME"] == "ecr-environments"
+    assert environment["SECRET_NAME"] == "ecr-environments"  # noqa: S105 - a Secret's name
     rules = documents["Role"]["rules"]
     assert rules[0] == {"apiGroups": [""], "resources": ["secrets"], "resourceNames": ["ecr-environments"], "verbs": ["get", "update"]}
     assert documents["ConfigMap"]["data"]["refresh.py"] == Path(refresher.__file__).read_text()
@@ -431,13 +486,21 @@ def test_deploy_runs_every_step_in_order(root: Path, tmp_path: Path, recorder: R
     keys = tmp_path / "keys"
     result = runner.invoke(cli.ecr_environments_app, ["deploy", "--keys-dir", str(keys), "--yes", "--terraform-dir", str(root)])
     assert result.exit_code == 0, result.output
-    assert [command[0] for command in recorder.terraform()] == ["init", "plan", "init", "apply", "output"]
+    assert [command[0] for command in recorder.terraform()] == ["init", "workspace", "plan", "init", "apply", "output"]
     assert aws.created == [OUTPUTS[f"{name}_user"] for name in cli.PRINCIPALS]
     kinds = [item["kind"] for item in recorder.applied()]
     assert kinds.index("Secret") < kinds.index("CronJob")
     assert any(command[1:5] == ["-n", "datalayer-runtimes", "create", "job"] for command in recorder.commands)
     assert f"export DATALAYER_ECR_ENVIRONMENTS_REGISTRY={OUTPUTS['registry']}" in result.output
     assert "push by the builder" in result.output
+
+
+def test_deploy_without_kubernetes_writes_no_secret(root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM) -> None:
+    arguments = ["deploy", "--skip-kubernetes", "--keys-dir", str(tmp_path / "keys"), "--yes", "--terraform-dir", str(root)]
+    result = runner.invoke(cli.ecr_environments_app, arguments)
+    assert result.exit_code == 0, result.output
+    assert not any(command[0] == "kubectl" for command in recorder.commands)
+    assert (tmp_path / "keys" / "puller.env").is_file()
 
 
 def test_deploy_run_again_changes_nothing_and_keeps_the_keys(
@@ -447,7 +510,7 @@ def test_deploy_run_again_changes_nothing_and_keeps_the_keys(
     recorder.plan_code = 0
     result = runner.invoke(cli.ecr_environments_app, ["deploy", "--keys-dir", str(keys), "--yes", "--terraform-dir", str(root)])
     assert result.exit_code == 0, result.output
-    assert "No changes" in result.output
+    assert "No changes" in said(result)
     assert "apply" not in [command[0] for command in recorder.terraform()]
     assert aws.created == []
 
@@ -470,6 +533,99 @@ def test_deploy_asks_before_applying(root: Path, tmp_path: Path, recorder: Recor
     result = runner.invoke(cli.ecr_environments_app, arguments, input="n\n")
     assert result.exit_code == 1
     assert "apply" not in [command[0] for command in recorder.terraform()]
+
+
+# --- destroy -----------------------------------------------------------------------------
+
+
+class FakeAccount:
+    """The ECR and IAM a destroy talks to."""
+
+    def __init__(self, repositories: list[str]) -> None:
+        self.repositories = list(repositories)
+        self.keys = {OUTPUTS["builder_user"]: ["AKIABUILDER"], OUTPUTS["puller_user"]: [], OUTPUTS["reader_user"]: ["AKIAREADER"]}
+        self.deleted_repositories: list[str] = []
+        self.deleted_keys: list[str] = []
+
+    def describe_repositories(self, nextToken: str | None = None):  # noqa: N803
+        half = len(self.repositories) // 2
+        if nextToken is None:
+            return {"repositories": [{"repositoryName": name} for name in self.repositories[:half]], "nextToken": "page-2"}
+        return {"repositories": [{"repositoryName": name} for name in self.repositories[half:]]}
+
+    def delete_repository(self, repositoryName: str, force: bool = False):  # noqa: N803
+        assert force, "a repository holding images is only deleted with force"
+        self.deleted_repositories.append(repositoryName)
+
+    def list_access_keys(self, UserName: str):  # noqa: N803
+        return {"AccessKeyMetadata": [{"AccessKeyId": key} for key in self.keys.get(UserName, [])]}
+
+    def delete_access_key(self, UserName: str, AccessKeyId: str):  # noqa: N803
+        self.deleted_keys.append(AccessKeyId)
+
+
+def a_scratch_registry(root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repositories: list[str]) -> tuple[FakeAccount, Path]:
+    account = FakeAccount(repositories)
+    monkeypatch.setattr(cli, "_client", lambda service, region=None: account)
+    tfvars_of(root, SCRATCH).parent.mkdir(parents=True, exist_ok=True)
+    tfvars_of(root, SCRATCH).write_text('repository_prefix = "environments"\n')
+    return account, write_keys(tmp_path / "keys")
+
+
+def test_destroy_removes_the_registry_its_keys_and_its_workspace(
+    root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account, keys = a_scratch_registry(
+        root, tmp_path, monkeypatch, ["environments/base/python-cpu", "services/api", "environments/u/clouder-check/probe"]
+    )
+    arguments = ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--keys-dir", str(keys), "--terraform-dir", str(root)]
+    result = runner.invoke(cli.ecr_environments_app, arguments)
+    assert result.exit_code == 0, result.output
+    assert sorted(account.deleted_repositories) == ["environments/base/python-cpu", "environments/u/clouder-check/probe"]
+    assert sorted(account.deleted_keys) == ["AKIABUILDER", "AKIAREADER"]
+    terraform = recorder.terraform()
+    destroyed = terraform.index(["destroy", "-input=false", "-no-color", "-auto-approve", f"-var-file=workspaces/{SCRATCH}.tfvars"])
+    assert terraform[:destroyed] == [["init", "-input=false", "-no-color"], ["workspace", "select", SCRATCH], ["output", "-json"]]
+    assert terraform[destroyed + 1 :] == [["workspace", "select", "default"], ["workspace", "delete", SCRATCH]]
+    assert not keys.exists()
+    assert not tfvars_of(root, SCRATCH).exists()
+
+
+def test_destroy_refuses_the_default_workspace_and_a_registry_holding_environments(
+    root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account, keys = a_scratch_registry(root, tmp_path, monkeypatch, ["environments/u/01OWNER/geospatial"])
+    default = runner.invoke(
+        cli.ecr_environments_app, ["destroy", "--workspace", "default", "--confirm", "default", "--terraform-dir", str(root)]
+    )
+    assert default.exit_code == 1 and recorder.commands == []
+    held = runner.invoke(
+        cli.ecr_environments_app,
+        ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--keys-dir", str(keys), "--terraform-dir", str(root)],
+    )
+    assert held.exit_code == 1
+    assert "--delete-environment-images" in said(held)
+    assert "destroy" not in [command[0] for command in recorder.terraform()]
+    assert account.deleted_repositories == [] and account.deleted_keys == []
+
+
+def test_destroy_asks_before_removing_anything(
+    root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account, keys = a_scratch_registry(root, tmp_path, monkeypatch, ["environments/base/python-cpu"])
+    arguments = ["destroy", "--workspace", SCRATCH, "--keys-dir", str(keys), "--terraform-dir", str(root)]
+    result = runner.invoke(cli.ecr_environments_app, arguments, input="n\n")
+    assert result.exit_code == 1
+    assert account.deleted_repositories == [] and account.deleted_keys == []
+
+
+def test_destroy_needs_the_variables_the_registry_was_deployed_with(root: Path, recorder: Recorder) -> None:
+    result = runner.invoke(
+        cli.ecr_environments_app, ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--terraform-dir", str(root)]
+    )
+    assert result.exit_code == 1
+    assert "not deployed from this root" in said(result)
+    assert recorder.commands == []
 
 
 # --- check -------------------------------------------------------------------------------
@@ -523,7 +679,7 @@ class FakeSession:
         return self.ecr
 
     def get_credentials(self):
-        frozen = SimpleNamespace(access_key="AKIA", secret_key="principal-secret", token=None)
+        frozen = SimpleNamespace(access_key="AKIA", secret_key="principal-secret", token=None)  # noqa: S106 - a fake
         return SimpleNamespace(get_frozen_credentials=lambda: frozen)
 
 
@@ -555,10 +711,26 @@ def test_the_check_passes_every_step_on_a_registry_that_behaves(
         "the base-reader is refused a user image",
     ]
     pinned = f"{OUTPUTS['registry']}/environments/u/clouder-check/probe@{DIGEST}"
+    signing = "awskms:///alias/datalayer-environments-signing"
     commands = recorder.commands
-    assert ["cosign", "sign", "--yes", "--key", "awskms:///alias/datalayer-environments-signing", pinned] in commands
-    assert ["cosign", "verify", "--key", "awskms:///alias/datalayer-environments-signing", pinned] in commands
+    assert ["cosign", "sign", "--yes", "--tlog-upload=false", "--key", signing, pinned] in commands
+    assert ["cosign", "verify", "--insecure-ignore-tlog=true", "--key", signing, pinned] in commands
     assert ecr.deleted_images, "the probe image is cleaned up"
+
+
+def test_cosign_runs_in_its_pinned_image_with_the_login_in_a_private_config(
+    root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_which", lambda tool: None if tool == "cosign" else f"/usr/bin/{tool}")
+    stub_sessions(monkeypatch, FakeECR(), FakeECR())
+    steps = cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
+    assert all(step.ok for step in steps)
+    sign = next(command for command in recorder.commands if "sign" in command and cli.COSIGN_IMAGE in command)
+    assert sign[:2] == ["docker", "run"]
+    assert sign[sign.index(cli.COSIGN_IMAGE) + 1 :][:3] == ["sign", "--yes", "--tlog-upload=false"]
+    assert "DOCKER_CONFIG=/cosign-docker" in sign
+    assert "AWS_SECRET_ACCESS_KEY" in sign
+    assert not any("registry-password" in part or "principal-secret" in part for part in sign)
 
 
 @pytest.mark.parametrize(

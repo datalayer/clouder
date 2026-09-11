@@ -37,7 +37,7 @@ Every policy is scoped to the `environments/` prefix. A user environment gets it
 1. AWS credentials allowed to create ECR, KMS and IAM resources in the account. `clouder aws info` shows the account and identity the command will use, and `clouder aws configure` lists the ways to set them.
 2. Terraform, or docker. Without a `terraform` binary, the command runs the pinned `hashicorp/terraform` image, with `~/.aws` mounted read-only and the `AWS_*` variables passed by name.
 3. `kubectl` pointing at the plane, unless you pass `--skip-kubernetes`.
-4. `docker` and [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) for the final check, unless you pass `--skip-check`.
+4. `docker` for the final check, unless you pass `--skip-check`. [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) is used when it is installed; otherwise the check runs its pinned image.
 
 :::caution Registry scanning is one per region
 An AWS account has one registry scanning configuration per region, and applying the registry replaces it. So the command reads it first:
@@ -57,7 +57,7 @@ The command:
 
 1. Prints the AWS account and the Kubernetes context it is about to change, and asks before going on.
 2. Writes the Terraform variables from its options into `clouder.auto.tfvars`, plans, shows the plan, and applies it once you confirm.
-3. Creates an access key for each of the builder, the puller and the reader that has none, each in a file only you can read under `~/.clouder/ecr-environments/keys`. Keys are never printed.
+3. Creates an access key for each of the builder, the puller and the reader that has none, each in a file only you can read under `~/.clouder/ecr-environments/<workspace>/keys`. Keys are never printed.
 4. Creates the three Secrets by server-side apply, so no key is copied into an annotation.
 5. Installs the refresher in each runtime namespace and runs it once, so the `ecr-environments` pull secret exists straight away.
 6. Runs the [check](#check).
@@ -75,15 +75,18 @@ export DATALAYER_ECR_ENVIRONMENTS_REGISTRY=123456789012.dkr.ecr.us-east-1.amazon
 | `--region` | `DATALAYER_ECR_ENVIRONMENTS_REGION`, then `us-east-1` | |
 | `--project-name` | `datalayer` | The first part of every IAM and KMS name |
 | `--repository-prefix` | `environments` | A scratch prefix tries the setup beside a real one |
+| `--kms-deletion-window` | `30` | Days a destroyed KMS key stays recoverable, 7 to 30; 7 suits a scratch registry |
 | `--base-channel` | `python-cpu` and `python-cuda` | Repeat it for several |
-| `--keys-dir` | `~/.clouder/ecr-environments/keys` | Use one directory per AWS account |
+| `--keys-dir` | `~/.clouder/ecr-environments/<workspace>/keys` | |
 | `--builder-namespace` | `DATALAYER_DURABLE_NAMESPACE`, then `datalayer-durable` | |
 | `--reader-namespace` | `datalayer-api` | |
 | `--runtime-namespace` | `datalayer-runtimes` | Repeat it for several |
 | `--kubeconfig`, `--context` | the current context | |
 | `--skip-kubernetes`, `--skip-check` | off | |
 
-The Terraform state is local: `terraform/environments-registry/terraform.tfstate`, on the machine that ran `deploy`. Keep it. Git ignores it, and without it the next run plans to create what already exists.
+Each registry, a project and a prefix, is a Terraform workspace of its own, `<project>-<prefix>`: `datalayer-environments` by default. Its state lives under `terraform/environments-registry/terraform.tfstate.d/<workspace>/`, its variables in `workspaces/<workspace>.tfvars`, and its key files under `~/.clouder/ecr-environments/<workspace>/keys`. So a scratch registry sits beside the real one, and destroying it leaves the real one alone. Commands that do not plan (`outputs`, `rotate-keys`, `secrets`, `refresher`, `check`) act on the registry planned last, or on the one `--workspace` names.
+
+The state is local to the machine that ran `deploy`. Keep it: git ignores it, and without it the next run plans to create what already exists.
 
 ## Check
 
@@ -104,6 +107,8 @@ clouder aws ecr-environments check
 
 It removes the probe image when it is done. A scan can take a few minutes, and `--scan-timeout` sets how long to wait.
 
+cosign signs with `--tlog-upload=false` and verifies with `--insecure-ignore-tlog=true`. The signature of a private environment is not written to the public transparency log, where anyone could read its digest and its repository. The key is the trust anchor.
+
 ## Step by step
 
 Every step of `deploy` is also a command of its own:
@@ -117,6 +122,7 @@ Every step of `deploy` is also a command of its own:
 | `clouder aws ecr-environments secrets` | Creates the Secrets from the key files |
 | `clouder aws ecr-environments refresher` | Installs and runs the refresher |
 | `clouder aws ecr-environments check` | Runs the check |
+| `clouder aws ecr-environments destroy` | Removes one registry: its repositories and images, its access keys, and what Terraform made |
 
 ### In CI
 
@@ -130,6 +136,44 @@ clouder aws ecr-environments apply
 ```
 
 `plan` takes the same Terraform options as `deploy`. Git ignores both files, and they should stay out of it: a plan can carry sensitive values.
+
+## A scratch registry
+
+Try the setup, or prove it, beside the real registry, in the same account:
+
+```bash
+clouder aws ecr-environments deploy \
+  --project-name datalayer-scratch --repository-prefix environments-scratch \
+  --kms-deletion-window 7 --skip-kubernetes
+```
+
+Remove it when you are done:
+
+```bash
+clouder aws ecr-environments destroy --workspace datalayer-scratch-environments-scratch
+```
+
+`destroy` shows what it removes and asks first; `--confirm <workspace>` answers for an unattended run. In order, it deletes:
+
+1. The repositories under the prefix, with their images.
+2. The access keys of the three principals, since IAM will not delete a user that still has one.
+3. What Terraform made.
+
+Then it deletes the workspace, its variables and its key files. It refuses the `default` workspace. It also refuses a registry holding user or platform environment images, unless you pass `--delete-environment-images`. KMS keys are scheduled for deletion and stay recoverable until their window ends.
+
+## Kubernetes later
+
+A registry can be deployed before any plane uses it. Deploy with `--skip-kubernetes`, and the Secrets and the refresher wait. When a plane is ready, with the key files of its workspace on the machine and the plane's kubeconfig context:
+
+```bash
+# The builder's Secret in the durable namespace, the reader's in datalayer-api,
+# the puller's in each runtime namespace, by server-side apply.
+clouder aws ecr-environments secrets --workspace datalayer-environments --context <plane-context>
+# The CronJob that rewrites the ecr-environments pull secret every 6 hours, run once.
+clouder aws ecr-environments refresher --workspace datalayer-environments --context <plane-context>
+```
+
+Both ask before writing into the context. Run `deploy` again without `--skip-kubernetes` to do both in one go: it plans no changes and keeps the keys it has.
 
 ## Rotate keys
 

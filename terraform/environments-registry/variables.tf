@@ -51,3 +51,14 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "kms_deletion_window_in_days" {
+  description = "How long a deleted KMS key can still be recovered: 30 days for the real registry, 7 for a scratch one."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.kms_deletion_window_in_days >= 7 && var.kms_deletion_window_in_days <= 30
+    error_message = "AWS KMS allows a deletion window of 7 to 30 days."
+  }
+}
