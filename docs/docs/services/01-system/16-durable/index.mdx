@@ -476,6 +476,7 @@ key — so a leaked Contents key cannot start workflows.
 | `operator` | `DATALAYER_OPERATOR_API_KEY` | read. It watches; it never starts anything |
 | `scheduler` | `DATALAYER_SCHEDULER_DURABLE_API_KEY` | start, read, signal, cancel — a due run started as a workflow instead of run inline. A workload key, not the scheduler's administrator JWT |
 | `ai-agents` | `DATALAYER_AI_AGENTS_API_KEY` | start, read, signal, cancel — one `EvalRunWorkflow` per run of a benchmark launch, and a `SandboxWorkflow` when a task's sandbox is restored for an investigation. Its answer to a launch says `executes: true` only when every run was actually started here. As the orchestration control plane it starts one `OrchestrationWorkflow` per execution delegated (and a `SandboxWorkflow` for `agents.create`), wakes it with a signal named after each command it received, and cancels it on `executions.cancel`. It calls with the shared client, `datalayer_common.durable_client`, the one the gateway uses |
+| `runtimes` | `DATALAYER_RUNTIMES_DURABLE_API_KEY` | start, read, signal, cancel — one `EnvironmentBuildWorkflow` per queued environment build, read back so a replayed request starts no second run, and cancelled when the build is. Not `DATALAYER_RUNTIMES_API_KEY`: that is the key this service calls Runtimes *with*, every worker holds it, and it is never a way in. It calls with the shared client, `datalayer_common.durable_client` |
 
 **An unset key refuses that caller** rather than admitting all of them:
 absence is a refusal, not a wildcard. The keys are read on each request, not
@@ -502,6 +503,7 @@ investigation — both evals.
 | this service | `SandboxWorkflow` children of an `EvalRunWorkflow` — the run's pool, one per slot, each runtime created through Runtimes **as the person** | Inside a benchmark run only |
 | jupyter-mcp-server | `NotebookRunWorkflow` for cell executions (`execute_code`), `ApprovalWorkflow` for approvals | Only with `DATALAYER_DURABLE_URL` set: `plane local` yes; prod1 keeps the in-process fake (`durable: false`) |
 | scheduler | nothing | `DATALAYER_SCHEDULER_USE_DURABLE` is off; the starter exists, `ScheduledNotebookRunWorkflow` waits on it |
+| runtimes | nothing | The starter exists (`datalayer_runtimes.services.durable`); the Environments registry records builds `queued` and runs none until `EnvironmentBuildWorkflow` is in the catalog (PLAN_ENV E1-03) |
 | contents | `ContentsOperationWorkflow` | When configured with the service; see [Mirroring Contents](#mirroring-contents) |
 
 A line in `readyz` says the same per replica: the gateway's `workflows`
@@ -520,13 +522,17 @@ kubectl -n datalayer-durable create secret generic datalayer-durable \
   --from-literal=DATALAYER_JUPYTER_MCP_SERVER_API_KEY=... \
   --from-literal=DATALAYER_CONTENTS_API_KEY=... \
   --from-literal=DATALAYER_SCHEDULER_DURABLE_API_KEY=... \
+  --from-literal=DATALAYER_RUNTIMES_DURABLE_API_KEY=... \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 `plane up` writes these from the rc: the `scheduler` key is set on both sides
 from `DATALAYER_SCHEDULER_DURABLE_API_KEY` — into this Secret as
 `serviceApiKeys.scheduler`, and into the scheduler Deployment's own env so it
-sends the matching `X-API-Key`.
+sends the matching `X-API-Key`. The `runtimes` key is set the same way from
+`DATALAYER_RUNTIMES_DURABLE_API_KEY`: into this Secret as
+`serviceApiKeys.runtimes`, and into the Runtimes Deployment's env beside
+`DATALAYER_DURABLE_URL`.
 
 There is no `DATALAYER_DURABLE_API_KEY`. The name existed, was injected by
 the chart and read by nothing, and its docstring claimed it was what the
@@ -552,6 +558,7 @@ already has one.
 | `DATALAYER_JUPYTER_MCP_SERVER_API_KEY` | The gateway's key, for calls **in**. Empty refuses that caller |
 | `DATALAYER_CONTENTS_API_KEY` | Contents' key, for calls in. Not in the chart today |
 | `DATALAYER_OPERATOR_API_KEY` | The Operator's key, for calls in. Not in the chart today |
+| `DATALAYER_RUNTIMES_DURABLE_API_KEY` | Runtimes' key, for calls in (`serviceApiKeys.runtimes`). Empty refuses that caller. Not `DATALAYER_RUNTIMES_API_KEY` below, which is this service's key for calls out to Runtimes |
 | `DATALAYER_SOLR_ZK_HOST` | Where `mcp-tasks` is. The `project_task` step writes the projection **directly**, so this is required and not optional |
 | `DATALAYER_DURABLE_APPLICATION_VERSION` | What this worker runs, from the chart's `appVersion`. A worker only takes workflows of a version it can run — see [Upgrades](#upgrades) |
 | `DBOS_APPLICATION_VERSION` | The same value under the name the `dbos` library reads from the environment itself, which is why a DBOS deployment sets this one. Where both are set the service's own name wins |
