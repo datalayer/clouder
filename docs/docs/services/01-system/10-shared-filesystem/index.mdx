@@ -20,7 +20,7 @@ layout below or a path recorded by one is unresolvable in another:
 
 | Component | How it mounts it |
 | --- | --- |
-| Runtime Pods (Operator) | Whole claim in the companion container at `DATALAYER_SHARED_FS_MOUNT_PATH`. The runtime container gets its folders one of two ways: from the gateway when it is on, or — when it is off — one `subPath` per home folder, at `/home/jovyan/<handle>`. |
+| Runtime Pods (Operator) | Whole claim in the companion container at `DATALAYER_SHARED_FS_MOUNT_PATH`. The runtime container gets its folders one of two ways: from the gateway when it is on, or — when it is off — one `subPath` per home folder, at `/home/datalayer/<handle>`. |
 | `datalayer-contents` | Whole claim, at the same path. It serves the Home Folder browser from the same bytes the sandbox sees. |
 | [Node Mount Gateway](/services/system/node-mount-gateway/) | Whole claim, **once per node** in the `datalayer-node-mounts` DaemonSet, at `nodeMountGateway.sharedFilesystemMountPath`. It binds sub-paths of it into Pods that are already running — home folders from `home/`, and Environment datasets from wherever an administrator put them. |
 | `plane` provisioning | Creates the top-level directories and their ownership. |
@@ -36,7 +36,7 @@ layout below or a path recorded by one is unresolvable in another:
   public/  datasets/  tmp/
 ~~~
 
-The names under `/home/jovyan` are the account handles, not the uids, and they
+The names under `/home/datalayer` are the account handles, not the uids, and they
 are produced in one place — `datalayer_common.home_folders` — because the
 Operator, Contents and the gateway all have to call one folder by one name. A
 team is named after its organization and itself joined by a double underscore

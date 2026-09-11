@@ -52,7 +52,7 @@ flowchart LR
   laptop["Local client<br/>(CLI, Desktop, VS Code, JupyterLab)<br/>owns the folder"]
   relay["Contents bridge relay<br/>datalayer-contents-bridge :9402"]
   node["Local CSI node driver<br/>DaemonSet on every runtimes node"]
-  pod["Runtime pod<br/>/home/jovyan/…/project"]
+  pod["Runtime pod<br/>/home/datalayer/…/project"]
   laptop -- "outbound, wss,<br/>one session" --> relay
   node -- "outbound, wss,<br/>same session" --> relay
   node -- "FUSE + bind mount" --> pod

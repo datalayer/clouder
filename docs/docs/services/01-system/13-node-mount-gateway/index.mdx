@@ -90,7 +90,7 @@ flowchart TB
   tree["/var/lib/datalayer/node-mount-gateway/POD_UID<br/>the agent's own tree, rshared"]
   vol["kubelet emptyDir of the pod<br/>one mount, ever: that tree"]
   pod["Runtime container<br/>/mnt/datalayer/HANDLE<br/>HostToContainer"]
-  home["/home/jovyan/HANDLE<br/>symlink, made inside the sandbox"]
+  home["/home/datalayer/HANDLE<br/>symlink, made inside the sandbox"]
   claim --> agent --> tree --> vol --> pod --> home
 ~~~
 
@@ -110,13 +110,13 @@ recoverable — instead of causing silent data loss. It follows that the gateway
 volume holds mount points and nothing else: it carries a 1 MiB size limit, and
 it is not the home directory the sandbox writes to.
 
-## Why `/home/jovyan` is not a volume either
+## Why `/home/datalayer` is not a volume either
 
 The folders are bound at `/mnt/datalayer/{handle}` and reached at
-`/home/jovyan/{handle}` through a **symlink made inside the sandbox**, by the
+`/home/datalayer/{handle}` through a **symlink made inside the sandbox**, by the
 same kernel the companion already runs start hooks in.
 
-The first design put `/home/jovyan` on a volume shared with the companion, so
+The first design put the home directory on a volume shared with the companion, so
 the companion could write the symlinks directly. That was wrong, and CRIU is
 why. A checkpoint captures `rootfs-diff.tar` — the container's writable layer
 — and [the restore](/services/operator/) replays it onto the base image. A
@@ -191,7 +191,7 @@ The four deliveries are the whole vocabulary:
 ### A target is a path, one segment usually
 
 A grant's `target` is where it appears under `/mnt/datalayer` and, through
-the companion's link, under `/home/jovyan`. For a Home Folder or a share it
+the companion's link, under `/home/datalayer`. For a Home Folder or a share it
 is one segment — `eric`, `eric-ro`. For an Environment's contents it is the
 path the Environment declares beneath the home, `datasets/<name>` or
 `models/<name>`, because that is where the manual says they are and where a
@@ -238,16 +238,16 @@ How one becomes the other:
 | An Environment's `RuntimeContent`, `type: s3` | — | `cloud-storage` |
 
 The first row has two cases, and the Operator tells them apart by the
-attachment's `mount_path`. An attachment at `/home/jovyan` itself is the Home
+attachment's `mount_path`. An attachment at `/home/datalayer` itself is the Home
 Folder capability said as an attachment: it is rendered with the person's own
 folders, one grant per membership, and never as a share. An attachment at
-`/home/jovyan/<name>` is a **share** — a `files` folder attached by claim
+`/home/datalayer/<name>` is a **share** — a `files` folder attached by claim
 path, which is how someone else's Home Folder, or your own read-only under a
 second name, reaches a sandbox. The Operator builds that grant from the
 `source_path` Contents puts on the attachment's *prepare* answer (and on the
 manifest): source is that path, target is `<name>`, mode is the attachment's,
 kind is `files`. A share whose `<name>` is already a mount is skipped rather
-than bound twice at one place; one outside `/home/jovyan` is refused with
+than bound twice at one place; one outside `/home/datalayer` is refused with
 `FILES_PATH_UNSUPPORTED`; a walking source is refused where the grant is
 written, with `INVALID_SOURCE`. An attachment with no `source_path` is what a
 Contents older than this page sends, and is left alone — which is to say not
@@ -486,7 +486,7 @@ a folder nobody granted any more.
 
 **Whose mount it is.** A FUSE mount belongs to the user who made it. Inside a
 sandbox, where this filesystem was written to run, the mounter *is* the reader
-and that is right. Here root mounts and the sandbox's `jovyan` reads, in
+and that is right. Here root mounts and the sandbox's `datalayer` reads, in
 another namespace, so the agent passes `--allow-other` (which needs
 `user_allow_other` in `/etc/fuse.conf`, set in its image) and `--uid 1000
 --gid 100`, so the files are reported as the sandbox's own rather than as
@@ -743,9 +743,9 @@ time datalayer runtime create --given-name gw-test --home-folder
 time datalayer runtime create --given-name pool-test
 
 # In the sandbox: the folders are at the documented path, through the gateway.
-ls -la /home/jovyan/            # <handle> -> /mnt/datalayer/<handle>
+ls -la /home/datalayer/            # <handle> -> /mnt/datalayer/<handle>
 mount | grep /mnt/datalayer     # nosuid, nodev; ro where the grant says ro
-echo hello > /home/jovyan/$USER_HANDLE/gw-test.txt
+echo hello > /home/datalayer/$USER_HANDLE/gw-test.txt
 
 # And Contents sees the same bytes, from the same claim.
 datalayer contents home-folder list /
@@ -811,11 +811,11 @@ carries the Environment's `git` and NFS contents in its spec — a checkout by a
 init container, a `subPath` on the shared claim — because no gateway is serving
 it; granting those again would mount each one twice. A pooled Pod renders
 **none** of them and takes every content as a grant (audit 83). It defers on
-purpose: a creation-time `subPath` would leave `/home/jovyan/<dir>` root-owned,
+purpose: a creation-time `subPath` would leave `/home/datalayer/<dir>` root-owned,
 and the companion's link — made inside the sandbox as the runtime user — could
 not add a sibling into it, so the bucket would reach `/mnt/datalayer` and never
 the home path a user was promised. With nothing rendered, the link snippet owns
-`/home/jovyan` and joins every content — the checkout, the share, the bucket —
+`/home/datalayer` and joins every content — the checkout, the share, the bucket —
 to its promised path. (No Environment both carries a bucket and forces a cold
 spawn, so a bucket is only ever a pooled-Pod `cloud-storage` grant.)
 

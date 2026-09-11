@@ -30,7 +30,7 @@ With the default options:
 | IAM role `datalayer-environments-base-reader` | assumed by the builder only | Reads `environments/base/` for one managed-provider build, never a user's image |
 | CronJob `ecr-environments-refresher` | in `datalayer-runtimes` | Rewrites the pull secret `ecr-environments` every 6 hours |
 
-Every policy is scoped to the `environments/` prefix. A user environment gets its repository, `environments/u/<owner>/<environment>`, from the builder the first time it is built, and platform environments live under `environments/platform/`. Tags are immutable, and images are pulled by digest.
+Every policy is scoped to the `environments/` prefix. A user environment gets its repository, `environments/u/<owner>/<environment>`, from the builder the first time it is built, and platform environments live under `environments/platform/`. Tags are immutable, except in the BuildKit caches under `environments/cache/`, and images are pulled by digest.
 
 ## Prerequisites
 
@@ -160,6 +160,34 @@ clouder aws ecr-environments destroy --workspace datalayer-scratch-environments-
 3. What Terraform made.
 
 Then it deletes the workspace, its variables and its key files. It refuses the `default` workspace. It also refuses a registry holding user or platform environment images, unless you pass `--delete-environment-images`. KMS keys are scheduled for deletion and stay recoverable until their window ends.
+
+## Proved on a scratch registry
+
+Before a plane relied on it, the setup was proved under the `environments-scratch` prefix with the principals' own keys:
+
+| What | Result |
+|---|---|
+| `buildctl` pushing by digest with an SBOM and `mode=max` provenance | Accepted: ECR keeps an OCI image index with the `linux/amd64` image and an `attestation-manifest` beside it |
+| A BuildKit registry cache exported with `image-manifest=true,oci-mediatypes=true` | Accepted |
+| The same cache tag exported by a second build | Refused: `cannot be overwritten because the tag is immutable` |
+| Enhanced scanning of an image carrying Jinja2 2.10 and urllib3 1.26.4 | 15 CVEs on those two packages, read by the reader |
+| The base-reader, assumed by the builder, reading a base and pulling it with a login token made from its session | Passed. Sessions last up to an hour, the module's `base_reader_session_seconds`; 12 hours is refused. The token lasts 12 hours whatever the session's length |
+| cosign signing with the KMS key, and verifying as the puller | Passed |
+| The base-reader, assumed with a session policy, reading a user image | Refused with `AccessDeniedException` |
+
+The build that was proved:
+
+```bash
+buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+  --opt attest:sbom= --opt attest:provenance=mode=max \
+  --output type=image,name=<registry>/environments/u/<owner>/<environment>:v<n>-<build>,push=true,oci-mediatypes=true \
+  --export-cache type=registry,ref=<registry>/environments/cache/u/<owner>:<tag>,mode=max,image-manifest=true,oci-mediatypes=true \
+  --metadata-file metadata.json
+```
+
+So the builder creates each cache repository, `environments/cache/u/<owner>`, with **mutable** tags: every build exports its cache under the same tag, and nothing is launched from a cache. Environment repositories keep immutable tags, and a runtime starts from the digest in `metadata.json`, never from a tag.
+
+The ECR quotas that matter here, from Service Quotas: 100,000 repositories, 100,000 images per repository, 1,000 tags per image, and 10 `PutImage` requests a second, the limit a burst of concurrent builds meets first. All but the tags per image are adjustable.
 
 ## Kubernetes later
 

@@ -6,6 +6,9 @@
 #   <prefix>/base/<channel>                base channels, created here
 #   <prefix>/cache/u/<owner_uid>           BuildKit registry caches, created by the builder
 #
+# Every repository has IMMUTABLE tags except the caches: a build re-exports its cache under
+# the same tag, and ECR refuses that on an immutable tag.
+#
 # Nothing here holds a secret: the IAM users have no access keys in Terraform state.
 # `clouder aws ecr-environments rotate-keys` creates and rotates them, and
 # `k8s-ecr-environments-secrets.sh` puts them into Kubernetes Secrets.

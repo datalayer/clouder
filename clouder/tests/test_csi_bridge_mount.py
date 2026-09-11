@@ -81,7 +81,7 @@ def test_missing_package_is_reported(monkeypatch):
 
 
 def test_the_agent_mounts_for_the_sandbox_user_not_for_root(monkeypatch, fake_code_sandboxes):
-    """Audit 57: the agent mounts as root and the sandbox reads as `jovyan`.
+    """Audit 57: the agent mounts as root and the sandbox reads as its user, 1000:100.
 
     A FUSE mount belongs to whoever made it. Without `--allow-other` the
     folder the person asked for answered them `Permission denied`; without

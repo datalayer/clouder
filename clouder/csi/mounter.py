@@ -47,7 +47,7 @@ MOUNT_TOKEN_ENV = "DATALAYER_BRIDGE_MOUNT_TOKEN"
 SESSION_KEY_ENV = "DATALAYER_BRIDGE_SESSION_KEY"
 
 
-#: Who a sandbox runs as. Every Datalayer sandbox is `jovyan`, 1000:100 — the
+#: Who a sandbox runs as. Every Datalayer sandbox is `datalayer`, 1000:100 — the
 #: same pair `datalayer_common.home_folders` writes home folders for. Said
 #: here rather than imported, because a node agent has no business installing
 #: a services package to learn it.

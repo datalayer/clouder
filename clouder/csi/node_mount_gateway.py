@@ -114,7 +114,7 @@ KERNEL_MOUNT_OPTIONS = ("nosuid", "nodev")
 PROCESS_KINDS = ("cloud-storage", "local-bridge")
 
 #: Mirrored from `datalayer_common.home_folders`. Every sandbox runs as
-#: `jovyan` (1000:100) and a home folder is created for that identity: a
+#: `datalayer` (1000:100) and a home folder is created for that identity: a
 #: folder owned by anyone else reaches the sandbox read-only, or not at all.
 HOME_FOLDER_OWNER_UID = 1000
 HOME_FOLDER_OWNER_GID = 100

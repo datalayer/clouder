@@ -367,12 +367,74 @@ it.
   `execution.error` on the execution; a request to a worker answers
   `delivered: false`. Neither loses the command: it is received, and waits in
   the store for the workflow that reads it.
-- **Refusals** are a canonical `OrchestrationError` in `detail`: `not_found`
-  404; `conflict` and `invalid_transition` 409; `unsupported_operation`,
-  `depth_exceeded`, `fan_out_exceeded` and `deadline_exceeded` 422;
-  `worker_unreachable` 503. A request the worker's adapter cannot carry —
-  pausing an ACP worker, steering an A2A one — is refused with the adapter's
-  own reason.
+- **Refusals** are a canonical `OrchestrationError` in `detail`:
+  `invalid_command` 400; `not_found` 404; `conflict` and `invalid_transition`
+  409; `unsupported_operation`, `depth_exceeded`, `fan_out_exceeded`,
+  `deadline_exceeded` and `budget_exhausted` 422; `worker_unreachable` 503. A request the worker
+  cannot carry — pausing a plain ACP worker, steering a plain A2A one — is
+  refused with the adapter's own reason, read from the capability report the
+  adapter recorded on the execution as it dispatched (`recorded_capabilities`),
+  or from the protocol's report before anything was dispatched.
+- **Pause and resume** (O2-05): a worker that speaks the Datalayer
+  orchestration extension — declared on its A2A agent card, or in its ACP
+  `initialize` — is recorded with `pause`, `resume` and an in-turn `steer`
+  supported. `executions.pause` is received with its `reason`, and the
+  execution's `OrchestrationWorkflow` hands it to the worker; the execution is
+  `paused` once the worker reports the checkpoint it kept. `executions.resume`
+  is for a `paused` execution only — a `waiting` one is refused
+  `invalid_transition`, since its approval decides it — and names a checkpoint
+  the execution kept or resumes from the last one (none kept is `not_found`);
+  it is received with that checkpoint, and the workflow resumes the execution
+  as a new attempt. `executions.checkpoint` stays refused: such a worker keeps
+  a checkpoint as it pauses, not on request.
+- **A worker's requests** (O2-06): a token exchanged from an execution's task
+  grant is that execution's worker (`task_id`, carried by the shared auth
+  beside `task_grant_uid`). It delegates only under its own execution — never
+  a root, never a child of another execution. It reads and acts only on its
+  own execution and what is below it, and its listings and tree roll-ups hold
+  only that part. It is refused `agents.create` and `agents.attach`. Each
+  refusal is `permission_denied`: a worker requests its children, and the
+  control plane resolves, authorizes and dispatches them.
+- **Trees** (O2-01): a child may name its `slot` under its parent, and its
+  execution id is derived from the parent and the slot (`exec_` and the first
+  32 hex digits of SHA-256 over `parent` and `slot`), so its
+  `OrchestrationWorkflow` run is keyed on parent and slot as well. A parent
+  that asks again for a child it has — its worker killed and retried, with new
+  idempotency keys — is answered with that child and its run, and nothing is
+  started twice; the fan-out limit is not asked again for it. The same slot
+  with different work is `conflict`; a slot on a root, or one that is not a
+  name, is `invalid_command`. A lost parent attempt is retried without
+  touching its children, and no store write rewrites an execution's root,
+  parent or depth (`refuse_moving`, part of the store contract both stores
+  run).
+- **One trace per tree** (O2-12): a child is in its tree's trace. A child
+  that names no trace — a worker's request for a child names none — is given
+  its parent's `trace`. Each execution's `OrchestrationWorkflow` is started
+  with its `traceparent` in the arguments, so durable's steps, the spans of
+  its attempts and the `traceId` in its artifacts' provenance are all the
+  tree's; one naming another trace than its
+  traced parent's is `invalid_command`. A root keeps the trace it names. A
+  tree whose children speak A2A and ACP is one trace and one artifact set:
+  `executions.collect` with `includeChildren` answers every artifact of the
+  tree, each attributed to the execution that produced it (conformance
+  scenario 15, `durable/tests/test_scenario_15_mixed_protocol_children.py`).
+- **Delegation** (O2-02) is the control plane's half of a delegation token,
+  decided on `executions.delegate` without asking anybody. A child's
+  references are in its parent's manifest (by kind and uid), a read-only one
+  stays read-only, and its `expiresAt` does not outlast the parent's —
+  otherwise `permission_denied`, 403. It is delegated only to an agent in the
+  parent's `permissions.agents`; its `tools` and `agents` are subsets of the
+  parent's, and it has `sandboxes` and `network` only where the parent has
+  them — `permission_denied`. Its `inputTokens`, `outputTokens`, `cost` and
+  `wallClockSeconds` are split from the parent's (O2-04): at most what the
+  parent has left after what its other children were given, in the parent's
+  currency, and a child that names no share takes what is left; each child
+  takes one of the parent's `executions` — otherwise `budget_exhausted`, 422,
+  naming the limit and what is left. So a tree's model budget is its root's in
+  total, never multiplied by its fan-out. Allowlists left unset are
+  inherited, so a child's stored policy holds its parent's. IAM's half is the
+  child's own task grant, which names the child's manifest and nothing else
+  (see the IAM page); neither half can be satisfied by the other.
 - **Discovery** reads the agentspec library `agent-runtimes` ships, each
   spec's operations filled from the adapter of the protocol it speaks.
 - **A subscription** sends each event with an `id` that is the cursor of the
@@ -383,7 +445,14 @@ it.
   one at the ASGI level). The app's execution page
   (`/orchestration/:executionId`) reads it through `core`'s
   `subscribeToExecution`, and the execution and its artifacts through
-  `executions.get` and `executions.collect`.
+  `executions.get` and `executions.collect`. After each batch of events the
+  stream sends `orchestration.tree` (O2-03): the `TreeSummary` the user
+  channel carries, over the executions the stream covers, under the cursor of
+  the events it follows, and only when it changed. Each execution's own events
+  keep their sequence whatever the writers' clocks say
+  (`control_plane.in_order`). The same summary can be derived from the events
+  alone — `TreeSummary.from_events` in the service, `treeFromEvents` in
+  `core` — and `subscribeToExecution` hands the roll-up to `onTree`.
 - **The user channel** (`/ws`, `user:{uid}`) carries an `orchestration.tree`
   event — the tree at a glance: each execution's state, agent and goal, the
   counts by state, and whether it is over — never the event stream itself.

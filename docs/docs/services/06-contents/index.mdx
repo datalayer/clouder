@@ -365,7 +365,7 @@ workflow. Each is a switch, a secret and a verification; none is on by default.
 `mount` into a Datalayer runtime it then asks Runtimes to bind it **now** —
 `POST /api/runtimes/v1/runtimes/{runtime}/mounts` with the attachment uid and
 the caller's own credentials, so the mount is made the same way, and checked
-the same way, as at launch. A `files` folder or a bucket under `/home/jovyan`
+the same way, as at launch. A `files` folder or a bucket under `/home/datalayer`
 is bound into the running pod and reads `ready` (the Node Mount Gateway exists
 to mount into a pod that is already up). A **Volume** cannot: its claim is
 fixed at pod creation, so the Operator answers `422` and Contents relays it as
@@ -379,7 +379,7 @@ mounting only once its relay session exists.
 
 `DELETE /api/contents/v1/attachments/{uid}` moves a mount attachment to
 `revoking`. For a mount the node gateway holds in a Datalayer runtime — a
-`files` folder or a bucket bound under `/home/jovyan` — Contents then makes
+`files` folder or a bucket bound under `/home/datalayer` — Contents then makes
 the revoke reach the sandbox: it calls Runtimes'
 `DELETE /api/runtimes/v1/runtimes/{runtime}/mounts/{target}` **with the
 caller's own credentials** (`DATALAYER_RUNTIMES_URL`), so ownership is checked
@@ -390,7 +390,7 @@ any more and the attachment is `revoked` at once; anything else — Runtimes out
 of reach included — leaves `revoking` standing, with the mount, for the
 runtime's deletion to settle as it always did. A Volume is not asked of the
 gateway: its claim is fixed at creation and stays until the runtime is
-deleted. An attachment at `/home/jovyan` itself is the Home Folder capability
+deleted. An attachment at `/home/datalayer` itself is the Home Folder capability
 and is left alone.
 
 A **local bridge** is the exception that needs no runtime deletion to settle. Its
@@ -448,7 +448,7 @@ leave the sandbox holding a filesystem whose far end is gone — an
 `Input/output error` at the path until something noticed — and the attachment
 in `revoking`, which counts as attached and refuses the same folder to that
 sandbox again. `DELETE /attachments/{uid}` does the same thing from the other
-side. A Local Mount lands at `/home/jovyan/<name>`, and only there: a path outside
+side. A Local Mount lands at `/home/datalayer/<name>`, and only there: a path outside
 the home folder is refused at creation (`LOCAL_MOUNT_PATH_UNSUPPORTED`). The
 inline CSI volume that once served an arbitrary absolute path is retired
 (audit 82); the Node Mount Gateway is the sole path now.
@@ -460,7 +460,7 @@ channel into a sandbox. Two pieces make it: the **relay** (a Contents
 process that pairs the two ends and forwards frames it cannot read) and, for
 Datalayer runtimes, the **Node Mount Gateway** agent on the runtime nodes,
 which runs the bridge filesystem as a grant and binds it under
-`/home/jovyan`. (The inline `local.csi.datalayer.io` CSI volume that used to
+`/home/datalayer`. (The inline `local.csi.datalayer.io` CSI volume that used to
 do this at pod creation is retired — audit 82.) External sandboxes need no
 node agent — the sandbox runs the mount itself when its environment lists the
 `fuse` feature.
@@ -572,7 +572,7 @@ card, the sandbox's Contents tab) and the published `datalayer` CLI
    kubectl get csidriver local.csi.datalayer.io || true
    ```
 7. **Mount something.** From a computer with the `datalayer` CLI:
-   `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/jovyan/local`,
+   `datalayer contents mount ./folder --sandbox <sandbox uid> --path /home/datalayer/local`,
    then `datalayer contents mounts` shows the bridge `connected`, and the
    sandbox's Contents tab and the Mounts card show the same state. The
    Operator has written the bridge as a Node Mount Gateway grant on the pod's
@@ -718,10 +718,10 @@ datalayer contents cloud-storage test BUCKET_SOURCE
 datalayer contents cloud-storage objects BUCKET_SOURCE --prefix data/
 datalayer contents environment list
 datalayer contents environment verify python-cpu --provider daytona
-datalayer contents sandbox attach models --sandbox SANDBOX_UID --path /home/jovyan/volumes/models
+datalayer contents sandbox attach models --sandbox SANDBOX_UID --path /home/datalayer/volumes/models
 datalayer contents sandbox list --sandbox SANDBOX_UID
 # Local mounts (the relay, delivered by the Node Mount Gateway on Datalayer runtimes)
-datalayer contents mount ./folder --sandbox SANDBOX_UID --path /home/jovyan/local
+datalayer contents mount ./folder --sandbox SANDBOX_UID --path /home/datalayer/local
 datalayer contents mounts
 # MCP sources
 datalayer contents mcp tools EARTHDATA_SOURCE
@@ -1053,13 +1053,13 @@ Two consequences follow, and both are visible from this service:
 
 - the gateway holds mount points and nothing else, since a byte written into a
   tmpfs is a byte of the Pod's memory. It carries a 1 MiB size limit;
-- it therefore cannot be `/home/jovyan`, which a sandbox writes to all day.
+- it therefore cannot be `/home/datalayer`, which a sandbox writes to all day.
   The folders are bound at `/mnt/datalayer/{handle}` and reached at
-  `/home/jovyan/{handle}` through a symlink made inside the sandbox. Both
+  `/home/datalayer/{handle}` through a symlink made inside the sandbox. Both
   names come from `datalayer_common.home_folders`, so the path this service
   reports for a file is the path the sandbox reads it at.
 
-`/home/jovyan` is deliberately not a volume either, for a different reason: a
+`/home/datalayer` is deliberately not a volume either, for a different reason: a
 CRIU checkpoint captures the container's writable layer, so a home directory
 moved onto a volume would not survive a checkpoint and restore. The symlink
 lives in the writable layer, and points at a mount the restored Pod is granted

@@ -526,6 +526,13 @@ names. IAM answers its own grants directly.
 Deploy order: Solr's mapping, then IAM, then the services that read tokens,
 then durable, which issues narrowed grants.
 
+Every execution holds its own grant, a child's included, so a child's token
+names the child's references and nothing its parent was given besides
+(`ORCHESTRATOR.md`, O2-02). IAM needs no model of the tree for that: the
+control plane refuses a child whose manifest is not a subset of its parent's,
+and IAM narrows each grant to the manifest it was issued for, so neither
+refusal can be satisfied by the other (`tests/test_delegation_tokens.py`).
+
 ### The execution layer, and explicit scopes
 
 A grant naming resources is also narrowed in its **scopes** to what those

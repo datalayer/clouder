@@ -29,7 +29,7 @@ An Environment names what it brings by the **`spec.uid`** of each
 spec:
   contents:
     - uid: 01M0YX0MXYD8YZVMJW016KTB4M # nfs-models-oss-content
-      mount: /home/jovyan/models/datalayer-oss
+      mount: /home/datalayer/models/datalayer-oss
       permissions: ro
 ```
 
@@ -99,6 +99,10 @@ Actually, Conda Environments are more similar to a Docker Image and we are worki
 
 With Runtime Environments, Datalayer allows you to specify, on top of Conda Environments, Contents, Environment Variables, Snippets, Examples, CPU/GPU and memory resources, the Runtime naming template, and other cloud-native features.
 
+## The home
+
+Every Environment declares **`spec.home`**, where its image's user lives: `/home/datalayer` for every platform image, as `sandbox-contract/v1` fixes it. The Operator mounts home folders, Contents and Volumes under it. It refuses to spawn any runtime of an Environment that declares no home, or a different one, because the Node Mount Gateway delivers under `/home/datalayer` whatever the image expects. The custom resource requires the field, so an Environment without it is refused when it is applied.
+
 ## Simple Environment Example
 
 ```bash
@@ -117,7 +121,8 @@ spec:
   owner: datalayer
   visibility: public
   example: https://raw.githubusercontent.com/datalayer/examples/e8390ce9eb4aee36721eb6e7cdc31ef8455ff359/python-simple/python-simple-example.ipynb
-  dockerImage: ${DATALAYER_DOCKER_REGISTRY}/datalayer/jupyter-python:0.0.8
+  dockerImage: ${DATALAYER_DOCKER_REGISTRY}/datalayer/jupyter-python:0.2.0
+  home: /home/datalayer
   kernel:
     givenNameTemplate: A Python kernel for simple coding.
   resourcesRanges:
@@ -166,7 +171,8 @@ spec:
   owner: datalayer
   visibility: public
   example: https://raw.githubusercontent.com/datalayer/examples/e8390ce9eb4aee36721eb6e7cdc31ef8455ff359/python-simple/python-simple-example.ipynb
-  dockerImage: 9ol9b008.c1.bhs5.container-registry.ovh.net/datalayer/jupyter-python:0.0.8
+  dockerImage: 9ol9b008.c1.bhs5.container-registry.ovh.net/datalayer/jupyter-python:0.2.0
+  home: /home/datalayer
   kernel:
     givenNameTemplate: A kernel for analysis with XArray.
   snippets:
