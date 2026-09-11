@@ -15,8 +15,14 @@ from ..cloud.aws.api import (
     list_aws_regions,
     list_aws_vms,
 )
+from .aws_ecr_environments import ecr_environments_app
 
 aws_app = typer.Typer(no_args_is_help=True)
+aws_app.add_typer(
+    ecr_environments_app,
+    name="ecr-environments",
+    help="The Environments registry in AWS ECR: Terraform, keys and a check.",
+)
 
 
 @aws_app.callback(invoke_without_command=True)

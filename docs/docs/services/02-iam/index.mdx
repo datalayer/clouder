@@ -526,6 +526,31 @@ names. IAM answers its own grants directly.
 Deploy order: Solr's mapping, then IAM, then the services that read tokens,
 then durable, which issues narrowed grants.
 
+### The execution layer, and explicit scopes
+
+A grant naming resources is also narrowed in its **scopes** to what those
+resources need through the MCP gateway (`ORCHESTRATOR.md`, O1-17), the way a
+grant is narrowed to its agent's: a notebook to read gives `notebooks:read`, a
+notebook to write adds `notebooks:write` and `code:execute`, and any other kind
+gives nothing yet. Durable asks for exactly those, so an execution's token
+never carries the empty scope the gateway reads as a person's whole authority.
+
+The gateway evaluates an execution's token against a fourth policy layer,
+computed from the grant and never stored:
+`GET /api/iam/v1/mcp-policies/execution/{task_grant_uid}`, for platform
+services only.
+
+| Field | Value |
+|---|---|
+| `live` | Whether the grant is active and unexpired. An unknown, revoked or expired grant answers `{"live": false}` and nothing else — never `404`, which the gateway reads as a layer narrowing nothing |
+| `toolAllowlist` | The tools the grant's resources reach, when it names resources. Empty means none |
+| `authorizedResources` | The grant's `authorization_details`, which the gateway checks a call's notebook against |
+
+The table behind `toolAllowlist` and the scopes is `EXECUTION_TOOLS` and
+`EXECUTION_SCOPES` in `datalayer_common.authorization_details`. It leaves out
+the catalogue tools (`list_notebooks`, `find_notebook`, `list_spaces`), whose
+listing would name the person's other notebooks.
+
 ## Execution tree reservations
 
 The credits a tree of orchestration executions may spend are held by IAM, in

@@ -474,6 +474,15 @@ it.
   cancels what the execution delegated. The execution page and the report's
   tree say which of the two budgets it was. Conformance scenario 11 runs it on
   every binding.
+- **Credential** (O1-17): a worker reaches Datalayer with its execution's own
+  token, never with its runtime's key. Durable exchanges the execution's grant
+  at dispatch for a token held for the run — until the execution's deadline,
+  or the grant's 24 hours — and the adapters send it with the delegation,
+  under `datalayer.credential` beside the budget. agent-runtimes takes it out
+  of the message before anything keeps the message and puts it on the run:
+  the agent's Datalayer MCP server is replaced, for that run, by one holding
+  the token, and the gateway narrows that token to the manifest through the
+  execution layer (see the Jupyter MCP Server page).
 - **The contract** is
   `datalayer_ai_agents/contracts/v1/orchestration-openapi.json`, generated
   from the routes with each command's test fixture as its example

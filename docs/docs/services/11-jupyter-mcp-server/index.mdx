@@ -2441,8 +2441,8 @@ ordinary Kubernetes deployment and ingress alerts, not by an MCP-specific one.
 
 ## Policy layers
 
-What an agent may do is decided by four layers, narrowest last. The gateway
-fetches the middle three from IAM on the way to a call and caches each for
+What an agent may do is decided by five layers, narrowest last. The gateway
+fetches the last four from IAM on the way to a call and caches each for
 thirty seconds.
 
 | Layer | Written by | Applies to |
@@ -2451,6 +2451,27 @@ thirty seconds.
 | `organization` | an organization owner | Tokens carrying that `org_uid` |
 | `team` | a team owner, or the owner of the organization above it | Tokens carrying that `team_uid` |
 | `personal` | the person themselves | Tokens with **no** `org_uid`. A person does not loosen or tighten what their organization decided about work done in its name |
+| `execution` | nobody — IAM computes it from the task grant the token was exchanged from | Tokens carrying `task_grant_uid`: an orchestration worker's. It narrows whatever the layers above allow to what the execution's manifest names |
+
+The **execution** layer is read differently from the stored ones
+(`ORCHESTRATOR.md`, O1-17). A stored layer nobody wrote narrows nothing. An
+execution layer that cannot be read, or whose grant has ended
+(`live: false`), refuses every call, because the person's layers are exactly
+what the manifest narrows. It is asked in standalone mode too, because a task
+token implies the platform's IAM. Its `toolAllowlist` admits only the tools
+the manifest's references reach, and an empty one admits none. Its
+`authorizedResources` are checked wherever a call's notebook is known:
+
+- `use_notebook` binds a notebook only when the manifest names it;
+- a cell tool acts only on a bound notebook the manifest names with that
+  access (read, or write for edits and execution);
+- a cell tool about the active notebook is refused while none of the
+  execution's notebooks is bound.
+
+Those refusals carry `reason: execution` and `decided_by: execution`. A token
+with `task_grant_uid` and no `scope` is granted nothing, where a token with
+neither is a person's whole authority. `GET /api/mcp/v1/policy` folds the
+layer in the same way, so the Policies page says what is enforced.
 
 ### Which organization an agent acts in
 
