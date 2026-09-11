@@ -467,6 +467,21 @@ Server up on an existing platform plane, say. Creating a collection that
 already exists fails and is skipped, so any set is safe to re-run; pick the
 narrowest one that covers what is missing.
 
+A new collection takes its configset from the `datalayer-solr:9.10.0` image
+the init pod runs, and a collection that exists keeps the configset it was
+created with. So after a change under `plane/etc/dockerfiles/datalayer-solr/config`,
+rebuild and push that image before creating the collections that need the
+change, or they are created from the older schema. The environments
+collections are the case in point: their locks live in the `*_stored` field,
+which an image built before 2026-09-11 does not have. Check the image first:
+
+```bash
+(cd plane/etc/dockerfiles/datalayer-solr && make build-dev push)
+docker run --rm --entrypoint grep $DATALAYER_DOCKER_REGISTRY/datalayer-solr:9.10.0 \
+  -c 'name="\*_stored"' /opt/solr/config/managed-schema
+# 1
+```
+
 <Tabs groupId="solr">
   <TabItem value="plane" label="Plane" default>
 ```bash
