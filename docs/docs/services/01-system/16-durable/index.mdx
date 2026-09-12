@@ -465,8 +465,8 @@ and never talks to this service.
 | `GET /api/durable/v1/operations` | What this deployment is: engine, queues, catalog |
 
 Authentication is **per caller, with scopes**, in `X-API-Key`. There is no
-single key for the service: four identities are known, each with the least
-it needs, and a key naming another audience is refused even when it is a real
+single key for the service: each calling service is its own identity, with the
+least it needs, and a key naming another audience is refused even when it is a real
 key — so a leaked Contents key cannot start workflows.
 
 | Caller | Key variable | May |
@@ -512,10 +512,10 @@ and ai-agents' launch answer says `executes: true` only when every run of
 the launch was actually taken.
 
 :::info Which keys the chart carries
-All four are on the Deployment as **optional** secret references, so listing
-them costs nothing until the release secret has them — and a key the secret
-does not carry refuses that caller rather than admitting everybody. Put a
-caller's key in the secret when that path is wanted:
+Every caller's key is on the Deployment as an **optional** secret reference, so
+listing them costs nothing until the release secret has them — and a key the
+secret does not carry refuses that caller rather than admitting everybody. Put
+a caller's key in the secret when that path is wanted:
 
 ```bash
 kubectl -n datalayer-durable create secret generic datalayer-durable \
