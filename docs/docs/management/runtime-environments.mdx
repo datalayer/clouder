@@ -85,6 +85,17 @@ User Environments, which accounts and organizations define, version and build th
 
 :::
 
+### Nothing unsigned runs
+
+Once a User Environment's build produces an artifact — an image under `environments/` in the registry — the Operator will not start a pod from it, warm-pool pods included, unless Datalayer's own signature is on that exact digest (PLAN_ENV.md E1-09, D-11). This runs today, code-complete and unit-tested, ahead of the first artifact it will ever check: it fails closed on purpose, so there is nothing to switch on later.
+
+- **What is checked, and what is not.** Only a reference under `environments/` — the pipeline's own namespace — is checked at all. A platform image on OVH is not signed and launches unchecked until E1-28 moves the platform environments onto the same pipeline; checking them today would stop every runtime on the plane.
+- **A tag is refused before a signature is even asked for.** A signature is on content, and a tag can be moved after it was verified, so an `environments/` image is only ever launched by its digest — `…@sha256:<hex>`, never `…:<tag>`.
+- **The check.** `cosign verify --key <the KMS key> <image>`, run once per digest and cached — a pass for an hour (a digest's verdict cannot change, it is content), a refusal for 30 seconds (the usual reason is a signature not pushed yet, and a pool retrying for an hour on a stale no would outlive the problem).
+- **It fails closed.** No `DATALAYER_ENVIRONMENTS_KMS_KEY` set on the Operator, no `cosign` binary, a check that cannot be run, one that never answers: every one of these refuses the pod, naming which. "We could not check" is never an answer that starts a container.
+- **What a refusal looks like**, in the Operator's log and in the pod's own event: `DL_ENV_SIGNATURE_INVALID`, naming the image, the digest, and the reason `cosign` gave — a missing signature, one from another key, or a tampered payload.
+- **Deploying it**: set `DATALAYER_ENVIRONMENTS_KMS_KEY` (the same `awskms:///alias/…` cosign itself takes) and `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` if the default 20 seconds is wrong for this plane, and make sure `cosign` is on the Operator image's `PATH` — nothing else to configure. Until the key is set, every `environments/` pod is refused, which is expected: there is no artifact to launch before [E1-06](/services/runtimes/environments/#builds) deploys the registry and the builder.
+
 ## The home
 
 Every Environment declares **`spec.home`**, where its image's user lives: `/home/datalayer` for every platform image, as `sandbox-contract/v1` fixes it. The Operator mounts home folders, Contents and Volumes under it. It refuses to spawn any runtime of an Environment that declares no home, or a different one, because the Node Mount Gateway delivers under `/home/datalayer` whatever the image expects. The custom resource requires the field, so an Environment without it is refused when it is applied.
