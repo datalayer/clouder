@@ -290,6 +290,46 @@ which is what **Compare my agent** sends before it opens the wizard on the copy.
 The public page also counts it as a reuse, through
 `POST /api/library/v1/items/{id}/reused`.
 
+### The published package
+
+Making a benchmark public publishes a package: an immutable `type_s:
+evalset_publication` document in the `evals` collection holding everything the
+numbers depend on (`datalayer_solr.evals_publications`).
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /evalsets/{id}/publication/preview` | Owner | The package that would be written: its contents, the enumeration the review shows, what is left out and why, and what refuses it |
+| `POST /evalsets/{id}/publications` | Owner | Writes it (`201`), or refuses with `422` and `detail.problems` |
+| `GET /evalsets/{id}/publications` | Viewer | Every package published of this benchmark, withdrawn ones included |
+| `DELETE /evalsets/{id}/publications/{publication_id}` | Owner | Withdraws one; its contents stay as they were written |
+| `GET /public/evalsets/{id}/publication` | Anybody | The newest package still published |
+
+The snapshot holds the definition at its version, the dataset revisions, the
+subjects, the environment, the selected launches with their runs and task
+results, the report and its document, the evidence notebooks of public
+investigations, the reproduction command and link, the evaluators with their
+thresholds, the experiment-to-subject mapping, and the decisions and comments
+that were selected. A task result carries its grade, not its transcript: the
+prompt and the output stay with the run.
+
+Five things refuse a publication, and nothing is written while any of them
+stands:
+
+- a launch or an experiment naming a secret (`config.secrets`),
+- a dataset that is not itself published,
+- a task or a result marked restricted,
+- a report in a state nobody approved,
+- a deleted comment that was selected.
+
+A comment, a decision or an investigation that was not selected is excluded
+rather than refused, with its reason, so nothing is published by implication.
+
+A package is keyed on the checksum of its contents: publishing the same
+contents again answers the publication that is already there rather than
+writing a second one. Withdrawing moves `status_s` to `unpublished` and changes
+nothing else, so a snapshot never becomes editable. Audited as
+`evals.package.publish` and `evals.package.unpublish`.
+
 ### Imported CI reports
 
 A report the evals CLI or the GitHub action wrote can be imported on its
@@ -692,6 +732,28 @@ curl -s -X POST https://${DATALAYER_RUN_HOST}/api/ai-agents/v1/orchestration/age
   -H "Authorization: Bearer ${DATALAYER_API_KEY}" -H 'Content-Type: application/json' \
   -d '{"protocols": ["a2a"]}' | jq '.agents[].agentId'
 ```
+
+### Where the conformance scenarios are proved
+
+The fifteen orchestration scenarios (PLAN_ORCHESTRATOR.md, section 13) are
+run in three suites, not one, because they are claims about three different
+things. When one fails, this is where to look — and a scenario written into
+the wrong suite would be testing something other than what it says.
+
+| Scenarios | Suite | The claim it holds |
+|---|---|---|
+| 1–7, 9, 11 — delegation and artifact return, streaming progress, rejection before acceptance, disconnect after acceptance, lost acknowledgement, duplicate delivery, crash and recovery, cancellation racing completion, budget exhaustion | `agent_runtimes/tests/orchestration`, parametrized over three bindings: A2A, ACP, and an ACP worker that does not declare `loadSession` | The **adapter** contract. Nothing in these tests names a protocol; a scenario a binding cannot run is skipped quoting the adapter's own declared reason, and each binding's pass rate is printed at the end of a run |
+| 14 — nested delegation exceeding depth | `services/ai-agents/tests/test_orchestration_api.py` | The **command boundary**: the refusal names the limit (`depth_exceeded`) rather than failing generically |
+| 10, 12, 13, 15 — approval timeout, context permission denial, conflicting artifact commit, mixed A2A and ACP children under one parent | `services/durable/tests` | The **platform**, with an engine under it: approvals as child workflows, task grants, artifact commit arbitration, and a tree whose children speak different protocols |
+
+```bash
+# The adapter suite, with each binding's rate reported at the end.
+pytest agent_runtimes/tests/orchestration -q
+```
+
+Scenario 8's second half — retrying on *another* compatible worker — needs
+worker selection over a catalogue that declares capabilities, and is open
+with it.
 
 ## Tear Down Datalayer AI Agents
 
