@@ -75,6 +75,23 @@ A build is recorded `queued` by the registry and run by the durable service, on 
 - **When durable can't be reached:** cancelling a build answers `503` and leaves the build as it was, rather than marking it cancelled.
 - **Not deployed yet:** the registry the builder pushes to, and the build pool it pushes from. A build reaches the step that needs them and is refused with `DL_ENV_CAPABILITY_UNSUPPORTED`, naming what is missing — `buildctl`, an ECR credential, a base channel digest. The resolver and the Datalayer builder themselves are written (`code-sandboxes` 1.7.0 and after).
 
+### What each variant can build
+
+`POST /environment-versions/{uid}/validate` answers one capability report per variant of the version, before anything is queued. A report is `supported`, or carries findings with a `DL_ENV_CAPABILITY_UNSUPPORTED` code, the message a person reads and the field it is about. The route takes `{"variants": [...]}` to ask about some of them, and defaults to every variant the version declares.
+
+This is the cheap answer: a GPU spec sent to E2B would otherwise queue a build, wait for a worker, resolve, upload, and fail minutes later with whatever E2B says about a template it could not compile.
+
+| Variant | What it refuses here |
+| --- | --- |
+| `datalayer` | A size class with no placement on a Datalayer node — the GPU classes, until E2-17 and GPU nodes. |
+| `e2b` | A GPU size class or an accelerator, pointing at `modal` and `daytona`; and an `env.HOME`, which E2B overrides with a sudo user of its own. |
+| `daytona` | `latest`, `lts` and `stable` as a base channel, because a snapshot is built once from a tag that moves. Several regions are reported as several artifacts of the one version, since a snapshot is region-scoped. |
+| `modal` | `ONBUILD`, `STOPSIGNAL` and `VOLUME`, which Modal's own Dockerfile builder takes and does nothing with. |
+| All three managed | A build source other than a package list in this phase, and the `conda` manager. |
+
+- **Runtimes needs no provider SDK to answer.** The capability half of every adapter imports nothing of its provider; the SDK is imported inside the operations that build, inspect or delete an artifact, which run on the durable worker. So `validate` is the same answer on a Runtimes that has no provider extra installed, which is every Runtimes.
+- **A managed build itself is not deployed yet.** An operation that reaches E2B, Daytona or Modal answers `DL_ENV_CAPABILITY_UNSUPPORTED` with `detail.missing` naming the item that ships it. The capability report is exact today; the build is not there yet.
+
 ### Resolving a version
 
 A version with no lock is resolved by the workflow's `resolve` step before anything builds: Datalayer's protected constraints — the kernel stack a sandbox needs to connect — are merged over the user's requirements, the base resolves to a digest per requested variant, and the lock is stored once by its digest. Every variant then builds from that one lock.
@@ -114,6 +131,18 @@ Creating a build answers with an estimate before anything is queued: how many bu
 - **The rate and the expected length** of a build are per variant: `DATALAYER_RUNTIMES_BUILD_RATE_<VARIANT>` and `DATALAYER_RUNTIMES_BUILD_MINUTES_<VARIANT>`.
 
 A `datalayer` build holds an IAM reservation against its owner for as long as it may run, made once and keyed on the build, and closed however the build ended. A managed variant holds none: its own provider bills the owner directly.
+
+### A backfill: the variant a version is missing
+
+A version whose required variants built and whose optional ones did not is `partially_ready`, and its `validationSummary.unavailableVariants` names which. `POST /environment-versions/{uid}/builds` with just that variant builds it on the version itself:
+
+- **It reuses the stored lock**, so the `resolve` step is skipped and the lock digest is unchanged. Every artifact of a version installs the same lock, whenever it was built.
+- **It keeps the version number.** A backfill is not an edit, so nothing that already launched this version changes.
+- **It ends the version's unavailability.** When the last unavailable variant builds, the version moves `partially_ready` → `ready` and needs no `acknowledgeUnavailableVariants` to be promoted.
+- **A failed one changes nothing.** There is no move from `ready` or `partially_ready` back into `building`, and none from `ready` to `partially_ready`: the workflow's move is refused by the lifecycle and the version stays as usable as it was, with its artifacts untouched.
+- **Only a declared variant can be backfilled.** Which variants a version is for is part of its spec, and the resolve pinned a base for those and no others, so a build naming another is refused `422` at the route with `DL_ENV_SPEC_INVALID` on `variants`. Adding a variant is an edit, and an edit is a new version.
+
+The same route repairs an artifact that was deleted out of band, which is what E2-09's reconciliation will start: pass `"force": true` so the owner's cache does not answer with the artifact being replaced.
 
 ## Build logs
 
