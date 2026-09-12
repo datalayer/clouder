@@ -110,6 +110,45 @@ answer above `datalayer_durable.engine` comes from six questions — start,
 describe, signal, cancel, list, operations — and the engine that answers them
 is a setting.
 
+### Drilled with a real benchmark, on every engine (2026-09-12)
+
+The fake proves the catalog is walked and replayed correctly, and nothing
+more: it is not itself a DBOS runtime or a Temporal server, so a restriction
+that belongs to one of those has nothing in the fake to violate. `none`,
+`dbos` and `temporal` were each drilled with a real benchmark launch, over
+`plane local` with `DATALAYER_DURABLE_ENGINE` switched between the three —
+and two real, engine-specific defects turned up, one per real engine, that
+no amount of testing against the fake could have found.
+
+**`dbos`: a step cannot signal a sibling workflow.** `release_pool` — a
+step, not a workflow — tells each slot's sandbox its life is over by
+calling the engine's `signal`. DBOS's `send` refuses to run inside a step:
+its assertion wants either a workflow's own top level or nothing
+DBOS-tracked at all, and a step is neither — `cur_ctx.is_within_workflow()`
+is true but `is_workflow()` is false. The service's own signal tests call
+`signal` from plain test code, which has no DBOS context at all: that is
+what an HTTP route answering a real approval looks like, and it was never
+broken, which is also why it never caught this. Fixed by clearing DBOS's
+local context for the call (`_outside_any_workflow` in `dbos_engine.py`),
+so DBOS takes the path it already has for exactly this shape of caller:
+routing the send through its own throwaway workflow.
+
+**`temporal`: a long step reads as a dead worker.** `run_cases` runs every
+task of a slot concurrently and can take minutes, calling back into
+Temporal for none of it. Every step carries a `heartbeat_timeout` so a
+worker that dies mid-step is noticed quickly — but without a heartbeat
+*during* the step, that same timeout reads the step that is working as the
+one that died: `run_cases` was heartbeat-timed-out and reported failed a
+few dozen seconds into every real run, measured live. `step_activity` now
+ticks `activity.heartbeat()` on a background loop at a third of the
+configured timeout for as long as the step runs, cancelled the moment it
+finishes either way. `temporalio.testing.ActivityEnvironment` — no server —
+is what let this be caught and regression-tested without the real stack.
+
+Shipped in durable `0.1.17`. The `dbos` fix is live on prod1, which runs
+that engine; the `temporal` fix is dormant there until Temporal is the
+active engine (see above).
+
 ## The Temporal engine
 
 The same catalog, walked the same way, with what Temporal demands of the
