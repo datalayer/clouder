@@ -199,6 +199,25 @@ Spacer starts (`datalayer_spacer.telemetry`), as the evals counters do in AI
 Agents; reports shared, reviewers invited, approvals, reopened reports and
 decisions are counted there.
 
+## Searching a workspace
+
+`GET /spaces/items/search?q=&types=&max=` searches the caller's own notebooks,
+documents, datasets and files (the benchmarks plan, B5-11, section 19).
+
+It is **scoped to what that person may open** — what they own, what names them,
+and what was shared with them — through the same clauses
+`get_items_accessible_by_user` uses, and it never includes other people's public
+items: the Library has its own search, and mixing the two here would make "my
+workspace" mean something else.
+
+The scope is the point of the function rather than a refinement of it.
+`datalayer_solr.spaces.search_items` used to take a query, some types and
+`is_public`, and nothing about the person asking; it had no callers, which is
+the only reason that was harmless. A private search with nobody to scope it to
+now answers nothing rather than everything, and `search_query` — the function
+that builds the Solr query — is where that decision lives, so it can be checked
+without a cluster.
+
 ## Sharing with an agent
 
 An item can be shared with an **agent** at any of the three levels, beside
