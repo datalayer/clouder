@@ -210,8 +210,28 @@ into a workflow.
 
 ## Where it runs, and what it talks to
 
-In **`datalayer-durable`**, on the **runtimes plane**, beside the runtimes
-whose sessions its workflows execute in.
+In **`datalayer-durable`** — and there is one of these **on each plane**,
+which is the thing to know before deploying it.
+
+The r1 install sits beside the runtimes whose sessions its workflows execute
+in, and that is the placement this page was written for. But the callers
+reach it at `datalayer-durable-svc.datalayer-durable`, an in-cluster name, so
+**the install a caller talks to is the one on its own plane**: the gateway,
+ai-agents and the scheduler all run on prod1 and all reach prod1's. Rolling
+r1's changes nothing any of them can see — measured on 2026-09-12, when a
+reup of r1 left every ai-agents call answering `401`.
+
+Two consequences worth carrying:
+
+- **Deploy both, and know which one you are proving.** The services README
+  lists durable under the runtime plane only; an orchestration, benchmark or
+  scheduler change is proved on **prod1's**.
+- **Bump the image tag every build.** The two planes pulled `durable:0.1.7`
+  three days apart and ran different code under one tag — prod1's copy had
+  five workflows and no `ai-agents` caller identity, so a key that matched on
+  both sides was refused because the running build did not know the caller
+  existed. That is not a thing a digest check catches if you only look at one
+  cluster.
 
 Three namespaces, one for each thing that has its own lifecycle:
 
