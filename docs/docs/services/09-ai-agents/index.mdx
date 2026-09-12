@@ -243,6 +243,29 @@ the public page counts it without naming it.
 The wizard sends `reproduces_launch_id` when it was opened with
 `?reproduce=<launch>`.
 
+### Revising a definition
+
+`POST /evalsets/{id}/revisions`
+`{investigation_id, note?, case?, evalset_evaluators?, report_evaluators?}`
+proposes the next version of a benchmark's definition from an investigation
+(`datalayer_solr.evals.revise_eval`).
+
+- **Who:** an Editor on the benchmark, as any edit of a definition needs.
+- **Which investigation:** one of this benchmark's. Any other answers `404`, so
+  a revision cannot cite somebody else's reasoning.
+- **What changes:** a case is matched by name — the same name corrects that
+  task, a new name adds one — and an evaluator list replaces the list it names,
+  which is also how a threshold moves, a threshold being an evaluator's
+  argument. A revision carrying none of these changes nothing.
+- **What is recorded:** the change goes through `update_eval`, so B2-09's
+  version machinery keeps the old definition for the runs that ran it. The new
+  version's document carries `derived_from_investigation_uid_s` and `note_t`,
+  and the Library gets a `revise` derivation from the benchmark onto
+  `evalset_version:<uid>:<n>` (`artifact_type_s: evalset_version`). The call is
+  audited as `evals.evalset.revise`.
+- **Accepting or rejecting it** is a decision on the investigation
+  (`POST /investigations/{id}/decisions`).
+
 ### Cloning a benchmark
 
 `POST /evalsets/{id}/clone` `{name?, derivation?}` takes a benchmark into the
