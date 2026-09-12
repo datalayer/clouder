@@ -592,11 +592,55 @@ default is the cautious one because the costs are not symmetric: refusing locks
 somebody out of a sign-in route they were not using yet, adopting hands over an
 account.
 
-**Joining the organization is automatic; being anything in it is not.** Signing
-in through a directory an organization registered, on a domain it proved, is
-what membership means, so the person is added as an `organization_member`. No
-sign-in confers more: the token's groups are recorded and not acted on until
-group-to-role mapping lands.
+**Joining the organization is automatic; being anything more is mapped, not
+assumed.** Signing in through a directory an organization registered, on a
+domain it proved, is what membership means, so the person is added as an
+`organization_member` every time. Anything beyond that is granted only when
+the provider's own `role_mappings` say a group in the token earns it.
+
+### Group → role mapping
+
+A provider names, in `role_mappings`, which of the token's `groups` grant
+which role: `organization_owner`, `organization_security_auditor`,
+`organization_user_reviewer`, `organization_member`, or a team's `team_owner`
+/ `team_member` alongside the `team_uid` naming which team. Checked when the
+mapping is written, not trusted at sign-in — an unknown role is refused before
+it is stored, and a team role's `team_uid` has to name one of *this
+organization's own* teams, checked the same way domain verification checks a
+domain: a provider reaching into another organization's team is the same kind
+of boundary crossing.
+
+**Reaching `organization_owner` through a mapping is not a privilege
+escalation to guard against.** A mapping only ever grants within the
+organization that owns the registered provider — the directory is the
+organization's own, proved by the domain it verified, and the authority it
+hands out reaches no further than the organization that wired it up.
+
+**It only ever adds.** A sign-in grants a mapped role the person does not
+already hold, and never revokes one a previous sign-in granted: revoking on
+a token's *absence* of a group would read a slow directory sync, an outage,
+or a token that simply omitted `groups` this one time as "no longer
+entitled," and demote somebody worse than doing nothing. Taking a role away
+is deprovisioning's job — SCIM's, when it lands, since a sign-in is too weak
+a signal to act as one.
+
+### The console
+
+An organization's owners manage its directory from the **Identity** page of
+the enterprise console — register, edit, enable, disable and remove a
+provider, edit its group → role mapping, and prove a domain from its own
+dialog rather than as a field on the edit form, since publishing DNS and
+saving the provider's configuration are different acts and conflating them
+would make "Save" look like it also verifies. A claimed domain and a verified
+one are drawn apart there too — a grey label beside one that routes nothing, a
+green one beside one that does — so an owner cannot mistake a claim for
+something already live.
+
+Reading the page needs no more than organization membership with the
+security-auditor role, the same as policy, teams and alerts: which directory
+an organization trusts and what its mapping grants is exactly the posture an
+audit is for, and the page renders no secret — the client secret is a
+reference kept in the organization's own store, never the value.
 
 | Route | Who | What |
 |---|---|---|
@@ -624,8 +668,8 @@ re-pointed or deleted while somebody was away has had its rules changed, and
 the record at the end is the one that applies.
 
 :::note What is not here yet
-Group-to-role mapping, the ID-JAG grant, workload identity federation and SCIM
-build on this registry and are not here.
+The ID-JAG grant, enterprise-managed authorization, workload identity
+federation and SCIM build on this registry and are not here.
 :::
 
 ## Anonymous trials
