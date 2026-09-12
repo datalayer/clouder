@@ -22,7 +22,7 @@ The registry API, its four Solr collections, and the environment recorded on res
 
 1. **The collections**, on the runtimes plane, with the Runtimes set of `plane solr-init`. The init image must carry the current configset, `*_stored` included, as the [Solr page](/services/system/solr/) explains.
 2. **IAM**, before any Operator that sends the environment on reservations. IAM refuses a metadata key it does not know, and every runtime start fails if the Operator is deployed first.
-3. **Runtimes**, on `code-sandboxes` 1.5.0 or later, since its writes import `code_sandboxes.environments`. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships.
+3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships.
 4. **Durable and the key**, when builds run: `DATALAYER_RUNTIMES_DURABLE_API_KEY` goes in the plane's rc, and `plane up` sets it into the durable release's Secret and into the Runtimes Deployment, beside `DATALAYER_DURABLE_URL`.
 
 ```bash
