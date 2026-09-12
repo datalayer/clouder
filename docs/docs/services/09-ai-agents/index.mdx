@@ -331,6 +331,25 @@ writing a second one. Withdrawing moves `status_s` to `unpublished` and changes
 nothing else, so a snapshot never becomes editable. Audited as
 `evals.package.publish` and `evals.package.unpublish`.
 
+### Search across an account
+
+`GET /search?q=&kinds=&limit=` finds benchmarks, launches, tasks, reports and
+investigations in the caller's account. Nobody types a field name, so the words
+are read first (`datalayer_ai_agents.services.evals_search.parse_query`): a
+status word becomes a status, `run 128` becomes a launch number, `v2026.09` is
+recognised as a dataset revision, and a word for the kind of thing is dropped.
+
+Each kind is then asked only what it can answer — a launch has no text of its
+own, a benchmark no status of its own — and an empty query reads nothing at
+all, so a search page with an empty box costs no queries. The answer carries
+`query`, so a client can say what was understood, and every row keeps its kind
+and the ids it belongs to.
+
+Notebooks, files and datasets are **not** in these results: they are Spacer's,
+and `datalayer_solr.spaces.search_items` has no owner scoping, so it must not
+be routed for a private search until it takes the space access its items
+already carry.
+
 ### What a subject has run
 
 `GET /subjects/{subject_ref}/usage` answers what one agentspec or model has
