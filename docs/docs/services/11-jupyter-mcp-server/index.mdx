@@ -1067,6 +1067,18 @@ returning in 1.4 seconds. A tool that registered no interrupt, or a provider
 that answered that it could not deliver one, is cancelled at once rather than
 waited on.
 
+When the cell is run through the runtime's **HTTP `/execute`** route instead of
+over the kernel WebSocket — the durable path a worker in `MCP_SERVER` mode takes
+so the outputs survive its own death — the cancel reaches it the same way: a
+`DELETE /api/kernels/{id}/requests/{request_id}` on the runtime
+(`jupyter-server-nbmodel` ≥ 0.2.9), which interrupts the cell and leaves the
+kernel alive for the next one. It is best effort: a runtime on an older image
+without the route answers `404`, the run continues as it did before, and the
+worker only stops waiting — so the behaviour degrades to exactly the
+pre-0.2.9 one rather than failing. Requires the runtime image to carry
+`jupyter-server-nbmodel` ≥ 0.2.9 and the gateway to run `jupyter-mcp-server`
+≥ 2.1.13.
+
 Under the durable engine (milestone 2) the same interrupt is driven from the
 other side: the worker asks the engine every two seconds whether the run was
 cancelled — from any replica, since the engine's record is shared — and
