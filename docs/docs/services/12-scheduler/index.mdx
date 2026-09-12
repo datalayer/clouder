@@ -13,7 +13,7 @@ import { Label, Stack } from '@primer/react-brand';
   <Label color="red">Service</Label>
 </Stack>
 
-`Datalayer Scheduler` stores schedule definitions, plans runs, and executes notebook runs in the background.
+`Datalayer Scheduler` stores schedule definitions, plans runs, and executes notebook runs and benchmark launches in the background.
 
 ## Deploy Datalayer Scheduler
 
@@ -53,14 +53,31 @@ plane local
 - Execute due runs in background worker threads (the default, inline path), or hand each due run to [`datalayer-durable`](/services/system/durable/) as a workflow when the cut-over is enabled (see below).
 - Mark run outcomes and create next planned runs from cron expressions.
 
+A schedule targets one `target_kind_s`: `notebook` (the original target,
+`notebook_uid_s` also written for the legacy field) or `evalset` — a
+benchmark that runs itself, on a cron. `target_uid_s` names the target
+either way; `config_json_t` on an `evalset` schedule carries the launch body
+(`experiment_ids`, `run_mode`, `config`) an evalset launch needs — an empty
+`experiment_ids` means every live experiment, resolved at execution time
+rather than frozen into the schedule, so a schedule stays current as
+experiments are added or retired. A due `evalset` run creates a launch the
+same way the wizard does, as the schedule's owner, on their credits
+(`_launch_evalset_for_schedule`); a due `notebook` run takes the inline or
+durable-dispatch path described below. One schedule per owner and target:
+creating a second one for the same target replaces the first rather than
+adding beside it.
+
 ## APIs
 
 - `GET /api/scheduler/v1/ping`
 - `GET /api/scheduler/v1/status` (platform admin)
 - `GET /api/scheduler/v1/status/self-check` (platform admin)
 - `GET /api/scheduler/v1/schedules`
+- `GET /api/scheduler/v1/schedules/{id}`
+- `GET /api/scheduler/v1/schedules/{id}/runs`
 - `GET /api/scheduler/v1/schedules/runs`
-- `POST /api/scheduler/v1/schedules`
+- `POST /api/scheduler/v1/schedules` (upsert: creating a schedule for a target that already has one replaces it)
+- `PUT /api/scheduler/v1/schedules/{id}`
 - `POST /api/scheduler/v1/schedules/{id}/disable`
 
 ## Required Environment Variables
