@@ -383,7 +383,7 @@ service.
 | `launch_pool` / `release_pool` | Runtimes, through one child `SandboxWorkflow` per slot. Each slot's sandbox is launched under a name derived from the run and the slot (`benchmark-<run>-slot-<n>`) and found by that name in the person's runtime listing: a requested uid is honoured only for a launch that brings attachments made for it, and a warm pool pod keeps the uid it has, so the cases run on the uid Runtimes answered |
 | `run_cases` | Each slot's runtime session for an `agentspec` subject, AI Inference `chat/completions` for a `model`; the LLM judge asks AI Inference; every task written to ai-agents as it finishes |
 | `aggregate` | Nothing. The evaluators over what `run_cases` wrote |
-| `project_run` | **Solr directly**, the `evals` collection |
+| `project_run` | **Solr directly**, the `evals` collection — and ai-agents, as the person, for what the run leaves in their inbox: how it ended (`run.completed`, `run.blocked`, `budget.reached`) and the tasks its scorer could not decide (`task.review`, one notification per run) |
 
 `project_task` writing Solr rather than calling the gateway is deliberate and
 is why `DATALAYER_SOLR_ZK_HOST` is required here. **Which Solr** is the

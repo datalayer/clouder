@@ -150,7 +150,9 @@ is read from and cannot send anybody to another host:
 | `run.completed`, `run.blocked`, `budget.reached` | `datalayer-durable`, when it projects a benchmark run, as the person the run was for | `/runs/{launch}/experiments/{run}` |
 | `approval.requested` | this service, when a tool approval is created, for the person it waits on | `/tool-approvals` |
 | `investigation.mentioned` | this service, for each person newly added to an investigation (not the one adding them) | `/investigations/{uid}` |
-| `task.review`, `report.ready`, `report.published`, `reproduction.failed` | defined, with their links; produced once cases are set to review, reports have a lifecycle, and runs can be reproduced | the task, the report, the launch |
+| `task.review` | `datalayer-durable` when it projects a run, and this service for a run recorded whole (the CLI, the SDK, the action) — one per run, whatever the number of tasks | the task, or the run's task list narrowed to them (`/runs/{launch}/experiments/{run}/tasks?status=review`) |
+| `report.ready`, `report.published` | this service, for the reviewers a report names and for its author when somebody else publishes it | `/benchmarks/reports/{uid}` |
+| `reproduction.failed` | the launch projection (`datalayer_solr.evals_launches`), when a launch that reproduces another ends somewhere else | `/runs/{launch}` |
 | `comment.mentioned`, `comment.assigned` | Spacer, for each person newly mentioned in a comment or assigned a thread, who can read the document or notebook (never the person naming them) | the page the thread was opened on, with its evidence as `?block=`, `?case=` or `?cell=` |
 
 Beside the nine benchmark kinds, `comment.mentioned` and `comment.assigned`
@@ -158,7 +160,28 @@ Beside the nine benchmark kinds, `comment.mentioned` and `comment.assigned`
 same module defines them, and Spacer writes them.
 
 A producer's notification is a courtesy: one that cannot be written is logged
-and never fails the run, the approval or the update that produced it.
+and never fails the run, the approval or the update that produced it. So is the
+reading a producer does to decide whether to write one.
+
+### When a reproduction did not reproduce
+
+A launch that carries `reproduces_launch_uid_s` (B5-06) is checked against the
+launch it repeated when it ends, in `refresh_launch_from_runs` — the one place
+every run of every launch passes, whatever ran it — and on the move into a
+terminal status, so it is said once rather than after every run.
+
+`datalayer_solr.evals_reproduction` decides it, purely, **per subject and in
+tasks rather than in percentages**: a benchmark run against a language model may
+land one task differently from one run to the next, and two is a difference
+worth telling somebody about whether the benchmark has six tasks or six hundred
+(`TASK_TOLERANCE`, one). A subject nothing reran for, or a run of a different
+number of tasks, did not reproduce either.
+
+What it is compared with is that account's own runs of the launch it repeated,
+or — for somebody else's published launch, whose runs this account cannot read
+— the numbers in the published package, where `contents.experiment_to_subject`
+names the subject of each run. When neither answers, nothing is said: a
+reproduction nobody can check has not failed.
 
 ## Reports
 
