@@ -330,6 +330,24 @@ writing a second one. Withdrawing moves `status_s` to `unpublished` and changes
 nothing else, so a snapshot never becomes editable. Audited as
 `evals.package.publish` and `evals.package.unpublish`.
 
+### What a subject has run
+
+`GET /subjects/{subject_ref}/usage` answers what one agentspec or model has
+actually been benchmarked on: the benchmarks that ran it, its runs with their
+pass rate, cost, duration and definition version, the scores in the order a
+chart reads them, and the launches still going
+(`datalayer_ai_agents.services.evals_subject_usage`).
+
+The ref is a `path` parameter, because an agentspec id contains a slash. The
+benchmarks are found through `list_evals(subject_ref=…)`, which filters on
+`subject_refs_ss` — a field the experiments keep as they are created — so this
+is an index read rather than a walk over an account's evalsets.
+
+Where a subject has never been run, every list is empty and the totals are
+`null`. The agent page in the product draws that state as "nothing measured
+yet": it used to generate a plausible history instead, which is the one answer
+an operator should never see.
+
 ### Comparing launches, and the leaderboard
 
 | Route | Who | What |
