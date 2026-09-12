@@ -256,6 +256,23 @@ token yet, so a token-less lexical client is still admitted by document id
 alone — logged on every such join. Closing that door is a UI change: the
 editor's `websocketUrl` carrying `?token=`.
 
+**A notebook-scoped document token.** A full user token admits its bearer to
+every document they can reach, so a token handed to a runtime to open one
+notebook is, if it leaks, a key to all of them. The session-id door now issues
+a narrower one beside the session id: a short-lived capability (`token` in the
+`GET /api/spacer/v1/documents/{id}/ws` and `GET /api/spacer/v1/documents/{id}`
+responses) that names the single document it is good for. It is a JWT signed
+with the shared secret but with its own audience (`datalayer:spacer:document`),
+so no other service accepts it — it opens a room and reaches nowhere else — and
+it is verified without the session revocation cache, a short TTL bounding it
+instead. A room accepts it only for the document it names and refuses it at any
+other; a full user token still works, falling through to the session-token
+path. The room **still** runs the item's access check on connect, so the token
+narrows who a leaked credential can act for, never widens it. The consumer half
+— the gateway requesting one and the runtime using it per execution — is the
+remaining piece; until a caller sends a scoped token the door behaves exactly
+as above.
+
 ## A token narrowed to resources
 
 A token carrying `authorization_details` (IAM's task grants, O1-06 — what an
