@@ -71,7 +71,7 @@ done
 
 The base `jupyter-python` Runtime Docker Image has been pulled in the previous step. You can extend the base ones to create custom ones that fit your requirements.
 
-Pre-pull the Jupyter Runtime Docker Images on the Kubernetes cluster nodes for optimal behavior.
+Pre-pull the Runtime Docker Images on the Kubernetes cluster nodes for optimal behavior.
 
 <Tabs groupId="k8s">
   <TabItem value="plane" label="Plane" default>
@@ -114,7 +114,7 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
             - matchExpressions:
-              - key: role.datalayer.io/jupyter
+              - key: role.datalayer.io/runtime
                 operator: In
                 values:
                 - 'true'

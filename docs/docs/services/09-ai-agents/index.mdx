@@ -1,0 +1,919 @@
+---
+title: Datalayer AI Agents
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🤖 Datalayer AI Agents
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+## Deploy Datalayer AI Agents
+
+`Datalayer AI Agents` exposes AI Agents.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-ai-agents
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-ai-agents.sh
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Datalayer AI Agents Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=ai-agents
+```
+
+Check the logs of the Datalayer AI Agents Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=ai-agents
+```
+
+Check the availability of the Datalayer AI Agents Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer AI Agents Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/ai-agents/version
+open https://${DATALAYER_RUN_HOST}/api/ai-agents/v1/ping
+```
+
+## Configuration
+
+Beside the model, SMTP, Solr and OTEL settings `plane up` supplies, the
+service reaches five other services for the benchmarks (evals) API:
+
+| Setting | Meaning |
+| --- | --- |
+| `DATALAYER_DURABLE_URL`, `DATALAYER_AI_AGENTS_API_KEY` | Where `datalayer-durable` is, on the runtimes plane, and the key this service is known by there (the `ai-agents` caller: start, read, signal, cancel). A benchmark launch creates its runs `queued` and starts one `EvalRunWorkflow` per run; the workflow projects the run's life into the `evals` collection itself. Which engine the durable service runs — `none` on `plane local` (`http://localhost:9450`, nothing kept), `dbos` in a cluster, `temporal` — is that service's business; this one speaks only `/api/durable/v1`. Unset, runs stay `queued` and the launch answers `executes: false` rather than pretending. Set but not answering — the workflow start refused or unreachable — is the same answer: `executes` is true only when every run was actually taken, and `unstarted_run_ids` names the ones that were not, so a client never watches a launch nobody will run |
+| — | A launch's `config.git` — `sha`, `ref`, `pr_number`, `run_id`, `repository`, set by the GitHub action — is kept as sent and indexed on the launch as `git_sha_s`, `git_ref_s`, `pr_number_i` and `action_run_id_s`, so the launches of one commit or one pull request are one query |
+| `DATALAYER_SPACER_URL` | Where Spacer is: the account's `benchmarks` space, the report documents and the investigation notebooks are written there as the person, with the request's own credential |
+| `DATALAYER_RUNTIMES_URL` | Where Runtimes is: a task's sandbox snapshot is checked, restored (through durable's `SandboxWorkflow`) and deleted as the person; the pre-launch validation (`POST /evalsets/{id}/launches/validate`) reads the environments this account is offered and their burning rate from it to estimate a launch's cost |
+| `DATALAYER_CONTENTS_URL` | Where Contents is: a benchmark's `dataset_ref` is validated against a dataset revision with the request's credential before it is saved, and again by the pre-launch validation |
+| `DATALAYER_AI_INFERENCE_URL` | Where AI Inference is: `GET /evals/subjects` lists the models it offers as the person, for an experiment whose subject is a `model` (run by durable over `chat/completions`, no sandbox), and the validation checks a model subject against that list. Unset, the subjects answer `models_available: false` rather than a made-up list |
+
+An **anonymous trial** (`BENCHMARK.md`, B2-14) reaches this service as a
+principal carrying `platform_guest` whose uid names a trial in the `iam`
+collection. A launch made by one must be the trial's own public benchmark,
+open, unexpired and inside its cap — the cap is read from the trial's own
+launches at launch time rather than kept as a running total, so there is one
+writer of what a launch cost and no second number to drift. A budget asked
+for is capped to what the trial has left. `POST /evals/trials/claim` gives
+that work to a person who has signed in, after IAM has accepted the claim;
+it moves the records rather than copying them, so a link the visitor kept
+still opens, and repeating it moves nothing. IAM's page carries the settings
+that turn trials on.
+
+The validation also asks IAM as the person for the account's credits
+(`GET /api/iam/v1/usage/credits`, on `DATALAYER_IAM_URL`) and for the secrets a
+launch names; a service that cannot be reached leaves its figure unknown in
+the plan, with a warning, never a guessed number.
+
+The `evals` Solr collection holds the benchmark records — `evalset`,
+`evalset_version`, `evalset_experiment`, `evalset_run`, `evalset_launch`,
+`evalset_case_result`, `evalset_investigation`, `evalset_live_event` — and
+`python -m datalayer_ai_agents.backfill_evals [--dry-run]` gives every run
+recorded before launches existed its evalset, a single-run launch and its
+task documents, once.
+
+### The benchmark funnel is measured, and one measure comes from a browser
+
+The counters ride on the OTEL providers `instrument` installs at startup, so
+they leave the pod like every other metric and are read account-scoped in the
+OTEL service. This service writes the **activation** half of the funnel
+(`BENCHMARK.md` section 22, B2-25):
+
+| Instrument | What it says |
+| --- | --- |
+| `evals.launches.created` | Launches submitted, by run mode, origin and `from_library` — true when the benchmark's owner is not the caller, which is what taking one from the Library means |
+| `evals.tasks_per_launch` | Tasks a launch submitted across its experiments |
+| `evals.product.events` | What somebody did that leaves no record, by event and funnel line: the wizard opened and completed, a task read, a question asked of the agent, a follow-up cell run, evidence pinned |
+| `evals.investigations.opened` | Investigations opened, by scope — once per investigation, so re-opening one is not a second failure investigated |
+| `evals.sandboxes.restored` | Task sandboxes brought back from a snapshot, by outcome; a sandbox reused is `reused` rather than a second restore |
+| `evals.collaboration.events` | The **collaboration** lines this service sees (B4-12), by `event`: `report.shared` (a sharing update that grants somebody the report), `reviewer.invited` (the reviewers a move to review adds, so a report sent back and sent again counts nobody twice), `report.approved`, `report.reopened` (a report read by somebody other than its author), `decision.recorded` (by `subject`) |
+| `evals.ecosystem.events` | The **ecosystem** lines (B5-14), by `event`: `benchmark.published` (by `how`, a package or the public flag on its own), `run.reproduced`, `library.benchmark.reused` (by `as`, a fork or a comparison), `published.evalset.rerun` (a launch of a benchmark that came from a published one), `report.compared` (a comparison a published report sent somebody to), `case.promoted` (a failed task turned into the next version). `external_agent.benchmarked` is defined and never emitted: an experiment whose subject is not an agentspec or a model is refused when it is created, so an outside agent cannot reach a launch yet |
+| `evals.decisions.lead_time` | Seconds from the latest end of the launches a decision is about to the decision, by subject — the time from regression detection to recorded decision; a decision about launches that never ended records no duration |
+| `evals.runs.created`, `evals.reports.generated`, `evals.comparisons.requested`, `evals.live_events.ingested` | The B0-07 baseline |
+
+The **execution** half is `datalayer-durable`'s, because a benchmark run's
+outcome is written straight to Solr and nothing here sees the transition; its
+page lists those.
+
+`POST /evals/measures` is the one route that exists so a page can report a
+measure, because how many people open the wizard or read a task is not
+observable from any record. It is deliberately narrow: the event is one of
+`telemetry.PRODUCT_EVENTS` and anything else is ignored rather than recorded,
+nothing is stored, and no identity is attached beyond the account the request
+already carries. A free-form label from a browser would be a cardinality bomb
+with an authenticated route in front of it.
+
+## Notifications
+
+`/api/ai-agents/v1/notifications` is a person's inbox, kept in the
+`notifications` Solr collection. Every route answers for the caller's own and
+nobody else's — the listing, the unread count, one notification, marking one
+or all read — and a notification of somebody else's is `404`, so an id says
+nothing about whose it is. The storage names the person on every read and
+write and refuses a call for nobody. `POST /notifications` leaves one in the
+caller's own inbox; producers that tell another person write it for that
+person on the server.
+
+The benchmark notifications are nine kinds (`datalayer_solr.evals_notifications`),
+each with a level, a category and a deep link in `metadata.link` that is a
+path of the app — never a URL, so a notification opens on the deployment it
+is read from and cannot send anybody to another host:
+
+| Kind | Produced by | Links to |
+| --- | --- | --- |
+| `run.completed`, `run.blocked`, `budget.reached` | `datalayer-durable`, when it projects a benchmark run, as the person the run was for | `/runs/{launch}/experiments/{run}` |
+| `approval.requested` | this service, when a tool approval is created, for the person it waits on | `/tool-approvals` |
+| `investigation.mentioned` | this service, for each person newly added to an investigation (not the one adding them) | `/investigations/{uid}` |
+| `task.review` | `datalayer-durable` when it projects a run, and this service for a run recorded whole (the CLI, the SDK, the action) — one per run, whatever the number of tasks | the task, or the run's task list narrowed to them (`/runs/{launch}/experiments/{run}/tasks?status=review`) |
+| `report.ready`, `report.published` | this service, for the reviewers a report names and for its author when somebody else publishes it | `/benchmarks/reports/{uid}` |
+| `reproduction.failed` | the launch projection (`datalayer_solr.evals_launches`), when a launch that reproduces another ends somewhere else | `/runs/{launch}` |
+| `comment.mentioned`, `comment.assigned` | Spacer, for each person newly mentioned in a comment or assigned a thread, who can read the document or notebook (never the person naming them) | the page the thread was opened on, with its evidence as `?block=`, `?case=` or `?cell=` |
+
+Beside the nine benchmark kinds, `comment.mentioned` and `comment.assigned`
+(category `comments`) come from the comments on documents and notebooks; the
+same module defines them, and Spacer writes them.
+
+A producer's notification is a courtesy: one that cannot be written is logged
+and never fails the run, the approval or the update that produced it. So is the
+reading a producer does to decide whether to write one.
+
+### When a reproduction did not reproduce
+
+A launch that carries `reproduces_launch_uid_s` (B5-06) is checked against the
+launch it repeated when it ends, in `refresh_launch_from_runs` — the one place
+every run of every launch passes, whatever ran it — and on the move into a
+terminal status, so it is said once rather than after every run.
+
+`datalayer_solr.evals_reproduction` decides it, purely, **per subject and in
+tasks rather than in percentages**: a benchmark run against a language model may
+land one task differently from one run to the next, and two is a difference
+worth telling somebody about whether the benchmark has six tasks or six hundred
+(`TASK_TOLERANCE`, one). A subject nothing reran for, or a run of a different
+number of tasks, did not reproduce either.
+
+What it is compared with is that account's own runs of the launch it repeated,
+or — for somebody else's published launch, whose runs this account cannot read
+— the numbers in the published package, where `contents.experiment_to_subject`
+names the subject of each run. When neither answers, nothing is said: a
+reproduction nobody can check has not failed.
+
+## Reports
+
+A report is a record of its own — `type_s: evalset_report` in the `evals`
+collection (`datalayer_solr.evals_reports`): the benchmark and the definition
+version it reports on, the launches and runs it is over, the Lexical document
+written into the benchmark account's benchmarks space, and a state that only
+moves as `datalayer_solr.evals_transitions.REPORT_TRANSITIONS` allows:
+`draft` → `in_review` → `approved` → `published_private` ⇄ `published_public`,
+back to `draft` from review or from an approval, and `superseded` from anything
+by regenerating.
+
+| Route | Role | Does |
+| --- | --- | --- |
+| `POST /reports` `{evalset_id, launch_ids, title?}` | Editor on the benchmark | builds the report over the launches' runs, writes the document, records a `draft` |
+| `GET /reports?evalset_id=&launch_id=&state=` | the account scope | lists |
+| `GET /reports/{id}` | Viewer | reads |
+| `POST /reports/{id}/state` `{state, reviewer_uids?, message?}` | Editor to send for review or reopen; Reviewer to approve or send back; Owner to publish | `409` for a move the table does not allow, before anything else happens |
+| `POST /reports/{id}/regenerate` `{launch_ids?}` | Editor | a new `draft` one version up; the old report `superseded` by it, its grants copied |
+| `GET`, `PUT /reports/{id}/sharing`; `GET /reports/{id}/permissions` | Owner; any role | as for benchmarks |
+| `GET /reports/{id}/export?format=markdown\|csv` | Viewer | the report as it was written: Markdown of its document (narrative and evidence in order, from Spacer's saved content) then its Decisions; or the CLI's CSV of its runs followed by a `narrative` row per block and a `decision` row per decision, in added columns |
+
+Every link the report engine writes — in Markdown, CSV and the console — and
+every address the `agent-runtimes` CLI prints points at the benchmark
+(`/benchmarks/{id}`, its live report at `/benchmarks/{id}/report`) and the run
+(`/runs/{launch}/experiments/{run}`) on the deployment `DATALAYER_UI_URL` names,
+`https://datalayer.app` when it is not set (`agent_runtimes.evals.links`). Set it
+on the AI Agents deployment so reports written there link back to it. Links
+written by earlier reports (`/evals/experiments/…`) still open the former console.
+
+Approving asks Spacer to keep the document as a version with reason
+`approval` (`POST /api/spacer/v1/lexicals/{id}/versions`) and records the
+version's uid on the report, so the approver needs `update` on the document in
+Spacer. Approvals and publications write `evals.report.approve` and
+`evals.report.publish` audit rows, allowed and refused. Sending for review
+notifies the reviewers named (`report.ready`); publishing notifies the author
+when somebody else publishes (`report.published`) and adds `report.published`
+to the activity feed.
+
+A report in `published_public` is in the Library (B5-01), as the kind `report`
+at `/public/reports/{id}`. The move into that state publishes its document in
+Spacer with it, and the move out of it — to `published_private`, or
+superseded — makes the document private again (`evals_reports.update_report`,
+through `evals.set_items_public`). The document is read through its report: the
+Library does not list it as a document of its own, because Spacer keeps the
+report document's metadata (`kind: benchmark-report`) and
+`library_sync.ATTACHED_ITEM_KINDS` names it. A reader sees the document live,
+including an edit saved after publication. The public page shows the report's
+title, state, version and the runs and launches it covers, never its reviewers.
+
+The report builder (`agent_runtimes.evals.lexical`) writes each block's
+provenance into the node state `$.evidence`, which Lexical keeps through a
+load, a save and the Loro binding; the report editor locks the blocks that
+carry it. Each block's provenance also carries a stable anchor, `block-N`, so a
+link opens the report on it — `/benchmarks/reports/{id}?block=block-7`, or
+`/investigations/{id}?case={task}` for the first block about a task — wherever
+narrative has since been written around it. The `jupyter-output` node of `jupyter-lexical` keeps node state too.
+A document built before the builder wrote `$.evidence` is not locked;
+regenerating the report rebuilds it. The ai-agents image gets the builder
+change with the next `agent-runtimes` release.
+
+### Reproducing a launch
+
+`POST /evalsets/{id}/launches`, and its `validate`, take `reproduces_launch_id`:
+the launch to run again. The service reads that launch in one of two ways:
+
+- **With a role:** the caller holds a role on the launch.
+- **Published benchmark:** the launch is one its publisher made.
+
+It refuses a launch that is not a launch of this benchmark, with `404`.
+
+**Pinned to the version it ran.** The new launch and its runs are pinned to the
+evalset version the reproduced launch ran (`evalset_version_i`). Their
+definition is read from that version's snapshot, so durable resolves the same
+tasks, evaluators and thresholds, whatever the benchmark has become since. A
+version no longer kept answers `409` rather than running the current one.
+
+**Recorded.** The launch records `reproduces_launch_uid_s`, and
+`evals_launches.create_launch` writes a `reproduce` derivation from the
+benchmark into the Library. That derivation has `artifact_type_s: launch`, so
+the public page counts it without naming it.
+
+The wizard sends `reproduces_launch_id` when it was opened with
+`?reproduce=<launch>`.
+
+### Revising a definition
+
+`POST /evalsets/{id}/revisions`
+`{investigation_id, note?, case?, evalset_evaluators?, report_evaluators?}`
+proposes the next version of a benchmark's definition from an investigation
+(`datalayer_solr.evals.revise_eval`).
+
+- **Who:** an Editor on the benchmark, as any edit of a definition needs.
+- **Which investigation:** one of this benchmark's. Any other answers `404`, so
+  a revision cannot cite somebody else's reasoning.
+- **What changes:** a case is matched by name — the same name corrects that
+  task, a new name adds one — and an evaluator list replaces the list it names,
+  which is also how a threshold moves, a threshold being an evaluator's
+  argument. A revision carrying none of these changes nothing.
+- **What is recorded:** the change goes through `update_eval`, so B2-09's
+  version machinery keeps the old definition for the runs that ran it. The new
+  version's document carries `derived_from_investigation_uid_s` and `note_t`,
+  and the Library gets a `revise` derivation from the benchmark onto
+  `evalset_version:<uid>:<n>` (`artifact_type_s: evalset_version`). The call is
+  audited as `evals.evalset.revise`.
+- **Accepting or rejecting it** is a decision on the investigation
+  (`POST /investigations/{id}/decisions`).
+
+### Cloning a benchmark
+
+`POST /evalsets/{id}/clone` `{name?, derivation?}` takes a benchmark into the
+account the request names (`datalayer_solr.evals.clone_eval`). The result is a
+new, private evalset at version 1:
+
+- **Copied:** the source's definition, meaning its cases, evaluators, schema,
+  category, kind, tags and dataset reference.
+- **Recorded:** `derived_from_uid_s` and `derived_from_version_i` name the
+  source and the version that was taken.
+- **Not copied:** its runs and launches, its sharing, and the source account's
+  metadata. The caller's principal metadata is written instead.
+
+A published benchmark is anybody's to clone. An unpublished one needs the Viewer
+role on it, and answers `404` without one. The dataset reference is not
+validated when the benchmark is cloned: the launch review says whether the new
+owner may read it.
+
+The clone writes a derivation into the Library (see the Library page). It is a
+`fork` by default, and a `compare` when the body says `derivation: compare`,
+which is what **Compare my agent** sends before it opens the wizard on the copy.
+The public page also counts it as a reuse, through
+`POST /api/library/v1/items/{id}/reused`.
+
+### How far a record reaches
+
+The five visibility levels of the benchmarks plan (section 14.5) are
+**derived**, never stored: `datalayer_solr.evals_sharing.visibility_of` answers
+the widest thing that is true of a record — `public`, `organization`, `team`,
+`users`, `private` — from the grants it already carries and its public flag. A
+level stored beside the grants can disagree with them, and then nothing says
+who may actually read the record.
+
+- `GET /evalsets/{id}/permissions` answers it as `visibility`, from the access
+  record the permission check already read.
+- The library projection carries `visibility_s` and `organization_uids_ss`,
+  worked out once per write in the evals dual write. The library index cannot
+  read the grants itself, and a search over somebody's own shelf has to filter
+  on something.
+
+A grant at any level counts: a Runner's exposes the record as surely as a
+Viewer's.
+
+### The published package
+
+Making a benchmark public publishes a package: an immutable `type_s:
+evalset_publication` document in the `evals` collection holding everything the
+numbers depend on (`datalayer_solr.evals_publications`).
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /evalsets/{id}/publication/preview` | Owner | The package that would be written: its contents, the enumeration the review shows, what is left out and why, and what refuses it |
+| `POST /evalsets/{id}/publications` | Owner | Writes it (`201`), or refuses with `422` and `detail.problems` |
+| `GET /evalsets/{id}/publications` | Viewer | Every package published of this benchmark, withdrawn ones included |
+| `DELETE /evalsets/{id}/publications/{publication_id}` | Owner | Withdraws one; its contents stay as they were written |
+| `GET /public/evalsets/{id}/publication` | Anybody | The newest package still published |
+
+The snapshot holds the definition at its version, the dataset revisions, the
+subjects, the environment, the selected launches with their runs and task
+results, the report and its document, the evidence notebooks of public
+investigations, the reproduction command and link, the evaluators with their
+thresholds, the experiment-to-subject mapping, and the decisions and comments
+that were selected. A task result carries its grade, not its transcript: the
+prompt and the output stay with the run.
+
+Five things refuse a publication, and nothing is written while any of them
+stands:
+
+- a launch or an experiment naming a secret (`config.secrets`),
+- a dataset that is not itself published,
+- a task or a result marked restricted,
+- a report in a state nobody approved,
+- a deleted comment that was selected.
+
+A comment, a decision or an investigation that was not selected is excluded
+rather than refused, with its reason, so nothing is published by implication.
+
+A package is keyed on the checksum of its contents: publishing the same
+contents again answers the publication that is already there rather than
+writing a second one. Withdrawing moves `status_s` to `unpublished` and changes
+nothing else, so a snapshot never becomes editable. Audited as
+`evals.package.publish` and `evals.package.unpublish`.
+
+### What was decided about a benchmark
+
+`GET /decisions?evalset_id=&launch_id=` answers the decisions recorded about a
+benchmark or one of its launches. The per-report and per-investigation listings
+answer what was decided *in* one place; this answers what was decided about the
+benchmark, which is what something outside the product has to ask — CI knows the
+benchmark it ran and nothing else.
+
+Naming neither parameter answers an empty list rather than every decision the
+account has ever recorded. The GitHub action's `post-decision` mode is the
+caller: it posts the decisions and a link to the report back to the pull
+request, and nothing else.
+
+### Search across an account
+
+`GET /search?q=&kinds=&limit=` finds benchmarks, launches, tasks, reports and
+investigations in the caller's account. Nobody types a field name, so the words
+are read first (`datalayer_ai_agents.services.evals_search.parse_query`): a
+status word becomes a status, `run 128` becomes a launch number, `v2026.09` is
+recognised as a dataset revision, and a word for the kind of thing is dropped.
+
+Each kind is then asked only what it can answer — a launch has no text of its
+own, a benchmark no status of its own — and an empty query reads nothing at
+all, so a search page with an empty box costs no queries. The answer carries
+`query`, so a client can say what was understood, and every row keeps its kind
+and the ids it belongs to.
+
+Notebooks, files and datasets are **not** in these results: they are Spacer's,
+and answered by `GET /api/spacer/v1/spaces/items/search`, which scopes every
+private search through the same access clauses that decide who may open an
+item. The product's search page asks both and shows them under separate
+headings.
+
+### What a subject has run
+
+`GET /subjects/{subject_ref}/usage` answers what one agentspec or model has
+actually been benchmarked on: the benchmarks that ran it, its runs with their
+pass rate, cost, duration and definition version, the scores in the order a
+chart reads them, and the launches still going
+(`datalayer_ai_agents.services.evals_subject_usage`).
+
+The ref is a `path` parameter, because an agentspec id contains a slash. The
+benchmarks are found through `list_evals(subject_ref=…)`, which filters on
+`subject_refs_ss` — a field the experiments keep as they are created — so this
+is an index read rather than a walk over an account's evalsets.
+
+Where a subject has never been run, every list is empty and the totals are
+`null`. The agent page in the product draws that state as "nothing measured
+yet": it used to generate a plausible history instead, which is the one answer
+an operator should never see.
+
+### What a sandbox is doing, and whether anything will run one
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /sandboxes/{sandbox_ref}/provenance` | the account scope | The benchmark, launch, run and task a sandbox belongs to, each with the page it opens |
+| `GET /compute/operations` | the account scope | Whether a worker polls the benchmark queue, and the account's own queued and running launches |
+
+A sandbox page shows a pod — an environment, a reservation, a burning rate —
+and could not say why the pod exists. There are two joins, and the ref is
+either:
+
+- **a pool slot's name**, `benchmark-<run>-slot-<n>`, which the durable worker
+  writes when it launches a slot. Runtimes honours a requested uid only for a
+  launch that brings attachments made for it, so the *name* is what a caller
+  can rely on; `datalayer_solr.evals_sandbox_names` is the one definition of
+  it, used by the worker that writes it and the route that reads it;
+- **the name a sandbox was restored under** for an investigation (B3-05),
+  which the investigation record remembers (`runtime_name_s`), falling back to
+  the snapshot uid itself, which every task result records.
+
+Everything is read inside the caller's account: a sandbox of somebody else's
+run answers `found: false` rather than naming their benchmark, and so does a
+sandbox nobody launched for a benchmark — which is most of them, and is not an
+error.
+
+`GET /compute/operations` asks the durable service `/operations` and answers
+**only** what is about this account's benchmarks: the engine, whether a worker
+polls the `evals` queue, the catalogue version, and the caller's own queued
+and running launches with the slots they hold. The deployment's other runs,
+queues and workflows are not passed through — `/operations` lists the newest
+runs whoever they belong to, and a page about one account's compute is not
+where another account's run ids belong (`evals_compute.operational_view`).
+
+The state worth naming is the third one: a worker that is healthy and polls no
+benchmark queue. Everything looks well and nothing runs, so that answers
+`serving: false` with a `detail` that says so.
+
+### Comparing launches, and the leaderboard
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /evalsets/{id}/comparison?launches=a,b` | Viewer | The launches side by side: per launch, per subject and per task, with the pairwise deltas |
+| `GET /public/evalsets/{id}/leaderboard` | Anybody | The subjects that ran a published benchmark, best first |
+
+The arithmetic is `datalayer_ai_agents.services.evals_comparison`, a pure
+module over `datalayer_solr.evals.run_pass_rate` and `run_cost` — the same
+functions the evalset summary and the report engine use, so no two surfaces
+can disagree about a pass rate. Launches are compared in the order the query
+names them, oldest first; where none is named, the two newest are taken. A
+delta is `later - earlier`, and the answer carries that convention rather than
+assuming the caller knows it.
+
+The leaderboard counts **only runs inside a published package** (see *The
+published package* above): a row names the publication its best run came from,
+so a reader can open and reproduce it. A withdrawn package stops counting the
+moment its status moves, without anything being recomputed.
+
+### Imported CI reports
+
+A report the evals CLI or the GitHub action wrote can be imported on its
+benchmark as a read-only snapshot (`type_s: evalset_report_import`,
+`datalayer_solr.evals_report_imports`): the file's text kept as it was in a
+stored text field (`content_t` — an indexed `_s` string refuses a value past
+Lucene's term limit), linked to the runs its CSV names in the `run_id` column
+that are runs of that benchmark in its account, and to their launches. Run ids it
+names that are not are kept as `unmatched_run_ids` rather than linked; a
+Markdown file links no run.
+
+| Route | Role | Does |
+| --- | --- | --- |
+| `POST /evalsets/{id}/reports/import` `{format: csv\|markdown, content, name?}` | Editor | keeps the file (up to 2 MB, `413` past it; `400` for a CSV with no `run_id` column) |
+| `GET /evalsets/{id}/reports/imports` | Viewer | the imports, newest first, without their text |
+| `GET /report-imports/{id}` | Viewer | one import with its text |
+| `POST /report-imports/{id}/continue` | Editor | **Continue investigation**: a live report over the linked launches and a launch-scope investigation, recorded on the import and answered again on a second call; `409` when the file links no run |
+
+### Review decisions
+
+A decision is a record of its own — `type_s: evalset_decision`
+(`datalayer_solr.evals_decisions`) — made on a report or in an investigation:
+a `kind` (`accepted_regression`, `expected_change`, `evaluator_issue`,
+`data_issue`, `action_required`), an `outcome` (`approved`, `blocked`,
+`accepted_with_limitations`), a `scope` (`block`, `case`, `run`, `launch`) with
+the `scope_ref` it names, a note, who decided and when, and the comment thread it
+resolves. Decisions are appended and never edited: a later decision on the same
+scope stands, and the earlier one stays as what was thought at the time.
+
+| Route | Role |
+| --- | --- |
+| `POST /reports/{id}/decisions`, `POST /investigations/{id}/decisions` | Reviewer; a word outside the vocabularies is `422` |
+| `GET /reports/{id}/decisions`, `GET /investigations/{id}/decisions` | Viewer; in the order they were made |
+
+Each decision writes an `evals.decision.record` audit row (a refused one too) and
+a `decision.recorded` line on the activity feed. The Markdown report of a launch
+ends with a **Decisions** section listing the decisions recorded against that
+launch, and the benchmark's Markdown report lists every decision on the
+benchmark (`agent_runtimes.evals.report.render_decisions_markdown`); a report
+with no decision has no such section.
+
+### Saved views of an investigation
+
+What an investigation's page shows is in its address: the surface
+(`?surface=report|notebook|chat`) and the evidence it is open on (`?block=`,
+`?case=`, `?cell=`). A saved view keeps that under a name, in the
+investigation's `metadata.views`, for everybody working on it (B4-11):
+
+| Route | Role | Does |
+| --- | --- | --- |
+| `POST /investigations/{id}/views` `{"name", "query"}` | Reviewer | Keep the view, with who saved it and when; only the page's own parameters are kept, a view of the same name is replaced, and a query that keeps nothing or names another surface is `422` |
+| `DELETE /investigations/{id}/views?name=` | Reviewer | Forget it; `404` when no view has that name |
+
+The investigation page's collaboration rail lists them beside who has the
+report's room open (its awareness), the comment threads on the report
+(Spacer's comments), the people on the investigation, its decisions, and what
+happened. What happened is read from the comments, the decisions and the
+investigation — records every collaborator can read — rather than from one
+person's activity feed, which nobody else can read.
+
+## Sharing and permissions of benchmarks
+
+Every evals record belongs to an account — a person, a team or an
+organization — and every store call is scoped on that account. A route that
+names a record (`/evalsets/{id}`, `/launches/{id}`, `/runs/{id}`,
+`/experiments/{id}`, `/investigations/{id}` and what hangs off them) first
+works out the caller's **role** on it (`datalayer_ai_agents.services.evals_access`),
+then acts in the record's own account, whatever `account_uid` the request
+names. Listings and creations (`GET /evalsets`, `GET /launches`,
+`POST /evalsets`, the live routes) stay scoped on `account_uid` as before.
+
+The roles are a ladder, each allowing what the ones below it allow:
+
+| Role | Grant level | May |
+| --- | --- | --- |
+| Viewer | `view` | read the benchmark, its runs, tasks, reports and investigations |
+| Reviewer | `review` | decide a task left in review, open and update an investigation |
+| Runner | `execute` | launch, validate, stop, and bring a task's sandbox back from its snapshot |
+| Editor | `update` | change the definition and its tasks, archive a run, write the report document |
+| Owner | — | delete the benchmark, make it or an investigation public, share anything |
+
+The **owner** is the account itself, a platform administrator, or an owner of
+the organization the account is or belongs to (a team is owned through its
+organization). Any other member of that organization is a Viewer. Beyond
+that, a role comes from grants stored on the record in the Spacer's field
+names — `shared_{view|review|execute|update}_{user|team|organization}_uids_ss`
+— on benchmarks, launches and investigations. A launch also takes its
+benchmark's grants, and a run and its tasks take their launch's, but only
+within one account: the launch somebody made of a benchmark another account
+published is theirs alone.
+
+Somebody with no role is told the record is not found; somebody whose role is
+too low gets `403` naming the role it needs. A Runner's launch is made in the
+benchmark's account, the account that shared it; a benchmark somebody
+published stays anybody's to run, in their own account.
+
+| Route | Role |
+| --- | --- |
+| `GET`, `PUT /evalsets/{id}/sharing`, same for `/launches/{id}` and `/investigations/{id}` | Owner |
+| `GET /evalsets/{id}/permissions`, same for launches and investigations | any role; answers `role` and what it allows |
+| `PATCH /investigations/{id}/public` `{"is_public"}` | Owner; audited as `evals.investigation.publish`, allowed and refused. A public investigation is in the Library (B5-01), its document and notebooks published with it and made private with it (`evals_investigations.update_investigation`); the Library lists the investigation, not them, and its public page shows its scope, status and decision, never who is assigned or the sandbox restored for it |
+| `GET /shared` | the caller | the reports and investigations other people shared with them, through them, their teams or their organizations, newest first: each with its title, its owner, the caller's role, its state and the app page it opens (Shared with Me lists them) |
+
+`PUT …/sharing` takes `{"access": {"execute": {"userUids": [], "teamUids": [], "organizationUids": []}}}`,
+replaces the levels it names and keeps the others; anything that is not
+levels of principal lists is refused with `400`.
+
+Dataset and secret access do not follow a grant: validation reads the dataset
+revision from contents and the secrets from IAM with the caller's own
+credential. A tool approval is decided by the person it waits on and nobody
+else.
+
+### Audit rows
+
+Sharing, publication, launches, sandbox restores, task reviews and tool
+approval decisions each write a row in the shared audit shape
+(`datalayer_common.audit`), allowed or refused, with who, the account the
+record belongs to, and the role. The rows go to the `datalayer_ai_agents.audit`
+logger unless a sink class is named:
+
+```bash
+DATALAYER_AI_AGENTS_AUDIT_SINK_CLASS=datalayer_common.audit_solr_sink:SolrAuditSink
+```
+
+## The orchestration control plane
+
+The service is also the orchestration control plane: the twelve commands of
+the canonical model (`datalayer_core.orchestration`) under
+`/api/ai-agents/v1/orchestration`, owner-scoped through `account_uid` as the
+evals API is. It holds the commands, the canonical state and the event
+stream, and it does not dispatch. An execution it accepts is started as an
+`OrchestrationWorkflow` on the durable service's `orchestration` queue, keyed
+on the execution id, with the account and the person in its arguments; the
+workflow's worker speaks A2A and ACP. An attempt the worker lost is retried by
+the durable service on a successor run keyed `<execution>:attempt-<n>`
+(O1-05), so the control plane wakes and stops the run of the newest attempt,
+walking the keys down from it (`datalayer_common.orchestration_runs`); what a
+command asks is in the store either way, where any run of the execution reads
+it.
+
+| Operation | Route |
+| --- | --- |
+| `agents.discover`, `agents.create`, `agents.attach` | `POST /orchestration/agents/{discover,create,attach}` |
+| `executions.delegate`, `steer`, `pause`, `resume`, `cancel`, `checkpoint`, `collect`, `terminate` | `POST /orchestration/executions/{command}` |
+| `executions.subscribe` | `GET /orchestration/executions/{execution_id}/events`, Server-Sent Events |
+| Reads | `GET /orchestration/executions` (`rootExecutionId`, `parentExecutionId`, `status`), `GET /orchestration/executions/{execution_id}` |
+| `executions.report` | `POST /orchestration/executions/{execution_id}/report`, the execution's live report |
+
+- **State** is the `orchestration` Solr collection
+  (`DATALAYER_SOLR_ORCHESTRATION_COLLECTION`), through a store opened per
+  account: every record carries `account_uid_s`, and an idempotency key is
+  claimed per account, so the same key from two accounts is two commands.
+- **Durable** is reached with the same `DATALAYER_DURABLE_URL` and
+  `DATALAYER_AI_AGENTS_API_KEY` benchmark runs use, through the one durable
+  client every service shares (`datalayer_common.durable_client`, the MCP
+  gateway's client lifted out of it). Unset or not answering,
+  `executions.delegate` answers `dispatched: false` and records a retryable
+  `execution.error` on the execution; a request to a worker answers
+  `delivered: false`. Neither loses the command: it is received, and waits in
+  the store for the workflow that reads it.
+- **Refusals** are a canonical `OrchestrationError` in `detail`:
+  `invalid_command` 400; `not_found` 404; `conflict` and `invalid_transition`
+  409; `unsupported_operation`, `depth_exceeded`, `fan_out_exceeded`,
+  `deadline_exceeded` and `budget_exhausted` 422; `worker_unreachable` 503. A request the worker
+  cannot carry — pausing a plain ACP worker, steering a plain A2A one — is
+  refused with the adapter's own reason, read from the capability report the
+  adapter recorded on the execution as it dispatched (`recorded_capabilities`),
+  or from the protocol's report before anything was dispatched.
+- **Pause and resume** (O2-05): a worker that speaks the Datalayer
+  orchestration extension — declared on its A2A agent card, or in its ACP
+  `initialize` — is recorded with `pause`, `resume` and an in-turn `steer`
+  supported. `executions.pause` is received with its `reason`, and the
+  execution's `OrchestrationWorkflow` hands it to the worker; the execution is
+  `paused` once the worker reports the checkpoint it kept. `executions.resume`
+  is for a `paused` execution only — a `waiting` one is refused
+  `invalid_transition`, since its approval decides it — and names a checkpoint
+  the execution kept or resumes from the last one (none kept is `not_found`);
+  it is received with that checkpoint, and the workflow resumes the execution
+  as a new attempt. `executions.checkpoint` stays refused: such a worker keeps
+  a checkpoint as it pauses, not on request.
+- **A worker's requests** (O2-06): a token exchanged from an execution's task
+  grant is that execution's worker (`task_id`, carried by the shared auth
+  beside `task_grant_uid`). It delegates only under its own execution — never
+  a root, never a child of another execution. It reads and acts only on its
+  own execution and what is below it, and its listings and tree roll-ups hold
+  only that part. It is refused `agents.create` and `agents.attach`. Each
+  refusal is `permission_denied`: a worker requests its children, and the
+  control plane resolves, authorizes and dispatches them.
+- **Trees** (O2-01): a child may name its `slot` under its parent, and its
+  execution id is derived from the parent and the slot (`exec_` and the first
+  32 hex digits of SHA-256 over `parent` and `slot`), so its
+  `OrchestrationWorkflow` run is keyed on parent and slot as well. A parent
+  that asks again for a child it has — its worker killed and retried, with new
+  idempotency keys — is answered with that child and its run, and nothing is
+  started twice; the fan-out limit is not asked again for it. The same slot
+  with different work is `conflict`; a slot on a root, or one that is not a
+  name, is `invalid_command`. A lost parent attempt is retried without
+  touching its children, and no store write rewrites an execution's root,
+  parent or depth (`refuse_moving`, part of the store contract both stores
+  run).
+- **One trace per tree** (O2-12): a child is in its tree's trace. A child
+  that names no trace — a worker's request for a child names none — is given
+  its parent's `trace`. Each execution's `OrchestrationWorkflow` is started
+  with its `traceparent` in the arguments, so durable's steps, the spans of
+  its attempts and the `traceId` in its artifacts' provenance are all the
+  tree's; one naming another trace than its
+  traced parent's is `invalid_command`. A root keeps the trace it names. A
+  tree whose children speak A2A and ACP is one trace and one artifact set:
+  `executions.collect` with `includeChildren` answers every artifact of the
+  tree, each attributed to the execution that produced it (conformance
+  scenario 15, `durable/tests/test_scenario_15_mixed_protocol_children.py`).
+- **One ACP agent in front of a tree** (O2-08): `agent-runtimes serve
+  --orchestrator-root <agentspec | endpoint>` registers the orchestrator on
+  the runtime's ACP route as `orchestrator`. Each `session/prompt` is a root
+  execution, delegated as the person the connection's token names to that
+  agent: an agentspec is brought up as a child's worker is (O2-06), an
+  `http(s)` endpoint is an A2A agent and a `ws(s)` one an ACP agent. Its
+  worker asks for the children. The turn's thoughts are the tree's state
+  changes and its message is what the root produced, so the client never
+  names an execution. The root's idempotency key is the session and the
+  prompt (`acp:<session>:<16 hex of its SHA-256>`), so the same prompt in a
+  session loaded after a restart is answered from the same tree, and a
+  cancelled turn cancels its root.
+- **Teams** (O2-09): `executions.delegate` naming a catalogued team, with
+  `agent` `{agentId: <team>, protocol: datalayer}`, is rooted on the team's
+  supervisor. The control plane rewrites the binding to the supervisor's
+  seat, `team:<team>/supervisor`, over A2A with no endpoint, before anything
+  is created. A sequential or parallel team's run then places its members as
+  the root's children, one seat each (`team:<team>/<member>`, the member as
+  its slot), in `depends_on` order, and the supervisor answers from their
+  work. A supervisor team is rooted the same way; its run places no member,
+  and its supervisor asks for the members it routes work to, each a seat.
+  An unknown team is `not_found`; one delegated under another execution,
+  with no supervisor, or whose members cannot be ordered is
+  `invalid_command`; a team in a mode the control plane does not run is
+  `unsupported_operation`.
+- **Delegation** (O2-02) is the control plane's half of a delegation token,
+  decided on `executions.delegate` without asking anybody. A child's
+  references are in its parent's manifest (by kind and uid), a read-only one
+  stays read-only, and its `expiresAt` does not outlast the parent's —
+  otherwise `permission_denied`, 403. It is delegated only to an agent in the
+  parent's `permissions.agents`; its `tools` and `agents` are subsets of the
+  parent's, and it has `sandboxes` and `network` only where the parent has
+  them — `permission_denied`. Its `inputTokens`, `outputTokens`, `cost` and
+  `wallClockSeconds` are split from the parent's (O2-04): at most what the
+  parent has left after what its other children were given, in the parent's
+  currency, and a child that names no share takes what is left; each child
+  takes one of the parent's `executions` — otherwise `budget_exhausted`, 422,
+  naming the limit and what is left. So a tree's model budget is its root's in
+  total, never multiplied by its fan-out. Allowlists left unset are
+  inherited, so a child's stored policy holds its parent's. IAM's half is the
+  child's own task grant, which names the child's manifest and nothing else
+  (see the IAM page); neither half can be satisfied by the other.
+- **Discovery** reads the agentspec library `agent-runtimes` ships, each
+  spec's operations filled from the adapter of the protocol it speaks.
+- **A subscription** sends each event with an `id` that is the cursor of the
+  whole tree — `execution:sequence`, comma separated — so a reconnect with
+  `Last-Event-ID` resumes there, and ends with `end` once every execution it
+  covers is terminal. A connection dropped mid-stream and resumed receives
+  every missed event exactly once (`tests/test_orchestration_api.py` drops
+  one at the ASGI level). The app's execution page
+  (`/orchestration/:executionId`) reads it through `core`'s
+  `subscribeToExecution`, and the execution and its artifacts through
+  `executions.get` and `executions.collect`. After each batch of events the
+  stream sends `orchestration.tree` (O2-03): the `TreeSummary` the user
+  channel carries, over the executions the stream covers, under the cursor of
+  the events it follows, and only when it changed. Each execution's own events
+  keep their sequence whatever the writers' clocks say
+  (`control_plane.in_order`). The same summary can be derived from the events
+  alone — `TreeSummary.from_events` in the service, `treeFromEvents` in
+  `core` — and `subscribeToExecution` hands the roll-up to `onTree`.
+- **The user channel** (`/ws`, `user:{uid}`) carries an `orchestration.tree`
+  event — the tree at a glance: each execution's state, agent and goal, the
+  counts by state, and whether it is over — never the event stream itself.
+  The control plane sends it after a delegation, a cancel and a terminate;
+  the durable worker sends it, as the person, whenever an execution it holds
+  moves, through `POST /orchestration/executions/{execution_id}/announce`.
+  `broadcast` reaches the clients of the replica that sends it, so with more
+  than one ai-agents replica a client may miss an announcement; the
+  subscription is what a page watching one tree relies on.
+- **Approvals** a run waits on are tool approvals (O1-08). The durable worker
+  asks for one as the person, `POST /tool-approvals` with the `task_id` of the
+  approval run and the `expires_at` of the wait, and a second request for the
+  same task answers with the approval already made. Deciding it — `POST
+  /tool-approvals/{id}/approve` or `/reject`, or the Tool Approvals page's
+  `tool_approval_decision` on `/ws` — signals that run's `input` before the
+  approval is recorded as decided. With no durable service to tell, the answer
+  is `503` and nothing is decided; a run already over is `409`, and the
+  approval is marked `expired` (`tool_approval_expired` on the user channel).
+  A pending approval past its `expires_at` reads `expired` and leaves the
+  pending count. The MCP gateway's approval gate names the person too, so the
+  tool calls it pauses are decided on the same page, and the page's "Runs
+  waiting on you" leaves out a run whose approval has a card there.
+- **The CLI** of `datalayer-core` calls these routes: `datalayer agents
+  discover`, and `datalayer executions run`, `watch`, `steer`, `cancel` and
+  `artifacts`, with `--account` for an organization or team. Its paths come
+  from `datalayer_core/orchestration/api.py`, generated from the contract
+  beside the TypeScript table; a mutating command without
+  `--idempotency-key` carries one derived from what it asks. `agent-runtimes`
+  adds its agent runtime commands to the same `agents` group.
+- **Measures** are taken by the execution store's rules, so in this service
+  and in the durable worker alike (O1-14), and filed under the account the
+  store is opened for (`usage_account_uid`): `orchestration.delegations`
+  (`created` or `duplicate`), `orchestration.acceptance_seconds` and
+  `orchestration.first_worker_event_seconds` by protocol, from the execution's
+  creation to its first milestone at or past `accepted` and to the first
+  milestone a worker reported, `orchestration.executions.settled` by protocol,
+  state and `recovery` (`disconnected` when the watcher lost sight of the
+  worker and asked again, `worker_lost` when the execution moved because the
+  worker no longer had the work, `none`), `orchestration.execution.duration`,
+  `orchestration.artifacts` (`committed` or `superseded`), and, from the
+  conformance suite, `orchestration.conformance.scenarios` by scenario,
+  binding and outcome. A re-attach leaves a progress event carrying
+  `reattached`, which is what `recovery` reads. The OTEL service's
+  `orchestration` built-in dashboard draws them, and the app's Executions page
+  reads the six measures from it through `core`'s `fetchOrchestrationMeasures`.
+- **Artifacts** a worker produces are written by the durable worker, as the
+  person, into the account's orchestration space — Spacer's
+  `GET /spaces/orchestration`, one per account and made on first use like the
+  benchmarks space (O1-10). A body that is an nbformat document becomes a
+  notebook and anything else a Lexical document headed by the agent and the
+  objective. The artifact is recorded with that object's reference,
+  `datalayer:<document|notebook>/<uid>@<content hash>`, which
+  `executions.collect` returns and the execution page links to. Every
+  attempt's artifacts are written, and the commit marks a later attempt's
+  superseded, so nothing is overwritten; an artifact Spacer cannot take keeps
+  no reference, and the execution still completes.
+- **Reports** (O1-15): `executions.report` writes, as the person and the first
+  time only, a Lexical document into the same space
+  (`agent_runtimes.orchestration.reports`): the goal, one `execution-tree`
+  node storing the execution id and nothing the run did, and room for notes.
+  It registers the document on the execution as its `orchestration-report`
+  artifact, `art_report-<execution>`, referenced
+  `datalayer:document/<uid>@live`; asking again answers that artifact. The
+  artifact has no provenance, so neither the commit rule nor the
+  `orchestration.artifacts` measure touches it. Spacer not taking the document
+  is `502` with a retryable `internal` error, and nothing is registered. The
+  node is `jupyter-lexical`'s `ExecutionTreeNode`, drawn through
+  `OrchestrationRenderersContext`: the app's literate editor renders the tree
+  live from `executions.collect` and `executions.subscribe`, with a notebook
+  artifact's outputs through `jupyter-react`'s `Output`.
+- **The tree in the app** (O2-10): `executions.collect` also answers
+  `attempts`, every attempt of the execution and of the children it collected,
+  and an attempt carries the `usage` its worker reported with its end — its
+  tokens, and a cost where the worker priced its model. The worker says it as
+  `datalayer.usage`, on the A2A task's final status or in the ACP answer's
+  `_meta`, and the adapter records it on the attempt with the move that ends
+  it. Nothing else records what one execution spent: a budget's `cost` is a
+  limit, and IAM's credits are the tree's. The execution page draws the same
+  live tree the report embeds: each node's elapsed time, from its attempts'
+  start and end, its spend, and the actions its state allows — steer and pause
+  while a worker is on it, resume once paused, cancel until it ends, and **Run
+  again** once it has. Run again delegates the node's agent, objective, context
+  and policy as a new execution, under its parent while the parent still runs
+  and as a new root otherwise, since a finished execution cannot move again.
+  Each action is the command it names (`executions.steer`, `pause`, `resume`,
+  `cancel` with `cascade`, `delegate`), so it reaches the control plane the same
+  way from either surface, and whoever watches the other sees it on the stream.
+- **Credits** (O1-07) are the tree's, held by IAM in one `execution-tree`
+  reservation keyed on the root (see the IAM page). `policy.budget.credits` is
+  set on the root; a child that sets its own is refused `invalid_command`.
+  `agents.create` with an `executionId` whose root holds credits starts the
+  worker's `SandboxWorkflow` with `parent_reservation_uid`, so its runtime
+  draws on the tree. The durable worker opens and closes the reservation and
+  records a spent tree as `budget_exhausted` with `details.budget: platform`;
+  the control plane itself never calls IAM for it.
+- **Model budget** (O1-07): `policy.budget.inputTokens`, `outputTokens` and
+  `cost` travel with the delegation — under `datalayer.budget` in the A2A
+  message's `metadata` and in the ACP prompt's `_meta` — and agent-runtimes
+  holds the run to them as pydantic-ai's own `UsageLimits`. A limit reached
+  comes back where the budget went: a failed A2A status whose message
+  `metadata` carries `datalayer.error`, or an ACP `max_tokens` or
+  `max_turn_requests` stop reason with the same in `_meta`. The adapters record
+  `budget_exhausted` with `details.budget: model` and the limit — `delegated:
+  false` for an ACP agent's own limit — not retryable, and the durable worker
+  cancels what the execution delegated. The execution page and the report's
+  tree say which of the two budgets it was. Conformance scenario 11 runs it on
+  every binding.
+- **Credential** (O1-17): a worker reaches Datalayer with its execution's own
+  token, never with its runtime's key. Durable exchanges the execution's grant
+  at dispatch for a token held for the run — until the execution's deadline,
+  or the grant's 24 hours — and the adapters send it with the delegation,
+  under `datalayer.credential` beside the budget. agent-runtimes takes it out
+  of the message before anything keeps the message and puts it on the run:
+  the agent's Datalayer MCP server is replaced, for that run, by one holding
+  the token, and the gateway narrows that token to the manifest through the
+  execution layer (see the Jupyter MCP Server page).
+- **The contract** is
+  `datalayer_ai_agents/contracts/v1/orchestration-openapi.json`, generated
+  from the routes with each command's test fixture as its example
+  (`make openapi-orchestration`; `make openapi-orchestration-check` fails
+  when it is stale). `core` generates its orchestration TypeScript and
+  `ORCHESTRATION_API` from it, and refuses to when a canonical record the
+  service serves is not the one its models give.
+
+To check it on a deployment:
+
+```bash
+curl -s -X POST https://${DATALAYER_RUN_HOST}/api/ai-agents/v1/orchestration/agents/discover \
+  -H "Authorization: Bearer ${DATALAYER_API_KEY}" -H 'Content-Type: application/json' \
+  -d '{"protocols": ["a2a"]}' | jq '.agents[].agentId'
+```
+
+### Where the conformance scenarios are proved
+
+The fifteen orchestration scenarios (PLAN_ORCHESTRATOR.md, section 13) are
+run in three suites, not one, because they are claims about three different
+things. When one fails, this is where to look — and a scenario written into
+the wrong suite would be testing something other than what it says.
+
+| Scenarios | Suite | The claim it holds |
+|---|---|---|
+| 1–7, 9, 11 — delegation and artifact return, streaming progress, rejection before acceptance, disconnect after acceptance, lost acknowledgement, duplicate delivery, crash and recovery, cancellation racing completion, budget exhaustion | `agent_runtimes/tests/orchestration`, parametrized over three bindings: A2A, ACP, and an ACP worker that does not declare `loadSession` | The **adapter** contract. Nothing in these tests names a protocol; a scenario a binding cannot run is skipped quoting the adapter's own declared reason, and each binding's pass rate is printed at the end of a run |
+| 14 — nested delegation exceeding depth | `services/ai-agents/tests/test_orchestration_api.py` | The **command boundary**: the refusal names the limit (`depth_exceeded`) rather than failing generically |
+| 10, 12, 13, 15 — approval timeout, context permission denial, conflicting artifact commit, mixed A2A and ACP children under one parent | `services/durable/tests` | The **platform**, with an engine under it: approvals as child workflows, task grants, artifact commit arbitration, and a tree whose children speak different protocols |
+
+```bash
+# The adapter suite, with each binding's rate reported at the end.
+pytest agent_runtimes/tests/orchestration -q
+```
+
+Scenario 8's second half — retrying on *another* compatible worker — needs
+worker selection over a catalogue that declares capabilities, and is open
+with it.
+
+## Tear Down Datalayer AI Agents
+
+If needed, tear down.
+
+```bash
+plane down datalayer-ai-agents
+```
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/ai-agents/v1/docs).

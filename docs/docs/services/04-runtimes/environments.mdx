@@ -1,0 +1,361 @@
+---
+title: Environments
+sidebar_position: 2
+---
+
+# Environments
+
+A User Environment is a versioned definition that an account or an organization builds into immutable artifacts and launches, on Datalayer and on the E2B, Daytona and Modal providers. This page is the operator's side of it: what is deployed where, in which order, and how to check it.
+
+:::info What runs today
+The registry API, its four Solr collections, and the environment recorded on reservations. A build is recorded `queued` and nothing runs it yet: the build workflow, the BuildKit builder, the ECR registry on the plane and signing each arrive with their own change, and this page grows with them. The Operator's side of a launch is written and described below, and deploys once Runtimes sends it an artifact.
+:::
+
+## Where it lives
+
+- **Runtimes**, on each runtimes plane (`r1`), serves the registry beside `/environments`. There is no new service, chart or ingress.
+- **Solr**, in the Runtimes collection set, holds `environments`, `environment-versions`, `environment-artifacts` and `environment-builds`. A build's log chunks are child documents of the build, and a version's lock is kept in a `*_stored` field, stored and never indexed.
+- **IAM**, on prod1, accepts the environment on every reservation, as `environment_uid_s` and `environment_version_s`, and filters usage by it.
+- **Durable** knows Runtimes as a caller of its own, keyed on `DATALAYER_RUNTIMES_DURABLE_API_KEY`. That caller starts nothing until builds run.
+
+## Deploy order
+
+1. **The collections**, on the runtimes plane, with the Runtimes set of `plane solr-init`. The init image must carry the current configset, `*_stored` included, as the [Solr page](/services/system/solr/) explains.
+2. **IAM**, before any Operator that sends the environment on reservations. IAM refuses a metadata key it does not know, and every runtime start fails if the Operator is deployed first.
+3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships.
+4. **Durable and the key**, when builds run: `DATALAYER_RUNTIMES_DURABLE_API_KEY` goes in the plane's rc, and `plane up` sets it into the durable release's Secret and into the Runtimes Deployment, beside `DATALAYER_DURABLE_URL`.
+
+```bash
+source ~/.datalayer/datalayerrc-r1
+plane solr-init    # choose 2) Runtimes
+
+source ~/.datalayer/datalayerrc-prod1
+(cd plane/etc/dockerfiles/datalayer-iam && make build-dev push) && p reup datalayer-iam
+
+source ~/.datalayer/datalayerrc-r1
+(cd plane/etc/dockerfiles/datalayer-runtimes && make build-dev push) && p reup datalayer-runtimes
+```
+
+Both images are rebuilt under the tag they already have. Record the digest each pod runs before the deploy: it is the rollback.
+
+```bash
+kubectl get pods -n datalayer-api \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}' \
+  | grep -E '^datalayer-(iam|runtimes)-'
+```
+
+## The API
+
+Every route is under `/api/runtimes/v1`. Who may do what follows the owner of the environment: the account itself, or the owners of the organization that holds it. The organization's members read an environment and launch its promoted version; anybody else is answered `404`, never `403`, so a stranger cannot tell an environment from none.
+
+| Route | Answer |
+| --- | --- |
+| `GET /environments` | The platform environments, unchanged, then the environments of the caller's account and organizations, with `uid`, `origin`, `owner`, `promotedVersion` and `variants`. |
+| `POST /environments` | Creates one; owners of the account named only. |
+| `GET`, `PATCH`, `DELETE /environments/{uid}`; `POST …/archive`; `PUT …/promoted-version` | Reads for members, writes for owners. `PUT …/promoted-version` promotes a version, or rolls back to an older one, without a build; a `partially_ready` version needs `acknowledgeUnavailableVariants` to name exactly its unavailable variants. `DELETE` refuses while a version is promoted, an artifact is referenced, or a runtime of the environment runs. |
+| `POST`, `GET /environments/{uid}/versions` | A new draft version, or the versions. |
+| `GET`, `PATCH /environment-versions/{uid}`; `…/validate`, `…/builds`, `…/artifacts`, `…/deprecate` | The version, its capability report per variant, its builds and artifacts. |
+| `…/resolve` | `501` until the resolver ships. |
+| `POST /environment-versions/{uid}/trial` | Launches a `ready` or `partially_ready` version before promotion, for its owners only, with credits capped by `DATALAYER_RUNTIMES_TRIAL_CREDITS_LIMIT` (5 by default). |
+| `GET /environment-builds/{uid}`; `…/logs`, `…/cancel`, `…/retry` | The build and its log. `logs?follow=true` streams the log as server-sent events: `chunk` events whose id is the chunk's sequence, resumed from `Last-Event-ID`, and `end` once the build is terminal. |
+
+A write takes `If-Match` with the ETag read before it, which is the document's `_version_`: without it the answer is `428`, and with a stale one `412`. A replayed `Idempotency-Key` answers the first result instead of creating a second. An error body carries a `DL_ENV_*` code and a `correlationId`.
+
+`GET /environments` calls IAM once per request, to find the caller's organizations. When IAM or Solr cannot be read, it still answers the platform list.
+
+`DELETE` asks the Operator which runtimes of the environment are running, on `GET /api/operator/v1/environments/{uid}/runtimes`, with the Runtimes key. When the Operator cannot answer, the deletion is refused with `503` and nothing is deleted. So the Operator deploys with Runtimes, or before it.
+
+## Builds
+
+A build is recorded `queued` by the registry and run by the durable service, on its own `environments` queue, one run per build.
+
+- **Starting one:** Runtimes starts it through durable only when both `DATALAYER_DURABLE_URL` and `DATALAYER_RUNTIMES_DURABLE_API_KEY` are set on Runtimes. Without them the build stays `queued` and nothing runs it.
+- **Reading and writing back:** the worker uses `DATALAYER_DURABLE_RUNTIMES_API_KEY` on Runtimes' internal routes: the build's inputs, the build's and the version's status, the version's lock, its builds, the owner's cache and the artifacts. Every write is replay-safe, so a replayed step stores nothing twice.
+- **Two keys, easily confused:** `DATALAYER_RUNTIMES_DURABLE_API_KEY` is Runtimes calling durable. `DATALAYER_DURABLE_RUNTIMES_API_KEY` is durable calling Runtimes. `plane up` sets each on both sides from the rc, and both are the owner's to put there.
+- **When durable can't be reached:** cancelling a build answers `503` and leaves the build as it was, rather than marking it cancelled.
+- **Deployed:** the ECR registry itself (`clouder aws ecr-environments deploy`, E0-12/E1-06) and the base channel it holds — `datalayer/python-cpu:2026.09` is pushed and `bases.py` resolves its digest (E1-05). **Not deployed yet:** the build pool `buildctl` runs from (E1-06's cluster half — the `datalayer-buildkit` chart, the node taint, the NetworkPolicy) and the Secrets/refresher a plane's namespaces need to pull from the registry (E0-12's `secrets`/`refresher` steps, which the owner runs since secrets are the owner's). A build reaches the step that needs `buildctl` and is refused with `DL_ENV_CAPABILITY_UNSUPPORTED`, naming `buildctl` as what is missing. The resolver and the Datalayer builder themselves are written (`code-sandboxes` 1.7.0 and after).
+
+### What each variant can build
+
+`POST /environment-versions/{uid}/validate` answers one capability report per variant of the version, before anything is queued. A report is `supported`, or carries findings with a `DL_ENV_CAPABILITY_UNSUPPORTED` code, the message a person reads and the field it is about. The route takes `{"variants": [...]}` to ask about some of them, and defaults to every variant the version declares.
+
+This is the cheap answer: a GPU spec sent to E2B would otherwise queue a build, wait for a worker, resolve, upload, and fail minutes later with whatever E2B says about a template it could not compile.
+
+| Variant | What it refuses here |
+| --- | --- |
+| `datalayer` | A size class with no placement on a Datalayer node — the GPU classes, until E2-17 and GPU nodes. |
+| `e2b` | A GPU size class or an accelerator, pointing at `modal` and `daytona`; and an `env.HOME`, which E2B overrides with a sudo user of its own. |
+| `daytona` | `latest`, `lts` and `stable` as a base channel, because a snapshot is built once from a tag that moves. Several regions are reported as several artifacts of the one version, since a snapshot is region-scoped. |
+| `modal` | `ONBUILD`, `STOPSIGNAL` and `VOLUME`, which Modal's own Dockerfile builder takes and does nothing with. |
+| All three managed | A build source other than a package list in this phase, and the `conda` manager. |
+
+- **Runtimes needs no provider SDK to answer.** The capability half of every adapter imports nothing of its provider; the SDK is imported inside the operations that build, inspect or delete an artifact, which run on the durable worker. So `validate` is the same answer on a Runtimes that has no provider extra installed, which is every Runtimes.
+- **A managed build itself is not deployed yet.** An operation that reaches E2B, Daytona or Modal answers `DL_ENV_CAPABILITY_UNSUPPORTED` with `detail.missing` naming the item that ships it. The capability report is exact today; the build is not there yet.
+
+### Resolving a version
+
+A version with no lock is resolved by the workflow's `resolve` step before anything builds: Datalayer's protected constraints — the kernel stack a sandbox needs to connect — are merged over the user's requirements, the base resolves to a digest per requested variant, and the lock is stored once by its digest. Every variant then builds from that one lock.
+
+| Setting on the durable worker | Default | What it chooses |
+| --- | --- | --- |
+| `DATALAYER_ENVIRONMENTS_RESOLVER` | `buildkit` | Where the solve runs: `buildkit` is the solve `FROM` the resolved base digest, which needs `buildctl` and the build pool; `local` runs `uv` in the worker, which is what `plane local` has. |
+| `DATALAYER_BUILDKIT_ADDR` | the default socket | `buildkitd`'s address. |
+| `DATALAYER_APT_SNAPSHOT` | unset | The snapshot mirror apt versions are pinned against, at the base channel's date. |
+
+- **What a resolve refuses, and how it reads:** a requirement that contradicts a protected pin is `DL_ENV_PROTECTED_PACKAGE` with the range that is supported; two requirements that cannot both hold are `DL_ENV_RESOLVE_CONFLICT` naming the pair; a package no index has is `DL_ENV_PACKAGE_NOT_FOUND`. A failure that is not about the version at all — an index unreachable — is `DL_ENV_PROVIDER_ERROR`, which is retryable.
+- **What a resolve waits for here:** no channel of the approved base has a published digest yet, so a resolve answers `DL_ENV_ARTIFACT_MISSING` with the reason `base_channel_unpublished`, naming the channel and the repository it resolves from once it is pushed.
+- **The lock is a requirements file:** `uv pip compile --generate-hashes` output, with the apt versions and the protected pins above it as comments. `pip install -r` reads it, and so does the CLI's `diff`.
+
+### What the builder does with it
+
+The Datalayer builder generates the Dockerfile from the lock, never from the spec's loose list: `uv pip sync --require-hashes` installs exactly what was resolved, apt installs the versions the lock recorded, `env` is set before anything installs, and `postInstall` runs as uid 1000 with `--network=none`. The push is by digest with `--attest type=sbom` and `--attest type=provenance,mode=max`, under the operability tag `v<n>-<build_uid>` so a retried build cannot collide with the attempt before it — and the reference kept is the digest, never the tag.
+
+- **The image needs:** `buildctl` on the worker's `PATH`, and `code-sandboxes[environments-builder]` for the ECR API calls.
+- **The credential** is minted per build and written into a docker config of that build's own, so `buildkitd` holds no AWS key.
+- **The owner's repository** is created if missing, with immutable tags, scan-on-push and KMS. The cache is `environments/cache/u/<owner_uid>`, imported and exported per owner and never shared between owners.
+
+### What a build costs, and what refuses one
+
+Creating a build answers with an estimate before anything is queued: how many builds it would start, their minutes, their storage and their credits, per variant and in total. A request that would put its owner over one of the preview limits is refused with `429` and `DL_ENV_QUOTA_EXCEEDED`, naming the limit in `detail.quota`.
+
+| Limit | Default | Setting |
+| --- | --- | --- |
+| Builds at once | 2 | `DATALAYER_RUNTIMES_BUILD_QUOTA_CONCURRENT` |
+| Build-minutes a day | 120 | `DATALAYER_RUNTIMES_BUILD_QUOTA_MINUTES_PER_DAY` |
+| Retained versions | 10 | `DATALAYER_RUNTIMES_BUILD_QUOTA_RETAINED_VERSIONS` |
+| Stored GiB | 50 | `DATALAYER_RUNTIMES_BUILD_QUOTA_STORED_GIB` |
+
+- **A refusal costs nothing:** no build is written and no workflow starts. A quota checked after the workflow started has already spent what it was meant to save.
+- **The day's minutes** count what builds actually ran, a running one up to now, so a day's worth cannot start at once.
+- **Storage** is metered from the sizes builds recorded. A plane that meters it from the registry instead answers `503` until that registry exists, rather than passing a limit nobody could measure.
+- **The rate and the expected length** of a build are per variant: `DATALAYER_RUNTIMES_BUILD_RATE_<VARIANT>` and `DATALAYER_RUNTIMES_BUILD_MINUTES_<VARIANT>`.
+
+A `datalayer` build holds an IAM reservation against its owner for as long as it may run, made once and keyed on the build, and closed however the build ended. A managed variant holds none: its own provider bills the owner directly.
+
+### A backfill: the variant a version is missing
+
+A version whose required variants built and whose optional ones did not is `partially_ready`, and its `validationSummary.unavailableVariants` names which. `POST /environment-versions/{uid}/builds` with just that variant builds it on the version itself:
+
+- **It reuses the stored lock**, so the `resolve` step is skipped and the lock digest is unchanged. Every artifact of a version installs the same lock, whenever it was built.
+- **It keeps the version number.** A backfill is not an edit, so nothing that already launched this version changes.
+- **It ends the version's unavailability.** When the last unavailable variant builds, the version moves `partially_ready` → `ready` and needs no `acknowledgeUnavailableVariants` to be promoted.
+- **A failed one changes nothing.** There is no move from `ready` or `partially_ready` back into `building`, and none from `ready` to `partially_ready`: the workflow's move is refused by the lifecycle and the version stays as usable as it was, with its artifacts untouched.
+- **Only a declared variant can be backfilled.** Which variants a version is for is part of its spec, and the resolve pinned a base for those and no others, so a build naming another is refused `422` at the route with `DL_ENV_SPEC_INVALID` on `variants`. Adding a variant is an edit, and an edit is a new version.
+
+The same route repairs an artifact that was deleted out of band, which is what E2-09's reconciliation will start: pass `"force": true` so the owner's cache does not answer with the artifact being replaced.
+
+### One dependency set on every variant
+
+A lock pins one set of top-level package versions, but four different builders install it — a Modal image is not a Daytona snapshot is not `datalayer`'s own Dockerfile. Appendix B check 5 is the proof that installing the same lock four different ways still answers the same versions.
+
+- **Every smoke test answers it.** After `smoke_test` passes its usual checks, it reads check 5's per-package answer (`code_sandboxes.environments.conformance.package_versions_of`) and, if the variant reported any packages, folds them into the version's cross-variant report.
+- **A version keeps one report, built up variant by variant.** The first variant to finish just writes its answer. Each variant after that either agrees — and its packages join the report — or disagrees on some package's version, and the build is refused before the report changes.
+- **A drift is a refusal, not a silent record.** A disagreement fails the build with `DL_ENV_SMOKE_TEST_FAILED`, naming the package and the two versions that disagree (which variant reported which). Nothing about the version or its other artifacts changes — the drifted variant is the one left unavailable.
+- **It is stored on the version**, not derived on read: `PUT /internal/environment-versions/{uid}/package-report/{variant}` (Runtimes' internal route 13, `environment-builds:write`) does the compare-and-set against Solr's `environments` collection, and the result comes back on the version as `packageReport` — including through `build_inputs`, so a build always sees what every variant before it found.
+- **It costs nothing extra to check.** The comparison is pure (`drifted_from`, `cross_variant_packages`) and runs against whatever the report already holds; there is no separate reconciliation pass and no additional build.
+
+### A degraded provider stops taking optional builds
+
+When a managed provider is failing, the platform's default behaviour would be the worst one available: keep sending it builds, and let each user learn about the outage separately from their own build's failure. A breaker per provider replaces that with one answer.
+
+- **Nothing is stored.** A provider's health is counted from its recent build records every time it is asked — every Runtimes replica answers the same thing, and a pod that just restarted knows what the others know.
+- **Two arms**, checked independently: an error rate of at least 50% over at least 4 attempts in a 15-minute window (`code_sandboxes.environments.breaker.Thresholds`), and a queue of 8 or more of the provider's builds still open.
+- **Only two codes count against a provider** (section 10): `DL_ENV_PROVIDER_ERROR` and `DL_ENV_BUILD_TIMEOUT`. A `DL_ENV_BUILD_FAILED` is the spec's fault and never closes a provider for anybody else.
+- **`datalayer` is never breakable.** It is the platform's own builder, not a third party to route around; its health is still counted and shown, but its builds are never stopped.
+- **A required variant is never stopped**, whatever the breaker says — the version cannot become ready without it. `POST /builds` queues what it can and reports the rest in `degradedVariants`, one entry per stopped variant with its `reason`, `arm` and, for the error-rate arm, `retryAfterSeconds`. Only when every requested variant is degraded is the whole request refused, `503` `DL_ENV_PROVIDER_ERROR`. A `retry` of one degraded optional build is refused the same way; a retry of a required variant is untouched.
+- **It closes on its own.** The error-rate arm reopens once the newest counted failure is older than its 10-minute cool-down — the half-open state of a textbook breaker, with no probe to schedule. The queue-depth arm just tracks the number waiting.
+- **`GET /sandbox-providers`** carries each entry's `degraded` state, and the full reason when it is true — the place a person looks when their optional builds are being refused.
+
+## Build logs
+
+The durable worker appends a build's log through `POST /api/runtimes/v1/internal/environment-builds/{uid}/logs`. That route answers only durable's own key, `DATALAYER_DURABLE_RUNTIMES_API_KEY`. A person's token and the shared `DATALAYER_RUNTIMES_API_KEY` are refused with `401`.
+
+- **Chunks:** at most 64 KiB each and 16 per call, numbered from 0 with no gap.
+- **Redaction:** the build's secret values, in every encoding, and anything shaped like a credential are redacted before a chunk is written.
+- **Replays:** a replayed chunk answers `200` and stores nothing twice.
+- **Conflicts:** a gap, or a new chunk after the build ended, answers `409` with `nextSequence`.
+
+The redactor ships in a `code-sandboxes` release after 1.5.0. On a Runtimes image without it, the append route answers `503` with `DL_ENV_UNAVAILABLE` and stores nothing; reading and following a log work either way. `DATALAYER_DURABLE_RUNTIMES_API_KEY` goes in the plane's rc when the build worker ships.
+
+## The scan and the signature
+
+Two gates stand between a build and a sandbox, in this order (D-11).
+
+**The scan.** ECR scans on push. The worker waits for that scan with a time
+bound, reads the findings — enhanced or basic, whichever the repository is
+configured for — and decides. The default, and what it means:
+
+| | |
+| --- | --- |
+| Blocks | A `CRITICAL` finding **that has a fixed version** |
+| Records, and does not block | A `CRITICAL` finding nothing fixes yet, counted as `unfixable` |
+| Does not block | Anything below `CRITICAL`, and any advisory the owner has allowed |
+
+Both halves of the default are deliberate: `CRITICAL` alone would block on
+findings nobody can act on, and blocking the unfixable leaves an owner with
+nothing to do but wait. A blocked build ends `failed` with
+`DL_ENV_SCAN_BLOCKED`, naming each finding with its package, the version
+installed and the version to ask for, and the decision record — the threshold,
+the counts by severity, the blocking findings — is stored on the artifact, so
+why a build stopped can be read a month later without asking the scanner
+again. An organization tightens the threshold in E3-06.
+
+A scan that never finishes inside the bound, or a scanner that refuses the
+image, is `DL_ENV_PROVIDER_ERROR`: retryable, because nothing about the
+version is wrong.
+
+**The signature.** Once the scan passes, and before the smoke test, cosign
+signs the digest with the KMS key named by `DATALAYER_ENVIRONMENTS_KMS_KEY`.
+The signature sits beside the image in the same repository, at cosign's own
+`sha256-<hex>.sig` tag, and a replayed attestation finds it rather than
+pushing a second one — which the immutable tags refuse, and which would be two
+words about one artifact. A worker with no key or no cosign refuses **before**
+asking the registry anything: an artifact nobody can sign can never be used,
+so spending the scan's wait to reach the same refusal would only make the log
+read as though the scan were the problem.
+
+### What the Operator does with it
+
+Before creating **any** pod from an `environments/` image — a launch, a
+warm-pool pod, a restored checkpoint — the Operator verifies the signature
+against the key's public half and refuses an unsigned or wrongly signed digest
+with `DL_ENV_SIGNATURE_INVALID`, 422 on the launch route, raised before
+anything is reserved.
+
+| Setting on the Operator | Default | What it does |
+| --- | --- | --- |
+| `DATALAYER_ENVIRONMENTS_KMS_KEY` | unset | The key to verify against. **Unset means nothing starts.** |
+| `DATALAYER_ENVIRONMENTS_VERDICT_TTL_SECONDS` | 3600 | How long a pass is believed. |
+| `DATALAYER_ENVIRONMENTS_REFUSAL_TTL_SECONDS` | 30 | How long a refusal is believed. |
+| `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` | 20 | How long `cosign verify` is waited for. |
+
+- **It fails closed.** No key, no `cosign` in the Operator's image, a verifier
+  that cannot be run or does not answer, or an image pinned by a tag rather
+  than a digest: the pod is refused. So the key and cosign reach the Operator
+  **before** the first artifact exists — which E1-06 does, deploying the key
+  with the registry — or every user-environment launch is refused. That is the
+  safe direction, and a plane with no user environments notices nothing.
+- **Only `environments/` images are checked.** A platform image on OVH is
+  unsigned and launches unchecked until E1-28 moves those onto the pipeline.
+- **The verdict is cached per digest**, because a warm pool creates pods faster
+  than cosign answers and a digest's verdict is content: it cannot change. A
+  refusal is re-checked much sooner, since the usual reason for one is a
+  signature that has not been pushed yet.
+- **There is no admission webhook.** A pod created by any path other than the
+  Operator is unchecked, which is accepted until E4-10.
+
+## Retention: what is kept, and what is collected
+
+Storage is paid for, so an artifact nothing can reach any more is deleted at its provider. Three things are kept: the promoted version, the newest few `ready` versions — so a rollback is a promotion and not a rebuild — and anything a live runtime is running, which Runtimes reads from the Operator by the label every pod of a user environment carries. Everything else is deleted once it has been unused for the retention window.
+
+| Setting on Runtimes | Default | What it does |
+| --- | --- | --- |
+| `DATALAYER_RUNTIMES_RETENTION_READY_VERSIONS` | 5 | How many `ready` versions are kept beside the promoted one. |
+| `DATALAYER_RUNTIMES_RETENTION_COLLECT_AFTER_DAYS` | 30 | How long an unkept artifact is left alone before it is deleted. |
+| `DATALAYER_RUNTIMES_RETENTION_BATCH` | 200 | How many artifacts one run looks at. |
+| `DATALAYER_RUNTIMES_RETENTION_INTERVAL_SECONDS` | 3600 | How often Runtimes asks for the day's run. |
+
+- **Who runs it:** Runtimes asks hourly for one run a day, keyed on the date and the plane, so the first replica to ask starts it and the others find it; the sweep itself is `EnvironmentsRetentionWorkflow` on the durable `environments` queue, because a provider delete belongs in the worker.
+- **Nothing goes on a guess:** an environment whose runtimes the Operator cannot answer for yields no candidate at all, and the run says so in `unreadableEnvironments`. A runtime whose version is unknown keeps every artifact of its environment.
+- **The order matters:** an artifact is deleted at the provider *then* marked `collected`. One deleted and not marked is found again tomorrow; one marked and not deleted is storage nobody will look at again.
+- **A provider that refuses one** does not stop the sweep, and the artifact stays `eligible` for tomorrow.
+- **Without a durable service configured**, nothing is swept and the log says so at startup.
+
+## What it reports
+
+The measures of the plan's section 14, written where the work happens and read through the OTEL query API. No uid is ever a metric label — the environment, version and build uids are on the spans instead, where an unbounded value costs nothing — and every span of a build carries the one correlation id the API put on the build, so the API call, the workflow, the provider call and the check read as one trace.
+
+| Metric | Written by | What it says |
+| --- | --- | --- |
+| `environments.builds` | durable | Builds that ended, by variant, region, status and `DL_ENV_*` code. Failures by code are a slice of it. |
+| `environments.build.queue_wait` | durable | From the build being recorded `queued` to a worker claiming it. |
+| `environments.build.duration` | durable | From that claim to the end. |
+| `environments.build.retries` | durable | Attempts after the first. |
+| `environments.cache.lookups` | durable | Every lookup, with `hit` true or false: the hit rate is a ratio of its two series. |
+| `environments.resolves`, `environments.resolve.duration` | durable | Resolutions that ended, and how long they took. |
+| `environments.artifact.bytes` | durable | An artifact's size: what a cold start waits for and egress is billed on. |
+| `environments.artifacts.collected` | durable | What the retention sweep collected, and what it could not. |
+| `environments.artifact.resolution` | Runtimes | Version to immutable reference on the launch path, resolved or refused. The SLO is p99 under 100 ms. |
+| `environments.launches`, `environments.launch.refusals` | Runtimes | Launches of a user environment, and the refusals by code. |
+
+A measure is never why a build fails: each is taken inside a `try`, and a broken instrument is a warning in the log.
+
+## Check
+
+```bash
+BASE="${DATALAYER_RUNTIMES_URL%/}/api/runtimes/v1"
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $DATALAYER_API_KEY" "$BASE/environments"
+# 200
+curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer $DATALAYER_API_KEY" "$BASE/environments/01jzzzzzzzzzzzzzzzzzzzzzzz"
+# {"code": "DL_ENV_NOT_FOUND", ...}
+# 404
+```
+
+The second call reads the `environments` collection. A `500` there usually means the collections are missing on the plane, or were created from an image without `*_stored`.
+
+## Launching a user environment
+
+A launch names a user environment on `POST /api/runtimes/v1/runtimes` with `environment.name`: `<account-handle>/<name>`, or the environment uid. `environment.version` is optional: a number or a version uid, and without it the promoted version launches. Any other name is a platform environment and launches as it always has, with no Solr or IAM call.
+
+For a user environment, Runtimes:
+- checks that the caller may use the version: the owner may launch any version that takes sandboxes, and an organization member one that has been promoted;
+- finds the version's `ready` Datalayer artifact for its plane, `DATALAYER_RUNTIMES_PLANE` (`r1` by default);
+- drops any artifact a client sent.
+
+It then asks the Operator, as described below.
+
+| Status | Code | When |
+| --- | --- | --- |
+| 404 | `DL_ENV_NOT_FOUND` | A stranger, or an unknown or deleted environment or version. A stranger cannot tell an environment from none. |
+| 403 | `DL_ENV_FORBIDDEN` | A member pinning a version that was never promoted. |
+| 409 | `DL_ENV_CONFLICT` | A version that takes no new sandbox, such as `deprecated` or `building`, or an environment with no promoted version. |
+| 422 | `DL_ENV_ARTIFACT_MISSING` | No ready Datalayer artifact on the plane. The body lists the variants and planes that have one. |
+| 503 | `DL_ENV_UNAVAILABLE` | `DATALAYER_RUNTIMES_API_KEY` is not set on Runtimes. |
+
+The Operator launches a user environment only when Runtimes asks for it. Runtimes presents `DATALAYER_RUNTIMES_API_KEY` in `X-API-Key`, which `plane up` sets on the Operator from the rc. The launch is cold, with no pool of its own: the pod pulls the ECR digest Runtimes resolved, `IfNotPresent`, with the `ecr-environments` pull secret beside `reg-creds`.
+
+The size class gives the pod its resources and its burning rate:
+
+| Class | CPU | Memory | Credits a second |
+| --- | --- | --- | --- |
+| `small` | 1 | 2 GiB | 0.0008 |
+| `medium` | 4 | 8 GiB | 0.0016 |
+| `large` | 8 | 16 GiB | 0.0032 |
+
+Requests equal limits, on any runtime node. The rates live in `datalayer_common.size_classes`, in the Operator chart's `operator.env`, and in `up.sh`, and a test fails when they disagree. To change one on a plane, set `DATALAYER_SIZE_CLASS_SMALL_BURNING_RATE`, or the `MEDIUM` or `LARGE` variable, in the rc and reinstall the Operator.
+
+What the Operator refuses, before anything is reserved:
+
+| Code | Status | When |
+| --- | --- | --- |
+| `DL_ENV_CAPABILITY_UNSUPPORTED` | 422 | A GPU class. Datalayer runs no GPU nodes, so the error names Modal and Daytona. |
+| `DL_ENV_PULL_SECRET_STALE` | 503 | The `ecr-environments` secret is missing, or was last refreshed more than 11 hours ago (`DATALAYER_ECR_ENVIRONMENTS_PULL_SECRET_MAX_AGE_HOURS`). This applies to every pod pulling from ECR, warm-pool and restored pods included. Check the refresher CronJob. |
+| `DL_ENV_SIZE_CLASS_UNPRICED` | 503 | The class has no positive rate; the error names the variable to set. |
+| `DL_ENV_FORBIDDEN` | 403 | The request did not present the Runtimes key. |
+| `DL_ENV_SPEC_INVALID`, `DL_ENV_ARTIFACT_MISSING` | 422 | The artifact is malformed or absent. |
+
+A user environment's pod is labelled `environments.datalayer.io/uid` and `environments.datalayer.io/version`, and annotated with its digest. The Operator culls it when its credits expire, from the timer the warm pools already run, so a plane needs at least one RuntimePool. It is not culled for idleness.
+
+The Operator deploys after IAM, which already accepts the environment on reservations, and after a Runtimes that sends the artifact.
+
+## Usage by environment
+
+```bash
+curl -s -H "Authorization: Bearer $DATALAYER_API_KEY" \
+  "$DATALAYER_IAM_URL/api/iam/v1/usage/user?environment_uid=<uid>&environment_version=<uid>:<n>"
+```
+
+`environment_uid` keeps the runs of one environment, and `environment_version` narrows it to a version. A version without its environment is refused with `422`. The environment rides on the usage record's metadata, a child document the parent query cannot filter on, so the filter applies to the rows the route reads, the newest first.
+
+## Roll back
+
+Put back the digest recorded before the deploy under the tag, then reinstall:
+
+```bash
+docker pull $DATALAYER_DOCKER_REGISTRY/runtimes@sha256:<recorded>
+docker tag $DATALAYER_DOCKER_REGISTRY/runtimes@sha256:<recorded> $DATALAYER_DOCKER_REGISTRY/runtimes:<tag>
+docker push $DATALAYER_DOCKER_REGISTRY/runtimes:<tag>
+p reup datalayer-runtimes
+```
+
+The collections can stay: nothing else reads them. IAM keeps accepting the environment dimensions after a Runtimes rollback, and an IAM rollback must wait until no Operator sends them.

@@ -1,0 +1,292 @@
+---
+sidebar_position: 2
+---
+
+import ModalImage from "react-modal-image";
+
+# Runtime Environments
+
+## Runtime Environments Specification
+
+Runtime Environments define:
+
+- The libraries available in its Docker image.
+- The mounted [Runtime Contents](./runtime-contents).
+- Some Environment Variables.
+- The default number of CPU/GPU and memory resources.
+- A template for the Runtime given-name.
+- Snippets.
+- Links to examples.
+
+The complete specification [is available here](https://github.com/datalayer/services/blob/main/operator/etc/crd/runtime-environment.yaml) and the following sections show simple examples.
+
+## Contents: selected by uid
+
+An Environment names what it brings by the **`spec.uid`** of each
+[Runtime Content](./runtime-contents), and where it appears in the runtime:
+
+```yaml
+spec:
+  contents:
+    - uid: 01M0YX0MXYD8YZVMJW016KTB4M # nfs-models-oss-content
+      mount: /home/datalayer/models/datalayer-oss
+      permissions: ro
+```
+
+`permissions` narrows the content's own access and is never wider than it;
+absent means the content's own. The name after `#` is a comment for the
+reader. An entry written the earlier way — `name:` instead of `uid:` — is
+not a selection: the Operator refuses to spawn **any** runtime of that
+Environment, pool pods included, and says so at startup and on every
+reconcile (`plane logs datalayer-operator | grep startup_check`). See
+[the Operator page](/services/operator/#runtime-contents-and-environments)
+for what is resolved and mounted at launch.
+
+## Apply the platform definitions
+
+The platform's Environments live in the Services repository under
+`plane/etc/specs/runtime-environments/{prod,dev,oss}/`. They are applied
+with `kubectl` — no Plane command applies them, and redeploying the Operator
+leaves them as they are — after the Runtime Contents they select:
+
+```bash
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-contents/
+kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+kubectl get runtime-environments -n datalayer-runtimes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.contents[*].uid}{"\n"}{end}'
+```
+
+Each Environment must list the uids it selects; the Operator picks a
+re-applied Environment up within a minute, without a restart.
+
+## Manage the Environments
+
+```bash
+kubectl get runtime-environments.datalayer.io -A
+kubectl get runtime-environments.datalayer.io -o yaml -A
+```
+
+## Runtime Launcher
+
+The information provided in the specification is used when by the Runtime Launcher.
+
+<ModalImage
+  small="https://images.datalayer.io/legacy/jupyter-kernels/env.png"
+  large="https://images.datalayer.io/legacy/jupyter-kernels/env.png"
+  alt=""
+/>
+
+## Platform and User Environments
+
+The Platform Administrator is responsible for provisioning the Platform Environments.
+
+:::note
+
+User Environments, which accounts and organizations define, version and build themselves, are on the [Environments](/services/runtimes/environments/) page, with what of them runs today.
+
+:::
+
+### Nothing unsigned runs
+
+Once a User Environment's build produces an artifact — an image under `environments/` in the registry — the Operator will not start a pod from it, warm-pool pods included, unless Datalayer's own signature is on that exact digest (PLAN_ENV.md E1-09, D-11). This runs today, code-complete and unit-tested, ahead of the first artifact it will ever check: it fails closed on purpose, so there is nothing to switch on later.
+
+- **What is checked, and what is not.** Only a reference under `environments/` — the pipeline's own namespace — is checked at all. A platform image on OVH is not signed and launches unchecked until E1-28 moves the platform environments onto the same pipeline; checking them today would stop every runtime on the plane.
+- **A tag is refused before a signature is even asked for.** A signature is on content, and a tag can be moved after it was verified, so an `environments/` image is only ever launched by its digest — `…@sha256:<hex>`, never `…:<tag>`.
+- **The check.** `cosign verify --key <the KMS key> <image>`, run once per digest and cached — a pass for an hour (a digest's verdict cannot change, it is content), a refusal for 30 seconds (the usual reason is a signature not pushed yet, and a pool retrying for an hour on a stale no would outlive the problem).
+- **It fails closed.** No `DATALAYER_ENVIRONMENTS_KMS_KEY` set on the Operator, no `cosign` binary, a check that cannot be run, one that never answers: every one of these refuses the pod, naming which. "We could not check" is never an answer that starts a container.
+- **What a refusal looks like**, in the Operator's log and in the pod's own event: `DL_ENV_SIGNATURE_INVALID`, naming the image, the digest, and the reason `cosign` gave — a missing signature, one from another key, or a tampered payload.
+- **Deploying it**: set `DATALAYER_ENVIRONMENTS_KMS_KEY` (the same `awskms:///alias/…` cosign itself takes) and `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` if the default 20 seconds is wrong for this plane, and make sure `cosign` is on the Operator image's `PATH` — nothing else to configure. Until the key is set, every `environments/` pod is refused, which is expected: there is no artifact to launch before [E1-06](/services/runtimes/environments/#builds) deploys the registry and the builder.
+
+## The home
+
+Every Environment declares **`spec.home`**, where its image's user lives: `/home/datalayer` for every platform image, as `sandbox-contract/v1` fixes it. The Operator mounts home folders, Contents and Volumes under it. It refuses to spawn any runtime of an Environment that declares no home, or a different one, because the Node Mount Gateway delivers under `/home/datalayer` whatever the image expects. The custom resource requires the field, so an Environment without it is refused when it is applied.
+
+## Moving the platform to `/home/datalayer`
+
+The platform's images, Environments and Operator left the Jupyter images' `jovyan` home for `/home/datalayer` in one change, the identity of `sandbox-contract/v1`. On each plane it ships as one cut, in the order below, and rolls back the same way. Run everything from the Services repository with the plane's rc sourced, `source ~/.datalayer/datalayerrc-r1` for r1.
+
+### Before the cut
+
+1. **Release `datalayer-core` with the new home.** The Operator and Contents images install `datalayer-core` from PyPI, and an Operator on a core whose `RUNTIME_HOME_MOUNT_PATH` is still the old home refuses every Environment that declares `/home/datalayer`. Cut the release, raise `datalayer-core` to it in `common/pyproject.toml` and `contents/pyproject.toml`, and give the Operator and Contents images new tags: in their Makefiles and in the `--set …image=` lines of `plane/datalayer_plane/sbin/up.sh`. Then the cut overwrites no image, and a rollback is the previous tags. Check the wheel:
+
+   ```bash
+   pip download datalayer-core==<version> --no-deps -d /tmp/core
+   unzip -p /tmp/core/datalayer_core-<version>-*.whl datalayer_core/contents_node_mount_gateway.py | grep RUNTIME_HOME_MOUNT_PATH
+   ```
+
+2. **Build and push the runtime images**, each after its base: `jupyter-python` 0.2.0, then `jupyter-python-cuda` 0.3.0, then `jupyter-ai-cuda` 0.3.0 and `jupyter-pytorch-cuda` 0.1.0, and `jupyter-geocat` 0.1.0 and `jupyter-server` 0.1.0 on `jupyter-python`. The tags are in each Makefile. The CUDA images, `jupyter-python-cuda`, `jupyter-ai-cuda` and `jupyter-pytorch-cuda`, matter only on a plane with GPU nodes. No Datalayer plane has one today, so leave them out there: their Environments are applied with the rest and cannot be scheduled on their GPU request, as before the move.
+
+   ```bash
+   # With GPU nodes: jupyter-python jupyter-python-cuda jupyter-ai-cuda jupyter-pytorch-cuda jupyter-geocat jupyter-server
+   for image in jupyter-python jupyter-geocat jupyter-server; do
+     (cd plane/etc/dockerfiles/$image && make build-dev push) || break
+   done
+   ```
+
+   `jupyter-pytorch-cuda` pre-downloads a gated model only when `HF_TOKEN` is set. Its Makefile passes the token as the `hf_token` build secret, so it never reaches a layer. Without it, the image builds without the model. Check each image before going on: nothing is left in the old home.
+
+   ```bash
+   docker run --rm --entrypoint tini $DATALAYER_DOCKER_REGISTRY/jupyter-python:0.2.0 -- sh -c 'id; ls -A /home'
+   # uid=1000(datalayer) gid=100(users) groups=100(users)
+   # datalayer
+   ```
+
+3. **Record what runs**, for the rollback: the Operator's and Contents' images by digest, and the definition and Environments as they are.
+
+   ```bash
+   kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}' | grep -E 'operator|contents' > before-images.txt
+   kubectl get runtime-environments -n datalayer-runtimes -o yaml > before-environments.yaml
+   ```
+
+4. **Pre-pull the new images** on the runtime nodes, so the first launches do not wait for them: `plane k8s-prepull-cpu`, and `plane k8s-prepull-gpu-cuda` on a plane with GPU nodes.
+
+### The cut
+
+1. **The definition**, which now requires `spec.home`. The Operator chart carries the same definition, so a later `p reup operator` keeps it.
+
+   ```bash
+   kubectl apply -f operator/etc/crd/runtime-environment.yaml
+   ```
+
+2. **The Environments**, each declaring `home: /home/datalayer` and the new image. `oss/llama-cpp-cuda.yaml` stays out of the cut: its image cannot be rebuilt, it declares no home, and the definition refuses it.
+
+   ```bash
+   kubectl apply -n datalayer-runtimes -f plane/etc/specs/runtime-environments/prod/
+   ```
+
+   On a plane that runs the dev or oss set, apply that directory the same way, leaving `llama-cpp-cuda.yaml` out.
+
+3. **The Operator**, built on the released core. Until it runs, launches of the new Environments get their mounts in the wrong home, so keep steps 2 and 3 close together.
+
+   ```bash
+   (cd plane/etc/dockerfiles/datalayer-operator && make build-dev push) && p reup operator
+   plane logs datalayer-operator | grep startup_check
+   ```
+
+4. **Contents**, built on the released core. Its API, worker and bridge share the image.
+
+   ```bash
+   (cd plane/etc/dockerfiles/datalayer-contents && make build-dev push) && p reup contents
+   ```
+
+5. **The warm pools**, whose idle pods still run the old images until they are replaced. Replace only the `available` ones. A pool pod `assigned` to somebody is that person's running runtime, and it keeps its old image until the session ends.
+
+   ```bash
+   kubectl delete pods -n datalayer-runtimes -l runtime-pools.datalayer.io/pod-status=available
+   ```
+
+6. **Jupyter Server and the jump hosts**, when they move in the same window: raise `jupyter-server` to 0.1.0 and `ssh` to 0.0.7 in `plane/datalayer_plane/sbin/up.sh`, editing the `--set …image=` lines by their pattern, and reinstall those releases with `p reup`. The jump host's login becomes `datalayer@`.
+
+### Check
+
+Launch a runtime of every Environment the plane can schedule. Without GPU nodes, the GPU Environments cannot be scheduled, whatever their home, and an Environment that no pool names cannot be spawned at all. In each, `id` answers `uid=1000(datalayer) gid=100(users)`, `echo $HOME` answers `/home/datalayer`, `ls /home` lists `datalayer` alone, and the home folder and the Environment's Contents are under `/home/datalayer`.
+
+A runtime from a pool is one pod of several containers, and the Environment's image runs in the container named `jupyter`; the `agent-runtimes` container beside it keeps `HOME=/tmp`. Claim a runtime, read that container, and terminate the runtime by its pod name:
+
+```bash
+datalayer sandboxes create datalayer --environment ai-agents-env
+kubectl exec -n datalayer-runtimes runtime-<id> -c jupyter -- sh -c 'id; echo $HOME; ls -A /home; find $HOME -maxdepth 2 -type l'
+datalayer agents delete runtime-<id>
+```
+
+The Contents arrive as links under the home, `datasets/<name>` and `models/<name>`, each pointing at its mount under `/mnt/datalayer`. If `sandboxes create` has not returned after a minute, the runtime is usually already there: the newest `assigned` pod of the pool is yours.
+
+### Roll back
+
+Everything goes back together, the definition first, because the previous Environments declare no home. Take the definition and the Environments from the Services revision before the move, `e3df065f^`:
+
+```bash
+git show e3df065f^:operator/etc/crd/runtime-environment.yaml | kubectl apply -f -
+git archive e3df065f^ plane/etc/specs/runtime-environments | tar -x -C /tmp/before
+kubectl apply -n datalayer-runtimes -f /tmp/before/plane/etc/specs/runtime-environments/prod/
+```
+
+Then put the Operator and Contents back on their previous tags, the `--set …image=` lines of `up.sh` before the move, whose digests `before-images.txt` records. Run `p reup` for both, and replace the warm pool pods again. The previous runtime images keep their tags and are never overwritten by the move.
+
+## Simple Environment Example
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: RuntimeEnvironment
+metadata:
+  name: python-simple-env
+  namespace: datalayer-runtimes
+  labels:
+    project.datalayer.io/name: poc
+spec:
+  title: Python Simple Environment
+  description: A Python environment for simple coding.
+  language: python
+  owner: datalayer
+  visibility: public
+  example: https://raw.githubusercontent.com/datalayer/examples/e8390ce9eb4aee36721eb6e7cdc31ef8455ff359/python-simple/python-simple-example.ipynb
+  dockerImage: ${DATALAYER_DOCKER_REGISTRY}/datalayer/jupyter-python:0.2.0
+  home: /home/datalayer
+  kernel:
+    givenNameTemplate: A Python kernel for simple coding.
+  resourcesRanges:
+    default:
+      requests:
+        cpu: "250m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+EOF
+```
+
+## Xarray Environment Example
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: datalayer.io/v1
+kind: RuntimeEnvironment
+metadata:
+  name: xarray-env
+  namespace: datalayer-runtimes
+  labels:
+    project.datalayer.io/name: dev
+spec:
+  title: XArray Environment
+  description: |
+    A environment for analysis with Xarray. **[xarray](https://github.com/pydata/xarray)** (pronounced "ex-array", formerly known as **xray**) is an open source project and Python package that makes working with labelled multi-dimensional arrays simple, efficient, and fun!
+
+    **Typical use cases**
+
+    EO (Earth observation) analysis.
+
+    **Mounted contents**
+
+    Analysis-ready, cloud-optimized (ARCO) from Sentinel-2 mission:Lland monitoring constellation of two satellites that provide high resolution optical imagery and provide continuity for the current SPOT and Landsat missions. The mission provides a global coverage of the Earth's land surface every 5 days, making the data of great use in on-going studies. L1C data are available from June 2015 globally. L2A data are available from November 2016 over Europe region and globally since January 2017.
+
+    ![](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2022/09/copernicus_sentinel_family/24451531-1-eng-GB/Copernicus_Sentinel_family_pillars.jpg)
+
+    **Hardware recommandation for large scale analysis**
+
+    - [x] GPU (CUDA > 11)
+    - [x] GPU Memory: Minimum 8BG
+
+  language: python
+  owner: datalayer
+  visibility: public
+  example: https://raw.githubusercontent.com/datalayer/examples/e8390ce9eb4aee36721eb6e7cdc31ef8455ff359/python-simple/python-simple-example.ipynb
+  dockerImage: 9ol9b008.c1.bhs5.container-registry.ovh.net/datalayer/jupyter-python:0.2.0
+  home: /home/datalayer
+  kernel:
+    givenNameTemplate: A kernel for analysis with XArray.
+  snippets:
+    - title: Useful imports
+      code: |
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import pandas as pd
+  resourcesRanges:
+    default:
+      requests:
+        cpu: "250m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+EOF
+```

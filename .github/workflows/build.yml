@@ -54,3 +54,21 @@ jobs:
             --no-progress
             "**/*.md"
             "**/*.mdx"
+
+  build_docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install documentation dependencies
+        working-directory: docs
+        run: npm ci --no-audit --no-fund
+      - name: Build documentation and reject broken internal links
+        working-directory: docs
+        run: npm run build

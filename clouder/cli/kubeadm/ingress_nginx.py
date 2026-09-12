@@ -3,16 +3,21 @@
 import typer
 from rich import print
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
+from ...util.wait import wait_with_spinner
 
-from ..ctx import get_current_context
 from ...util.utils import SSH_FOLDER
 
 from ._helpers import (
+    _print_step_header,
+    resolve_kubeadm_cloud_context,
+    resolve_kubeadm_cluster_name,
+    _load_cluster_metadata,
     _resolve_cluster_vms,
     _resolve_ssh_key_for_cluster,
     _ssh_cmd,
     _ssh_cmd_stream,
+    _update_cluster_metadata,
 )
 
 
@@ -21,6 +26,36 @@ from ._helpers import (
 # ---------------------------------------------------------------------------
 
 _NGINX_NAMESPACE = "datalayer-nginx"
+
+
+class IngressNginxDeprecatedError(Exception):
+    """Raised when a deprecated ingress-nginx command is invoked.
+
+    Datalayer clusters use Traefik for ingress. The ingress-nginx commands are
+    kept only so this clear error is raised instead of silently provisioning an
+    unsupported controller.
+    """
+
+
+def _raise_nginx_deprecated() -> "None":
+    """Print guidance and raise a deprecation error for ingress-nginx commands."""
+    print(
+        Panel(
+            "[bold red]ingress-nginx is deprecated and no longer supported.[/bold red]\n\n"
+            "Datalayer clusters now use [bold]Traefik[/bold] for ingress and load balancing.\n\n"
+            "Use instead:\n"
+            "  [cyan]clouder kubeadm enable-ingress-traefik <cluster>[/cyan]\n"
+            "  [cyan]clouder kubeadm repair-load-balancer <cluster>[/cyan]\n"
+            "  [cyan]clouder kubeadm disable-ingress-traefik <cluster>[/cyan]",
+            title="Deprecated: ingress-nginx",
+            border_style="red",
+        )
+    )
+    raise IngressNginxDeprecatedError(
+        "clouder kubeadm enable/disable-ingress-nginx is deprecated; use Traefik "
+        "(enable-ingress-traefik / repair-load-balancer / disable-ingress-traefik)."
+    )
+
 
 _SCRIPT_INSTALL_INGRESS_NGINX = """
 set -euo pipefail
@@ -61,11 +96,12 @@ def register(kubeadm_app: typer.Typer):
 
     @kubeadm_app.command("enable-ingress-nginx")
     def kubeadm_enable_ingress_nginx(
-        name: str = typer.Argument(..., help="Cluster name."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     ):
-        """Enable ingress load balancing: deploy ingress-nginx + Azure Load Balancer.
+        """Enable ingress load balancing: deploy ingress-nginx Helm chart + Cloud Load Balancer.
 
         Deploys ingress-nginx in NodePort mode on the cluster, creates an Azure
         Load Balancer with a public IP, and wires LB rules (80/443) to the
@@ -75,16 +111,20 @@ def register(kubeadm_app: typer.Typer):
         upgrade-or-install, the LB and public IP use create-or-update, and
         NIC backend pool membership is checked before adding.
         """
+        _raise_nginx_deprecated()
         import os as _os
 
-        (cloud, context_id) = get_current_context()
+        name = resolve_kubeadm_cluster_name(name)
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud != "azure":
             typer.echo("Load balancer setup is currently only supported for Azure.", err=True)
             raise typer.Exit(1)
 
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
         workers = cluster["workers"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or "azureuser"
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
         if not workers:
@@ -110,7 +150,7 @@ def register(kubeadm_app: typer.Typer):
 
         print(Panel(
             f"[bold]Cluster:[/bold]  {name}\n"
-            f"[bold]Master:[/bold]   {master['name']} ({master['ip']})\n"
+            f"[bold]Masters:[/bold]  {master['name']} ({master['ip']})\n"
             f"[bold]Workers:[/bold]  {', '.join(w['name'] for w in workers)}\n"
             f"[bold]RG:[/bold]       {rg}\n\n"
             f"This will:\n"
@@ -125,23 +165,30 @@ def register(kubeadm_app: typer.Typer):
             raise typer.Abort()
 
         # ----- Pre-check: verify kubectl is available on master -----
-        check = _ssh_cmd(master["ip"], user, key_path, "which kubectl", check=False)
+        check = _ssh_cmd(master["ip"], resolved_user, key_path, "which kubectl", check=False)
         if check.returncode != 0:
             print("[red]kubectl not found on master node.[/red]")
-            print(f"[yellow]Run 'clouder kubeadm setup {name}' first to install the cluster.[/yellow]")
+            print(
+                Panel.fit(
+                    f"[bold cyan]clouder kubeadm setup {name}[/bold cyan]",
+                    title="Prerequisite",
+                    subtitle="Run this first to install the cluster",
+                    border_style="bright_yellow",
+                )
+            )
             raise typer.Exit(1)
 
         # ----- Step 1: Deploy ingress-nginx on the cluster -----
-        print("\n[bold]Step 1/4: Deploying ingress-nginx controller...[/bold]")
-        rc = _ssh_cmd_stream(master["ip"], user, key_path, _SCRIPT_INSTALL_INGRESS_NGINX)
+        _print_step_header(1, 4, "Deploying ingress-nginx controller")
+        rc = _ssh_cmd_stream(master["ip"], resolved_user, key_path, _SCRIPT_INSTALL_INGRESS_NGINX)
         if rc != 0:
             print("[red]Failed to deploy ingress-nginx.[/red]")
             raise typer.Exit(1)
 
         # ----- Step 2: Get the NodePort assignments -----
-        print("\n[bold]Step 2/4: Reading NodePort assignments...[/bold]")
+        _print_step_header(2, 4, "Reading NodePort assignments")
         result = _ssh_cmd(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             f"kubectl -n {_NGINX_NAMESPACE} get svc ingress-nginx-controller "
             "-o jsonpath='{.spec.ports[?(@.name==\"http\")].nodePort} {.spec.ports[?(@.name==\"https\")].nodePort}'",
             check=False,
@@ -161,7 +208,7 @@ def register(kubeadm_app: typer.Typer):
         print(f"  HTTPS NodePort: [cyan]{https_nodeport}[/cyan]")
 
         # ----- Step 3: Create Azure Load Balancer -----
-        print("\n[bold]Step 3/4: Creating Azure Load Balancer...[/bold]")
+        _print_step_header(3, 4, "Creating Azure Load Balancer")
         from ...cloud.azure.api import create_azure_load_balancer
 
         # Get location from one of the VMs
@@ -188,7 +235,10 @@ def register(kubeadm_app: typer.Typer):
                 "public_ip_allocation_method": "Static",
             },
         )
-        public_ip = ip_poller.result()
+        public_ip = wait_with_spinner(
+            lambda: ip_poller.result(),
+            f"Creating load balancer public IP {lb_ip_name}",
+        )
 
         sub_id = context_id
         frontend_name = "lb-frontend"
@@ -261,7 +311,10 @@ def register(kubeadm_app: typer.Typer):
         }
 
         lb_poller = network_client.load_balancers.begin_create_or_update(rg, lb_name, lb_params)
-        lb = lb_poller.result()
+        lb = wait_with_spinner(
+            lambda: lb_poller.result(),
+            f"Creating load balancer {lb_name}",
+        )
 
         backend_pool_id = None
         for pool in (lb.backend_address_pools or []):
@@ -274,7 +327,7 @@ def register(kubeadm_app: typer.Typer):
         print(f"  Rules:          80 → :{http_nodeport},  443 → :{https_nodeport}")
 
         # ----- Step 4: Add worker NICs to backend pool -----
-        print("\n[bold]Step 4/4: Adding worker NICs to backend pool...[/bold]")
+        _print_step_header(4, 4, "Adding worker NICs to backend pool")
         from ...cloud.azure.api import add_nic_to_lb_backend_pool
 
         for worker in workers:
@@ -289,6 +342,88 @@ def register(kubeadm_app: typer.Typer):
         # ----- Done -----
         run_url = _os.environ.get("DATALAYER_RUN_URL", "")
         run_host = run_url.replace("https://", "").replace("http://", "").rstrip("/") if run_url else ""
+        # Wait until public IP is fully assigned.
+        if not public_ip.ip_address:
+            import time as _time
+
+            print(f"\n[bold]Waiting for load balancer IP assignment for {lb_ip_name}...[/bold]")
+            for _ in range(60):
+                refreshed = network_client.public_ip_addresses.get(rg, lb_ip_name)
+                if refreshed and refreshed.ip_address:
+                    public_ip = refreshed
+                    break
+                _time.sleep(2)
+            if not public_ip.ip_address:
+                print(f"[red]Timed out waiting for load balancer IP assignment for {lb_ip_name}.[/red]")
+                raise typer.Exit(1)
+
+        print(f"\n[bold]Load balancer IP:[/bold] [green]{public_ip.ip_address}[/green]")
+
+        metadata = _load_cluster_metadata(name) or {}
+        saved_domain = str(metadata.get("ingress_nginx_domain") or "").strip()
+        default_domain = saved_domain or str(metadata.get("public_hostname") or "").strip() or f"{name}.datalayer.run"
+
+        # Show DNS guidance before prompting for hostname validation.
+        print(Panel(
+            f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
+            f"  [bold]{default_domain}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
+            f"  Update your DNS provider to point [cyan]{default_domain}[/cyan]\n"
+            f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
+            f"  You can verify with:  [dim]dig +short {default_domain}[/dim]",
+            title="⚠ DNS Configuration Required",
+            border_style="yellow",
+        ))
+
+        import socket as _socket
+        import time as _time
+
+        def _resolve_domain_ip(hostname: str) -> str | None:
+            try:
+                return _socket.gethostbyname(hostname)
+            except Exception:
+                return None
+
+        domain_name = ""
+        print("\n[bold]DNS configuration:[/bold]")
+        while True:
+            if default_domain:
+                domain_name = Prompt.ask("Hostname mapped to this load balancer", default=default_domain).strip()
+            else:
+                domain_name = Prompt.ask("Hostname mapped to this load balancer").strip()
+            domain_name = domain_name.replace("https://", "").replace("http://", "").strip().rstrip("/")
+
+            if not domain_name:
+                print("[yellow]Hostname is required to continue.[/yellow]")
+                continue
+
+            print(f"  Checking DNS resolution for [cyan]{domain_name}[/cyan]...")
+            resolved_ip = None
+            for attempt in range(1, 11):
+                resolved_ip = _resolve_domain_ip(domain_name)
+                if resolved_ip == public_ip.ip_address:
+                    print(f"  [green]DNS resolved correctly: {domain_name} -> {resolved_ip}[/green]")
+                    _update_cluster_metadata(name, {
+                        "ingress_nginx_domain": domain_name,
+                        "public_hostname": domain_name,
+                    })
+                    print(f"  [green]Saved ingress-nginx domain in kubeadm metadata:[/green] {domain_name}")
+                    break
+                if resolved_ip:
+                    print(
+                        f"  Attempt {attempt}/10: [yellow]{domain_name} resolves to {resolved_ip}, "
+                        f"expected {public_ip.ip_address}[/yellow]"
+                    )
+                else:
+                    print(f"  Attempt {attempt}/10: [yellow]DNS not resolved yet for {domain_name}[/yellow]")
+                if attempt < 10:
+                    _time.sleep(5)
+
+            if resolved_ip == public_ip.ip_address:
+                break
+
+            if not Confirm.ask("DNS not ready. Retry with a hostname?", default=True):
+                print("[red]DNS validation is required before persisting hostname.[/red]")
+                raise typer.Exit(1)
 
         print(Panel(
             f"[green]Ingress NGINX + load balancer enabled for cluster '{name}'![/green]\n\n"
@@ -299,31 +434,11 @@ def register(kubeadm_app: typer.Typer):
             title="Ingress NGINX + LB Ready",
         ))
 
-        # ----- DNS Configuration Reminder -----
-        if run_host:
-            print(Panel(
-                f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]{run_host}[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Update your DNS provider to point [cyan]{run_host}[/cyan]\n"
-                f"  to the Load Balancer IP [cyan]{public_ip.ip_address}[/cyan].\n\n"
-                f"  You can verify with:  [dim]dig +short {run_host}[/dim]",
-                title="⚠ DNS Configuration Required",
-                border_style="yellow",
-            ))
-        else:
-            print(Panel(
-                f"[bold yellow]Configure your DNS A record:[/bold yellow]\n\n"
-                f"  [bold]<your-domain>[/bold]  →  [bold]{public_ip.ip_address}[/bold]\n\n"
-                f"  Set DATALAYER_RUN_URL to enable automatic DNS reminders.\n"
-                f"  Example: export DATALAYER_RUN_URL=https://prod1.datalayer.run",
-                title="⚠ DNS Configuration Required",
-                border_style="yellow",
-            ))
-
     @kubeadm_app.command("disable-ingress-nginx")
     def kubeadm_disable_ingress_nginx(
-        name: str = typer.Argument(..., help="Cluster name."),
-        user: str = typer.Option("azureuser", "--admin-user", "-u", help="SSH username on the VMs."),
+        name: str | None = typer.Argument(None, help="Cluster name. If omitted, uses default kubeadm cluster."),
+        cloud: str | None = typer.Option(None, "--cloud", help="Target cloud provider (azure or aws). Defaults to cluster metadata or current context cloud."),
+        user: str | None = typer.Option(None, "--admin-user", "-u", help="SSH username on the VMs."),
         key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
         force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt."),
     ):
@@ -332,13 +447,17 @@ def register(kubeadm_app: typer.Typer):
         Deletes the Azure Load Balancer, its public IP, and uninstalls
         the ingress-nginx controller from the cluster.
         """
-        (cloud, context_id) = get_current_context()
+        _raise_nginx_deprecated()
+        name = resolve_kubeadm_cluster_name(name)
+        cloud, context_id = resolve_kubeadm_cloud_context(cloud=cloud, cluster_name=name)
         if cloud != "azure":
             typer.echo("Load balancer commands are currently only supported for Azure.", err=True)
             raise typer.Exit(1)
 
-        cluster = _resolve_cluster_vms(name)
+        cluster = _resolve_cluster_vms(name, cloud=cloud, context_id=context_id)
         master = cluster["master"]
+        metadata = _load_cluster_metadata(name) or {}
+        resolved_user = user or metadata.get("admin_username") or "azureuser"
         rg = master["resource_group"]
         key_path = key and str(SSH_FOLDER / key) or _resolve_ssh_key_for_cluster(name)
 
@@ -375,7 +494,7 @@ def register(kubeadm_app: typer.Typer):
         # Step 3: Remove ingress-nginx from the cluster
         print("[bold]Removing ingress-nginx from cluster...[/bold]")
         rc = _ssh_cmd_stream(
-            master["ip"], user, key_path,
+            master["ip"], resolved_user, key_path,
             f"helm uninstall ingress-nginx --namespace {_NGINX_NAMESPACE} 2>/dev/null || true; "
             f"kubectl delete namespace {_NGINX_NAMESPACE} 2>/dev/null || true",
         )

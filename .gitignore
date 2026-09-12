@@ -3,6 +3,8 @@ openstack-api-ca.pem
 
 .*
 yarn.lock
+**/package-lock.json
+!docs/package-lock.json
 *.bundle.*
 lib/
 node_modules/
@@ -12,6 +14,8 @@ node_modules/
 .ipynb_checkpoints
 *.tsbuildinfo
 clouder/labextension
+
+**/package-lock.json
 
 clouder/static/*.js
 clouder/static/*.css

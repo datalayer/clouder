@@ -1,0 +1,18 @@
+---
+title: Availability
+slug: /operations/availability/
+---
+
+# Availability
+
+To create new Runtimes, the Datalayer services must be up-and-running.
+
+Any assigned Runtime will remain reachable even if the Datalayer services are completely down.
+
+The availability of Datalayer services can be viewed on this [Status page](https://status.datalayer.run).
+
+## Fault Tolerance
+
+Once the Runtime is assigned to its client, it is stateless and the Datalayer services can be completely down while keeping serving existing users.
+
+The access to the Runtime is assured by the Kubernetes Ingress.

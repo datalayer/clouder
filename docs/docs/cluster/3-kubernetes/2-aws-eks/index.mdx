@@ -10,7 +10,7 @@ Datalayer can be deployed on ☸️ Amazon Elastic Kubernetes Service (EKS) in y
 
 The diagram below is a **blueprint architecture** and should be used as a reference design for customer deployments. It illustrates a recommended node pool shape and service placement strategy that you can adapt to your security, networking, and cost constraints.
 
-For Kubernetes Alpha feature support (including checkpoint/restore-related flows), use the [Clouder K8S guide](/cluster/kubernetes/clouder/), which documents the Kubeadm-based path and required feature-gate configuration.
+For Kubernetes Alpha feature support (including checkpoint/restore-related flows), use the [Clouder Kubernetes guide](/cluster/kubernetes/clouder/), which documents the Kubeadm-based path and required feature-gate configuration.
 
 <div style={{maxWidth: 1000, width: 1000}}>
 <ModalImage
@@ -283,7 +283,7 @@ managedNodeGroups:
 #    privateNetworking: false
   - name: jupyter-medium-cpu
     labels:
-      role.datalayer.io/jupyter: "true"
+      role.datalayer.io/runtime: "true"
       node.datalayer.io/variant: "medium"
       node.datalayer.io/xpu: "cpu"
     instanceType: m5.xlarge

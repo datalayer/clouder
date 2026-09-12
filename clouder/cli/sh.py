@@ -35,7 +35,8 @@ def sh_sbin(ctx: typer.Context):
     args = ctx.args
     if not args:
         args = ["about"]
-    shell_args = ["shell"] + ["clouder", "sh"] + args
-    cmd = "-".join(shell_args[2:])
-    cmd_args = shell_args[0:2] + [cmd]
+    # Map positional words directly to the sbin script stem.
+    # Example: "k8s status" -> "k8s-status.sh", "about" -> "about.sh".
+    cmd = "-".join(args)
+    cmd_args = ["shell", "sbin", cmd]
     run_sbin(cmd_args)

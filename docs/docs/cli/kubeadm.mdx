@@ -1,53 +1,136 @@
 ---
 title: clouder kubeadm
-sidebar_position: 8
+sidebar_position: 9
 ---
 
 # clouder kubeadm
 
 Provision, set up, and manage Kubeadm Kubernetes clusters. Handles the full lifecycle: VM creation, software installation, cluster initialization, CRIU configuration, testing, kubeconfig retrieval, and cluster teardown.
 
+Alias: `clouder k` (for example, `clouder k ls`, `clouder k create my-cluster`).
+
 ## Overview
 
 ```bash
 # Create the VMs (1 master + 1 worker)
-clouder kubeadm vm-create --workers 1 k1
+clouder kubeadm create --workers 1 my-cluster
+
+# List locally known kubeadm clusters
+clouder kubeadm ls
+
+# Include node counts/readiness details (slower)
+clouder kubeadm ls --details
 
 # Set up Kubernetes (containerd 2.x, CRIU, buildah, Kubeadm, Flannel CNI, feature gates on all nodes)
-clouder kubeadm setup k1
+clouder kubeadm setup my-cluster
 
-# Fetch the kubeconfig to ~/.clouder/kubeconfig-k1
-clouder kubeadm get-config k1
+# Fetch the kubeconfig to ~/.clouder/kubeadm/r1/kubeconfig
+clouder kubeadm get-config my-cluster
+
+# Select cluster kubeconfig for current shell usage (fetches if missing)
+clouder kubeadm use my-cluster
 
 # Verify
-clouder kubectl k1 get nodes
-clouder kubectl k1 get pods -A
+clouder kubectl my-cluster get nodes
+clouder kubectl my-cluster get pods -A
 
 # Enable ingress with Traefik controller and cloud-specific load balancer setup
-clouder kubeadm enable-ingress-traefik k1
-clouder helm k1 ls -A
+clouder kubeadm enable-ingress-traefik my-cluster
+clouder helm my-cluster ls -A
 
 # Run the smoke test (Ingress + CRIU validation)
-clouder kubeadm smoke-test k1
+clouder kubeadm smoke-test my-cluster
 
 # Upgrade kubelet/Kubeadm/kubectl on all nodes (e.g. after bumping K8S_VERSION)
-clouder kubeadm upgrade-kubelet k1
+clouder kubeadm upgrade-kubelet my-cluster
+
+# Prune unhealthy worker Kubernetes nodes/VMs (interactive confirmation)
+clouder kubeadm prune my-cluster
+
+# Repair worker VMs that exist in cloud inventory but are missing from kubectl nodes
+clouder kubeadm repair my-cluster
+
+# Rebuild a damaged/empty cluster metadata file (~/.clouder/kubeadm/<name>/kubeadm.json)
+clouder kubeadm repair-config my-cluster
+
+# Re-provision the Traefik load balancer (AWS NLB / Azure Load Balancer)
+clouder kubeadm repair-load-balancer my-cluster
+
+# Remove one worker node (drain/delete k8s node + delete cloud VM)
+clouder kubeadm remove-node my-cluster my-cluster-node-1
 
 # Disable ingress
-clouder kubeadm disable-ingress-traefik k1
+clouder kubeadm disable-ingress-traefik my-cluster
 
 # Tear down the cluster and delete all cloud resources
-clouder kubeadm vm-terminate k1
+clouder kubeadm terminate my-cluster
 ```
 
 ## Commands
 
-### `clouder kubeadm vm-create`
+By default, commands below accept `<name>`. If a default is configured with
+`clouder kubeadm set-default <name>`, you can omit `<name>` and Clouder will
+use the persisted default cluster.
+
+Most operational commands also accept:
+
+- `--cloud azure|aws` to force the target provider when your current context is different.
+- If omitted, Clouder resolves cloud from cluster metadata first, then current context.
+
+### `clouder kubeadm ls`
+
+List kubeadm clusters known locally from `~/.clouder/kubeadm/<name>/kubeadm.json`.
+
+```bash
+clouder kubeadm ls
+```
+
+Optional:
+
+- `--cloud azure|aws` to filter clusters by provider.
+
+The command prints a table with cluster name, cloud, region, resource group,
+whether kubeconfig exists, and whether setup is marked complete.
+
+Use `--details` to include master/worker counts and readiness state:
+
+```bash
+clouder kubeadm ls --details
+```
+
+---
+
+### `clouder kubeadm set-default`
+
+Persist the default kubeadm cluster name in `~/.clouder/clouder.yaml`.
+
+```bash
+clouder kubeadm set-default <name>
+```
+
+Optional:
+
+- `--cloud azure|aws` to validate the selected cluster matches the expected provider.
+
+Examples:
+
+```bash
+clouder kubeadm set-default my-cluster
+
+# Now cluster name can be omitted on kubeadm commands that operate on existing clusters
+clouder kubeadm info
+clouder kubeadm get-config
+clouder kubeadm scale --workers 5
+```
+
+---
+
+### `clouder kubeadm create`
 
 Create VMs for a Kubeadm cluster: 1 master + N worker nodes on the same subnet.
 
 ```bash
-clouder kubeadm vm-create <name> [OPTIONS]
+clouder kubeadm create <name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -56,6 +139,7 @@ clouder kubeadm vm-create <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--workers` | `-w` | Number of worker nodes (default: `3`) |
 | `--region` | `-r` | Cloud region (e.g. `eastus`, `us-east-1`) |
 | `--resource-group` | `-g` | Resource group (Azure only) |
@@ -88,10 +172,30 @@ clouder kubeadm vm-create <name> [OPTIONS]
 
 All VMs share the same VNet, subnet, and NSG — they can communicate with each other on private IPs while being individually accessible via public IPs.
 
+After `create`, Clouder persists cluster metadata to
+`~/.clouder/kubeadm/<name>/kubeadm.json` for later commands (`setup`,
+`scale`, `info`, cloud helper commands). The file includes, at minimum:
+
+- `cloud` (`azure` or `aws`)
+- `region`
+- cloud context identifiers (`subscription_id` for Azure, `account_id` for AWS)
+- requested node shape/count (`requested_workers`, `master_size`, `node_size`)
+- image/AMI details and admin user
+- master/worker node names + IPs
+- network resource identifiers
+
 **Interactive prompts** (same as `clouder vm create`):
 1. Resource group — pick existing or create new
 2. Region — only if creating a new resource group
 3. SSH key — pick existing or generate new
+
+**Recent cloud-specific create safeguards:**
+
+- AWS now validates the selected context account against the active AWS credentials before provisioning.
+- AWS create uses deterministic region scoping (defaults to `us-east-1` when `--region` is omitted).
+- AWS validates EC2 key pair selection in-region before provisioning starts.
+- AWS create rolls back VPC/subnet/route table/IGW/security group resources if VM creation fails mid-flight.
+- `--os-disk-size` is validated with a minimum of 30 GB before provisioning starts.
 
 ---
 
@@ -105,13 +209,21 @@ clouder kubeadm setup <name> [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (must match the `vm-create` name) |
+| `name` (required) | Cluster name (must match the `create` name) |
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--admin-user` | `-u` | SSH username (default: `ubuntu`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 | `--k8s-version` | | Kubernetes version (default: `1.32`) |
+| `--node-label` | | Node label (`key=value`) applied after each worker becomes Ready. Repeatable or comma-separated. Defaults to runtime labels. |
+
+Default worker labels applied after each node becomes Ready:
+
+- `role.datalayer.io/runtime=true`
+- `node.datalayer.io/variant=medium`
+- `xpu.datalayer.io/cpu=true`
 
 **What it does (6 steps):**
 
@@ -122,15 +234,24 @@ clouder kubeadm setup <name> [OPTIONS]
 | 3. Install CNI | Master | Install Flannel CNI for pod networking |
 | 4. Kubeadm join | Workers | Join all worker nodes to the cluster |
 | 5. CRIU feature gates | All nodes | Enable `ContainerCheckpoint` feature gate on all kubelets (master + workers) |
-| 6. Cloud storage and load balancer bootstrap | Cloud-specific | Azure: deploy cloud config, install Azure Disk CSI (`managed-csi`) and Azure File CSI (`azure-nfs`). AWS: install AWS EBS CSI with default `gp3` StorageClass and install AWS Load Balancer Controller (instance profile preferred, static credentials fallback). |
+| 6. Cloud storage and load balancer bootstrap | Cloud-specific | Azure: deploy cloud config, install Azure Disk CSI (`managed-csi`) and Azure File CSI (`azure-nfs`). AWS: align node IAM profile usage, attach CSI IAM policies (`AmazonEBSCSIDriverPolicy`, `AmazonEFSCSIDriverPolicy`), set IMDS hop limit to `2`, install AWS EBS CSI (`gp3` default) and AWS EFS CSI (`aws-efs` StorageClass), then install AWS Load Balancer Controller. |
 
 :::note
 Azure storage setup requires a service principal. If `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` are set, they are used. Otherwise, Clouder attempts to create a scoped SP automatically.
 
-AWS storage setup prefers EC2 instance profiles on node VMs. If no instance profile is attached, Clouder falls back to the active AWS credentials in the current session.
+AWS storage setup prefers EC2 instance profiles on node VMs. During setup, Clouder aligns the instance profile across kubeadm nodes (when discoverable), ensures CSI policies are attached to the instance profile role, and updates IMDSv2 hop limit to `2` for metadata access from CSI controllers.
+
+If no instance profile is attached, Clouder falls back to the active AWS credentials in the current session for CSI bootstrap.
 
 On AWS, load balancer setup installs AWS Load Balancer Controller and expects node IAM permissions for ELB operations.
 :::
+
+AWS cloud integration details:
+
+- Storage: installs AWS EBS CSI and configures a default `gp3` StorageClass.
+- Shared FS storage: installs AWS EFS CSI and configures `aws-efs` StorageClass.
+- Load balancer: installs AWS Load Balancer Controller with cluster-aware settings.
+- Authentication preference: EC2 instance profile first, then fallback to active AWS credentials when needed.
 
 **Example:**
 
@@ -155,27 +276,87 @@ clouder kubeadm get-config <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
-The kubeconfig is saved to `~/.clouder/kubeconfigs/kubeconfig-<name>` with `600` permissions. The internal API server IP is automatically replaced with the master's public IP for remote access.
+The kubeconfig is saved to `~/.clouder/kubeadm/<name>/kubeconfig` with `600` permissions. The internal API server IP is automatically replaced with the master's public IP for remote access.
 
-Additionally, the kubelet client certificates (`apiserver-kubelet-client.crt` and `.key`) are fetched from the master and saved to `~/.clouder/kubeconfigs/<name>/`. These are needed for CRIU checkpoint API calls via the kubelet.
+Additionally, the kubelet client certificates (`apiserver-kubelet-client.crt` and `.key`) are fetched from the master and saved to `~/.clouder/kubeadm/<name>/`. These are needed for CRIU checkpoint API calls via the kubelet.
 
 **Example:**
 
 ```bash
 clouder kubeadm get-config my-cluster
 # Output:
-#   Kubeconfig saved to ~/.clouder/kubeconfigs/kubeconfig-my-cluster
-#   Kubelet client cert saved to ~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.crt
-#   Kubelet client key saved to ~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.key
+#   Kubeconfig saved to ~/.clouder/kubeadm/my-cluster/kubeconfig
+#   Kubelet client cert saved to ~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.crt
+#   Kubelet client key saved to ~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.key
 #
 #   Usage:
-#     export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-my-cluster
-#     export KUBELET_CLIENT_CERT=~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.crt
-#     export KUBELET_CLIENT_KEY=~/.clouder/kubeconfigs/my-cluster/apiserver-kubelet-client.key
+#     export KUBECONFIG=~/.clouder/kubeadm/my-cluster/kubeconfig
+#     export KUBELET_CLIENT_CERT=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.crt
+#     export KUBELET_CLIENT_KEY=~/.clouder/kubeadm/my-cluster/apiserver-kubelet-client.key
 #     kubectl get nodes
+```
+
+---
+
+### `clouder kubeadm terminate`
+
+Terminate all cluster resources for a kubeadm deployment.
+
+```bash
+clouder kubeadm terminate <name>
+```
+
+Cloud-specific behavior:
+
+- Azure: deletes VM-attached resources, load balancer artifacts, NSG/VNet, and optionally the resource group.
+- AWS: uses the cluster metadata region to discover and terminate EC2 instances, then tears down managed VPC networking resources.
+
+This ensures cleanup is scoped to the correct cloud primitives and avoids cross-region drift on AWS.
+
+---
+
+### `clouder kubeadm use`
+
+Select a kubeadm cluster as the default for Clouder commands and print the
+kubeconfig export needed for local `kubectl` usage.
+
+```bash
+clouder kubeadm use [name] [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+
+| Option | Description |
+|--------|-------------|
+| `--cloud` | Target cloud provider (`azure` or `aws`) |
+| `--admin-user`, `-u` | SSH username used only when kubeconfig must be fetched from master (default: `azureuser`) |
+| `--key`, `-i` | SSH key name from `~/.ssh/` used only when kubeconfig must be fetched |
+| `--print-export` | Print only `export KUBECONFIG=...` (for `eval`) |
+
+Behavior:
+
+- If `~/.clouder/kubeadm/<name>/kubeconfig` exists, it is used directly.
+- If it does not exist, Clouder fetches it from the master (same behavior as `get-config`), then uses it.
+- The selected cluster is persisted as the default shown by `clouder kubeadm ls` and used when a later kubeadm command omits `<name>`.
+- The command prints an export line to apply in your shell.
+
+Examples:
+
+```bash
+# Use explicit cluster
+clouder kubeadm use my-cluster
+
+# Use default cluster (set with set-default)
+clouder kubeadm use
+
+# Shell-friendly one-liner
+eval "$(clouder kubeadm use my-cluster --print-export)"
 ```
 
 ---
@@ -184,13 +365,20 @@ clouder kubeadm get-config my-cluster
 
 Show cluster information and next steps. Displays the current state of a Kubeadm cluster and lists useful commands for day-to-day operations as well as further setup steps.
 
+The command uses the VM inventory persisted in
+`~/.clouder/kubeadm/<name>/kubeadm.json`. It falls back to cloud discovery when
+that inventory is incomplete, so normal information lookup does not require
+active credentials for the cluster's cloud account.
+
 ```bash
-clouder kubeadm info <name>
+clouder kubeadm info [name]
 ```
+
+Optional flag: `--cloud azure|aws`.
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name |
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
 
 **Example:**
 
@@ -203,8 +391,19 @@ clouder kubeadm info my-cluster
 ### `clouder kubeadm scale`
 
 Scale the number of worker nodes in an existing Kubeadm cluster. Compares the desired worker count with the current count, then:
-- **Scale up**: creates new VMs, installs prerequisites, joins them to the cluster.
-- **Scale down**: drains and deletes the highest-numbered worker nodes.
+- **Scale up**: creates new VMs, installs prerequisites, upgrades kubelet/kubeadm/kubectl on each new worker, then joins workers to the cluster.
+- **Scale down**: removes nodes one by one using a least-loaded-first workflow with explicit completion waits.
+
+**Scale-down workflow (per node):**
+
+1. Identify the worker node with the fewest running pods (least-loaded priority).
+2. Mark that node unschedulable (`kubectl cordon`) and wait until the node is cordoned.
+3. Delete all evictable pods on that node (non-DaemonSet) and wait until they are fully terminated.
+4. Remove the Kubernetes node object, then delete the Azure VM and wait until deletion is complete.
+
+DaemonSet-managed pods are expected to remain on a cordoned node during this phase and are ignored by the completion wait.
+
+This sequence is repeated iteratively until the desired worker count is reached, with clear logs printed for every step.
 
 ```bash
 clouder kubeadm scale <name> [OPTIONS]
@@ -216,9 +415,12 @@ clouder kubeadm scale <name> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
 | `--workers` (required) | `-w` | Desired number of worker nodes |
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--os-disk-size-gb` | | OS disk size in GiB for newly created workers. Larger disks increase node ephemeral-storage capacity. |
+| `--node-label` | | Node label (`key=value`) applied after each new worker becomes Ready. Repeatable or comma-separated. Defaults to runtime labels. |
 | `--force` | `-f` | Skip confirmation prompt |
 
 **Example:**
@@ -227,18 +429,255 @@ clouder kubeadm scale <name> [OPTIONS]
 # Scale up to 5 workers
 clouder kubeadm scale my-cluster --workers 5
 
+# Scale up with larger worker OS disks (improves ephemeral-storage capacity)
+clouder kubeadm scale my-cluster --workers 5 --os-disk-size-gb 128
+
 # Scale down to 1 worker (force, no confirmation)
 clouder kubeadm scale my-cluster --workers 1 --force
 ```
 
+:::note
+Worker scaling automation currently supports Azure. Use `--cloud azure` when needed.
+:::
+
 ---
 
-### `clouder kubeadm vm-terminate`
+### `clouder kubeadm prune`
+
+Identify unhealthy worker Kubernetes nodes and cloud VMs, list them, and ask for confirmation before force deletion.
+
+```bash
+clouder kubeadm prune <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
+| `--force` | `-f` | Skip confirmation prompt |
+
+**What is considered unhealthy:**
+
+- Kubernetes worker node where `Ready != True`
+- Azure worker VM where `provisioning_state != Succeeded`
+- AWS worker VM where EC2 `state != running`
+
+When confirmed, Clouder force-deletes matching Kubernetes node objects and Azure VMs.
+
+**Example:**
+
+```bash
+# Interactive confirmation
+clouder kubeadm prune my-cluster
+
+# No prompt
+clouder kubeadm prune my-cluster --force
+```
+
+---
+
+### `clouder kubeadm repair`
+
+Detect worker VMs that exist in the cluster VM inventory but are not registered in Kubernetes nodes, then reconcile each missing worker with a full node setup and join flow.
+
+```bash
+clouder kubeadm repair <name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--admin-user` | `-u` | SSH username (default: metadata value, or `azureuser`/`ubuntu` by cloud) |
+| `--key` | `-i` | SSH key name from `~/.ssh/` |
+| `--node-label` | | Node label (`key=value`) applied after each reconciled worker becomes Ready. Repeatable or comma-separated. Defaults to runtime labels. |
+
+**What it does:**
+
+1. Lists VM inventory for the cluster (master + workers)
+2. Lists Kubernetes nodes via `kubectl get nodes` on the master
+3. Finds worker VMs missing from Kubernetes registration
+4. For each missing worker, runs full reconciliation:
+  - kubelet/kubeadm/kubectl upgrade
+  - node prerequisites setup
+  - kubeadm reset + fresh join
+  - feature-gate setup
+  - wait for Ready
+  - apply node labels
+
+**Examples:**
+
+```bash
+# Repair with default runtime labels
+clouder kubeadm repair my-cluster
+
+# Repair and apply custom labels
+clouder kubeadm repair my-cluster --node-label role.datalayer.io/runtime=true --node-label node.datalayer.io/variant=large
+```
+
+---
+
+### `clouder kubeadm repair-config`
+
+Rebuild a damaged, empty, or missing cluster metadata file
+(`~/.clouder/kubeadm/<name>/kubeadm.json`). Use this when commands such as
+`clouder kubeadm info` fail with a JSON decode error because the metadata file
+was truncated, emptied, or deleted.
+
+```bash
+clouder kubeadm repair-config [name] [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`). Defaults to current context cloud. |
+| `--force` | `-f` | Rebuild metadata even if the existing file is still valid. |
+| `--skip-ssh` | | Do not connect to the cluster over SSH; rely only on cloud inventory and prompts. |
+
+**What it does:**
+
+1. Detects whether the metadata file is missing, empty, or corrupt (and asks for confirmation before overwriting a valid file).
+2. Recovers VM inventory (master, workers, region, resource group / account / subscription) from the cloud provider.
+3. SSHes into the master (best effort) to recover the Kubernetes version, admin user, and Datalayer node labels from the live cluster.
+4. Prompts for anything that cannot be discovered automatically — most importantly the **SSH key name** — falling back to sensible defaults.
+5. Writes a fresh `~/.clouder/kubeadm/<name>/kubeadm.json`.
+
+:::note
+Information that is not stored on the cloud provider or the live cluster (for
+example the local SSH key used to access the nodes) cannot be recovered
+automatically and must be supplied interactively.
+:::
+
+**Examples:**
+
+```bash
+# Repair the default cluster's metadata
+clouder kubeadm repair-config my-cluster
+
+# Force a rebuild even though the current file is valid
+clouder kubeadm repair-config my-cluster --force
+
+# Rebuild from cloud inventory and prompts only, without SSH discovery
+clouder kubeadm repair-config my-cluster --skip-ssh
+```
+
+---
+
+### `clouder kubeadm repair-load-balancer`
+
+Re-provision the cloud load balancer used by the Traefik ingress controller.
+Use this when `clouder kubeadm info` reports **"No load balancer address
+detected yet"** even though the cluster previously had a working endpoint — for
+example after the AWS NLB or the Azure Load Balancer was deleted, or after the
+Traefik `LoadBalancer` service lost its external address.
+
+```bash
+clouder kubeadm repair-load-balancer [name] [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`). Defaults to cluster metadata or current context cloud. |
+| `--admin-user` | `-u` | SSH username on the VMs. |
+| `--key` | `-i` | SSH key name from `~/.ssh/`. |
+| `--reinstall` | | Re-run the Traefik Helm install/upgrade before re-provisioning the load balancer. |
+| `--force` | `-f` | Skip confirmation prompt. |
+
+**What it does:**
+
+1. Diagnoses the current Traefik `LoadBalancer` service endpoint.
+2. Optionally re-applies the Traefik LoadBalancer service (`--reinstall`).
+3. Reads the Traefik web/websecure NodePorts.
+4. **AWS**: ensures worker security-group ingress and reconciles Kubernetes node `providerID`s, then **reuses the existing AWS NLB endpoint** if the service still reports one (otherwise waits for the controller to re-provision it).
+5. **Azure**: **reuses the existing `<name>-lb-ip` public IP** (Static allocation is preserved through create-or-update), re-applies the Azure Load Balancer, and re-wires worker NICs to the backend pool.
+6. Marks `loadbalancer_ready` and saves `loadbalancer_endpoint` in the cluster metadata and reports the endpoint.
+
+:::note
+This command inspects for a prior load balancer and reuses it where possible to
+**keep the previously assigned IP / endpoint**. It does not reinstall the
+cluster or the plane and is idempotent — safe to run multiple times. If a domain
+is mapped in metadata, verify your DNS still points to the endpoint afterwards.
+:::
+
+**Examples:**
+
+```bash
+# Repair the load balancer for the default cluster
+clouder kubeadm repair-load-balancer my-cluster
+
+# Also re-apply the Traefik LoadBalancer service first
+clouder kubeadm repair-load-balancer my-cluster --reinstall
+
+# Non-interactive
+clouder kubeadm repair-load-balancer my-cluster --force
+```
+
+---
+
+### `clouder kubeadm remove-node`
+
+Remove a single worker node from a Kubeadm cluster.
+
+```bash
+clouder kubeadm remove-node [name] <node-name> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster (from `set-default`). |
+| `node-name` (required) | Worker node name to remove (for example `my-cluster-node-2`). |
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--cloud` | | Target cloud provider (`azure` or `aws`) |
+| `--force` | `-f` | Skip confirmation prompt |
+
+**What it does:**
+
+1. Cordon the Kubernetes node.
+2. Drain workloads from the node.
+3. Delete the Kubernetes node object.
+4. Delete the corresponding cloud VM (Azure or AWS).
+5. Update local kubeadm metadata worker inventory.
+
+:::note
+`remove-node` is for worker nodes only. It intentionally refuses control-plane node removal.
+:::
+
+**Examples:**
+
+```bash
+# Interactive removal
+clouder kubeadm remove-node my-cluster my-cluster-node-2
+
+# Use default kubeadm cluster
+clouder kubeadm remove-node my-cluster-node-2
+
+# Non-interactive
+clouder kubeadm remove-node my-cluster my-cluster-node-2 --force
+```
+
+---
+
+### `clouder kubeadm terminate`
 
 Terminate all VMs and networking for a Kubeadm cluster. Deletes VMs, NICs, public IPs, OS disks, NSG, and VNet.
 
 ```bash
-clouder kubeadm vm-terminate <name> [OPTIONS]
+clouder kubeadm terminate <name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -263,19 +702,19 @@ clouder kubeadm vm-terminate <name> [OPTIONS]
 | 7 | VNet | `<name>-vnet` (includes subnet) |
 | 8 | Resource Group | Only if `--delete-rg` is specified |
 
-The local kubeconfig (`~/.clouder/kubeconfigs/kubeconfig-<name>`) is also removed if it exists.
+The local kubeconfig (`~/.clouder/kubeadm/<name>/kubeconfig`) is also removed if it exists.
 
 **Example:**
 
 ```bash
 # Interactive confirmation
-clouder kubeadm vm-terminate my-cluster
+clouder kubeadm terminate my-cluster
 
 # Force delete without confirmation
-clouder kubeadm vm-terminate my-cluster --force
+clouder kubeadm terminate my-cluster --force
 
 # Also delete the resource group
-clouder kubeadm vm-terminate my-cluster --force --delete-rg
+clouder kubeadm terminate my-cluster --force --delete-rg
 ```
 
 ---
@@ -349,6 +788,14 @@ clouder kubeadm smoke-test my-cluster --no-cleanup
 
 ### `clouder kubeadm enable-ingress-nginx`
 
+:::danger Deprecated
+The `enable-ingress-nginx` / `disable-ingress-nginx` commands are **deprecated
+and disabled**. Invoking them raises an `IngressNginxDeprecatedError`. Datalayer
+clusters use **Traefik** for ingress and load balancing. Use
+[`enable-ingress-traefik`](#clouder-kubeadm-enable-ingress-traefik) and
+[`repair-load-balancer`](#clouder-kubeadm-repair-load-balancer) instead.
+:::
+
 Deploy an ingress-nginx controller and create an Azure Load Balancer with a public IP that forwards HTTP/HTTPS traffic to the cluster.
 
 ```bash
@@ -364,14 +811,16 @@ clouder kubeadm enable-ingress-nginx <name> [OPTIONS]
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
-**What it does (4 steps):**
+**What it does (6 steps):**
 
 | Step | Description |
 |------|-------------|
 | 1 | Deploy ingress-nginx controller in **NodePort** mode on the cluster |
 | 2 | Read the assigned NodePorts for HTTP and HTTPS |
-| 3 | Create Azure Load Balancer (`<name>-lb`) with public IP, rules 80→HTTP NodePort, 443→HTTPS NodePort |
+| 3 | Create Azure Load Balancer (`<name>-lb`) and wait for the public IP assignment |
 | 4 | Add all worker VM NICs to the LB backend pool |
+| 5 | Ask for the DNS hostname mapped to the LB IP and test hostname resolution |
+| 6 | Persist hostname in `kubeadm.json` only after DNS resolves to the LB IP |
 
 **Architecture:**
 
@@ -402,6 +851,11 @@ clouder kubectl my-cluster create ingress demo --rule='/*=my-svc:80'
 ---
 
 ### `clouder kubeadm disable-ingress-nginx`
+
+:::danger Deprecated
+Deprecated and disabled — raises `IngressNginxDeprecatedError`. Use
+[`disable-ingress-traefik`](#clouder-kubeadm-disable-ingress-traefik) instead.
+:::
 
 Remove the Azure Load Balancer and ingress-nginx controller from the cluster.
 
@@ -450,14 +904,16 @@ clouder kubeadm enable-ingress-traefik <name> [OPTIONS]
 | `--admin-user` | `-u` | SSH username (default: `azureuser`) |
 | `--key` | `-i` | SSH key name from `~/.ssh/` |
 
-**What it does (4 steps):**
+**What it does (6 steps):**
 
 | Step | Description |
 |------|-------------|
 | 1 | Install Helm (if needed), deploy Traefik via Helm in **NodePort** mode |
 | 2 | Read the assigned NodePorts for HTTP (web) and HTTPS (websecure) |
-| 3 | Create Azure Load Balancer (`<name>-lb`) with public IP, rules 80→HTTP NodePort, 443→HTTPS NodePort |
+| 3 | Create Azure Load Balancer (`<name>-lb`) and wait for the public IP assignment |
 | 4 | Add all worker VM NICs to the LB backend pool |
+| 5 | Ask for the DNS hostname mapped to the LB IP and test hostname resolution |
+| 6 | Persist hostname in `kubeadm.json` only after DNS resolves to the LB IP |
 
 **Architecture:**
 
@@ -520,7 +976,7 @@ clouder kubeadm upgrade-kubelet <name> [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `name` (required) | Cluster name (must match the `vm-create` name) |
+| `name` (required) | Cluster name (must match the `create` name) |
 
 | Option | Short | Description |
 |--------|-------|-------------|
@@ -553,8 +1009,6 @@ clouder kubeadm upgrade-kubelet my-cluster
 clouder kubeadm upgrade-kubelet my-cluster --key my-cluster-key
 ```
 
----
-
 ## Typical Workflow
 
 ### Create a Cluster
@@ -563,7 +1017,7 @@ Three commands are needed to go from zero to a running Kubernetes cluster:
 
 ```bash
 # 1. Create the VMs (1 master + 3 workers on Azure)
-clouder kubeadm vm-create my-cluster
+clouder kubeadm create my-cluster
 
 # 2. Set up Kubernetes on all nodes
 clouder kubeadm setup my-cluster
@@ -572,9 +1026,9 @@ clouder kubeadm setup my-cluster
 clouder kubeadm get-config my-cluster
 ```
 
-`vm-create` provisions 4 VMs (Standard_B4ms, 100 GB OS disks) in Azure with a VNet, subnet, and NSG.
+`create` provisions 4 VMs (Standard_B4ms, 100 GB OS disks) in Azure with a VNet, subnet, and NSG.
 `setup` installs containerd 2.x, CRIU, buildah, Kubeadm/kubelet/kubectl, initializes the control plane with Flannel CNI, joins workers, enables the `ContainerCheckpoint` feature gate on every node, and installs the Azure Disk CSI and Azure File CSI drivers for dynamic persistent volume provisioning.
-`get-config` downloads the kubeconfig to `~/.clouder/kubeconfigs/kubeconfig-my-cluster`.
+`get-config` downloads the kubeconfig to `~/.clouder/kubeadm/my-cluster/kubeconfig`.
 
 ### Use the Cluster
 
@@ -583,19 +1037,25 @@ clouder kubeadm get-config my-cluster
 clouder kubectl my-cluster get nodes
 clouder kubectl my-cluster get pods -A
 clouder kubectl my-cluster apply -f deployment.yaml
+
+# If a default kubeadm cluster is configured, name can be omitted
+clouder kubectl get nodes
 ```
 
 ### Add an Ingress Controller
 
-Pick one of nginx or traefik. Both create an Azure Load Balancer with a public IP:
+Use Traefik, which creates a cloud load balancer (AWS NLB or Azure Load Balancer) with a public endpoint:
 
 ```bash
-# Option A: ingress-nginx
-clouder kubeadm enable-ingress-nginx my-cluster
-
-# Option B: traefik
 clouder kubeadm enable-ingress-traefik my-cluster
+
+# If the load balancer is later lost, re-provision it (preserving the IP where possible):
+clouder kubeadm repair-load-balancer my-cluster
 ```
+
+:::warning
+`enable-ingress-nginx` is deprecated and disabled. Use `enable-ingress-traefik`.
+:::
 
 ### Validate with Smoke Test
 
@@ -612,78 +1072,21 @@ clouder kubeadm smoke-test my-cluster
 clouder kubeadm disable-ingress-nginx my-cluster
 
 # Delete all VMs and Azure resources
-clouder kubeadm vm-terminate my-cluster
+clouder kubeadm terminate my-cluster
 ```
+
 
 ---
 
-## Related: `clouder kubectl`
-
-Run kubectl commands using the persisted kubeconfig for a cluster.
-
-```bash
-clouder kubectl <name> <kubectl-args...>
-```
-
-| Argument | Description |
-|----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeconfigs/`) |
-| `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
-
-**Example:**
-
-```bash
-clouder kubectl my-cluster get nodes
-clouder kubectl my-cluster get pods -A
-clouder kubectl my-cluster apply -f deployment.yaml
-clouder kubectl my-cluster logs my-pod
-```
-
-This is equivalent to running:
-```bash
-kubectl --kubeconfig=~/.clouder/kubeconfigs/kubeconfig-my-cluster get nodes
-```
-
----
-
-## Related: `clouder helm`
-
-Run helm commands using the persisted kubeconfig for a cluster.
-
-```bash
-clouder helm <name> <helm-args...>
-```
-
-| Argument | Description |
-|----------|-------------|
-| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeconfigs/`) |
-| `helm-args` | Any helm arguments (e.g. `list -A`, `install ...`) |
-
-**Example:**
-
-```bash
-clouder helm my-cluster list -A
-clouder helm my-cluster install my-release my-chart
-clouder helm my-cluster upgrade my-release my-chart
-clouder helm my-cluster uninstall my-release
-```
-
-This is equivalent to running:
-```bash
-helm --kubeconfig=~/.clouder/kubeconfigs/kubeconfig-my-cluster list -A
-```
-
----
-
-## Networking
+## Networking Details
 
 The `setup` command installs **Flannel** as the CNI with `--pod-network-cidr=10.244.0.0/16`. Flannel provides VXLAN-based overlay networking that works reliably on Azure VNets where all nodes share the same subnet.
 
 :::note
-Calico CNI code is preserved in the codebase (commented out in `Kubeadm.py`) for future use. Calico's default `VXLANCrossSubnet` mode uses direct routing when nodes are on the same subnet, which requires IP forwarding enabled on Azure NICs. Flannel's VXLAN overlay avoids this issue entirely.
+Calico CNI code is preservRelated:ed in the codebase (commented out in `Kubeadm.py`) for future use. Calico's default `VXLANCrossSubnet` mode uses direct routing when nodes are on the same subnet, which requires IP forwarding enabled on Azure NICs. Flannel's VXLAN overlay avoids this issue entirely.
 :::
 
-## CRIU Support
+## CRIU Support Details
 
 The `setup` command configures every node for CRIU checkpoint/restore:
 
@@ -699,14 +1102,14 @@ CRIU checkpoint requires **containerd 2.0+**. The Ubuntu apt `containerd` packag
 
 If your cluster was created with an older version of Clouder (containerd 1.7.x), you must recreate it:
 ```bash
-clouder kubeadm vm-terminate my-cluster
-clouder kubeadm vm-create my-cluster
+clouder kubeadm terminate my-cluster
+clouder kubeadm create my-cluster
 clouder kubeadm setup my-cluster
 ```
 An in-place upgrade from containerd 1.7 to 2.x is not supported.
 :::
 
-## Storage
+## Storage Details
 
 The `setup` command installs the **Azure Disk CSI driver** and the **Azure File CSI driver** for dynamic persistent volume provisioning. The Disk CSI driver allows pods to request `PersistentVolumeClaim` resources backed by Azure Managed Disks. The File CSI driver enables NFS-based shared filesystem provisioning and setup creates the `azure-nfs` StorageClass with the cluster's Azure subscription, resource group, and location baked in (required on Kubeadm; on AKS these are auto-detected from IMDS).
 
@@ -727,6 +1130,31 @@ The CSI driver requires an Azure service principal with `Contributor` access to 
 1. Use existing `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` environment variables if set.
 2. Otherwise, auto-create a new SP (`clouder-<name>-csi`) scoped to the resource group via `az ad sp create-for-rbac`.
 3. Skip the step with a warning if credentials cannot be obtained.
+
+**Generate operator Helm values JSON (recommended):**
+
+Use the Azure CLI helper to generate a Helm-ready JSON file containing all required Azure fields for:
+
+- `operator.cloudCredentials.azure.tenantId`
+- `operator.cloudCredentials.azure.clientId`
+- `operator.cloudCredentials.azure.clientSecret`
+- `operator.cloudCredentials.azure.subscriptionId`
+- `operator.cloudCredentials.azure.resourceGroup`
+
+```bash
+clouder azure helm-values --cluster my-cluster -o datalayer-operator-azure.json
+```
+
+If `--output` is omitted, the file is created at `~/.clouder/kubeadm/<cluster>/datalayer-operator-azure.json`, which is the default path consumed by `plane/datalayer_plane/sbin/up.sh` for `datalayer_operator`.
+
+Then pass it to Helm:
+
+```bash
+helm upgrade --install datalayer-operator \
+  ./etc/helm/charts/datalayer-operator \
+  --namespace datalayer-runtimes \
+  --values datalayer-operator-azure.json
+```
 
 **Manual installation** (if Step 6 was skipped):
 
@@ -783,3 +1211,99 @@ All VMs are on the same subnet (`10.0.0.0/24`), so Kubeadm nodes discover each o
 :::note
 Supported cloud providers: Azure and AWS.
 :::
+
+---
+
+## Local CSI Driver
+
+`clouder kubeadm setup --node-mounts` installs the
+[Datalayer Node Mounts](/services/system/node-mounts/) DaemonSet — the
+[Local CSI driver](/services/system/local-csi/) (`local.csi.datalayer.io`),
+and with `--node-mounts-gateway` the
+[Node Mount Gateway](/services/system/node-mount-gateway/) agent as well — in
+Step 7, right after the cloud storage provider. It is off by default: only
+clusters serving Local Mounts or gateway mounts need a privileged DaemonSet on every runtimes
+node.
+
+```bash
+clouder kubeadm setup my-cluster --node-mounts \
+  --local-csi-relay-host r1.datalayer.run \
+  --local-csi-relay-cidr 203.0.113.10/32
+```
+
+| Option | Purpose |
+| --- | --- |
+| `--node-mounts` / `--no-node-mounts` | Install the driver (default: off) |
+| `--local-csi-relay-host` | The Contents host the driver may dial; empty accepts any `wss://` host |
+| `--local-csi-relay-port` | Relay port (default `443`) |
+| `--local-csi-relay-cidr` | Relay address for the egress NetworkPolicy; empty allows the port to any destination |
+| `--node-mounts-image` | Driver image (default `datalayer/node-mounts:0.1.0`) |
+| `--node-mounts-chart` | Chart path (default: `PLANE_HOME`, `DATALAYER_HOME`, or the source tree) |
+
+The chart is packed into the install script and applied on the master with
+Helm, which is installed there if missing. Check the result with:
+
+```bash
+clouder node-mounts status
+clouder node-mounts status --json
+```
+
+## Related: `clouder kubectl`
+
+Run kubectl commands using the persisted kubeconfig for a cluster.
+
+Full reference: [`clouder kubectl`](./kubectl).
+
+```bash
+clouder kubectl [name] <kubectl-args...>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (optional) | Cluster name. If omitted, Clouder uses the default kubeadm cluster. |
+| `kubectl-args` | Any kubectl arguments (e.g. `get nodes`, `apply -f ...`) |
+
+**Example:**
+
+```bash
+clouder kubectl my-cluster get nodes
+clouder kubectl my-cluster get pods -A
+clouder kubectl my-cluster apply -f deployment.yaml
+clouder kubectl my-cluster logs my-pod
+```
+
+This is equivalent to running:
+```bash
+kubectl --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig get nodes
+```
+
+---
+
+## Related: `clouder helm`
+
+Run helm commands using the persisted kubeconfig for a cluster.
+
+Full reference: [`clouder helm`](./helm).
+
+```bash
+clouder helm <name> <helm-args...>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `name` (required) | Cluster name (kubeconfig must exist in `~/.clouder/kubeadm/<name>/`) |
+| `helm-args` | Any helm arguments (e.g. `list -A`, `install ...`) |
+
+**Example:**
+
+```bash
+clouder helm my-cluster list -A
+clouder helm my-cluster install my-release my-chart
+clouder helm my-cluster upgrade my-release my-chart
+clouder helm my-cluster uninstall my-release
+```
+
+This is equivalent to running:
+```bash
+helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
+```

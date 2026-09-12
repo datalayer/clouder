@@ -6,9 +6,48 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# Datashim
+# ☰ 🛜 Datalayer Datashim
 
-[Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Jupyter Content` features.
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="red">Deprecated</Label>
+</Stack>
+
+:::danger Deprecated
+
+Datashim no longer provisions anything. It served exactly one thing here — the
+`RuntimeContent` specs of `type: s3`, which it turned into a `Dataset`, then a
+PVC, then a mount on a Runtime Pod created with it. That is now the
+[Node Mount Gateway](/services/system/node-mount-gateway/)'s job: it binds the
+bucket into a Pod that is **already running** with Mountpoint for S3, reading
+the content's own `secret` at pod time and holding an STS session that expires,
+instead of writing a long-lived S3 key into a `Dataset` spec.
+
+The change is in the Operator: `content_operator.py` no longer creates a
+`Dataset` for an `s3` content (it only caches and validates the
+`RuntimeContent`), and the spawn path renders no `csi-s3` PVC. The
+`runtime-contents.datalayer.io` CRD stays applicable — only its Datashim
+delivery is gone.
+
+This page is kept for the record and for **removing** Datashim from a cluster
+that still runs it — see [TearDown](#teardown). The comparison, and what
+retiring it bought, is on the
+[gateway's page](/services/system/node-mount-gateway/#datashim-and-what-replaces-it).
+
+:::
+
+## Deploy
+
+:::note Deprecated
+
+The Operator no longer provisions through Datashim (audit 83), so no runtime
+depends on it any more. The install steps below still describe the chart as the
+plane tooling ships it today — removing Datashim from that tooling is the
+remaining cleanup. To take it out of a cluster that still runs it, skip to
+[TearDown](#teardown).
+
+:::
+
+[Datashim](https://github.com/datashim-io/datashim?tab=readme-ov-file#helm-installation) needs to be deployed in the cloud to benefit from the `Runtime Content` features.
 
 ```bash
 helm repo add datashim https://datashim-io.github.io/datashim
@@ -29,7 +68,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-datashim.sh
 ```
   </TabItem>
@@ -38,20 +77,28 @@ export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
 Check the Datashim Pods.
 
 ```bash
-kubectl get pods -n datalayer-datashim
-# NAME                                READY   STATUS              RESTARTS   AGE
-# csi-attacher-s3-0                   1/1     Running             0          8s
-# csi-provisioner-s3-0                1/1     Running             0          8s
-# csi-s3-2rllf                        2/2     Running             0          8s
-# ...
-# csi-s3-bkbkr                        2/2     Running             0          8s
-# csi-s3-c4xv5                        2/2     Running             0          8s
-# dataset-operator-7b55b587d4-xtd6q   1/1     Running   0          2m25s
+kubectl get pods -n datalayer-runtimes | grep -E 'dataset-operator|csi-s3|csi-nfs|datashim'
+# csi-s3-xxxxx                        2/2     Running   0          30s
+# csi-s3-yyyyy                        2/2     Running   0          30s
+# dataset-operator-zzzzz              1/1     Running   0          20s
+
+# release information
+helm list -A | grep datalayer-datashim
+# datalayer-datashim   datalayer-runtimes   ...   deployed
+
+# webhook resources
+kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations | grep -i datashim
 ```
+
+:::note
+`plane up datalayer-datashim` deploys the release in the `datalayer-runtimes` namespace.
+
+If you run `kubectl get pods -n datalayer-datashim`, you may see no resources and incorrectly conclude Datashim is down.
+:::
 
 ## S3 Secret
 
-Create the secret for the S3 access so it can be reused in the [Jupyter Environments](/operations/management/jupyter-environments/).
+Create the secret for S3 access so it can be reused in [Runtime Environments](/management/runtime-environments/).
 
 ```bash
 kubectl create secret generic \
@@ -81,7 +128,7 @@ Without this label, the datashim webhook will **not** inject volume mounts into 
 
 Validate the configuration with the creation of an example Dataset.
 
-### Step 1: Create a Dataset
+### Create a Dataset
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -109,13 +156,13 @@ kubectl get pvc example-dataset
 # example-dataset   Bound    pvc-c26adf05-...                           9765625000Ki    RWX            csi-s3
 ```
 
-### Step 2: Label the namespace
+### Label the namespace
 
 ```bash
 kubectl label namespace default monitor-pods-datasets=enabled
 ```
 
-### Step 3: Mount the Dataset in a Pod
+### Mount the Dataset in a Pod
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -140,14 +187,14 @@ kubectl get pod nginx
 kubectl exec nginx -it -- ls /mnt/datasets/example-dataset
 ```
 
-### Step 4: Clean up
+### Clean up
 
 ```bash
 kubectl delete pod nginx
 kubectl delete dataset example-dataset
 ```
 
-## Tear Down
+## TearDown
 
 If needed, tear down.
 

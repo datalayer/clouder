@@ -1,20 +1,20 @@
 ---
-title: clouder k8s
-sidebar_position: 4
+title: clouder kubernetes
+sidebar_position: 11
 ---
 
-# clouder k8s
+# clouder kubernetes
 
 Manage Kubernetes clusters — create clusters, manage node pools, and configure kubeconfig.
 
 ## Commands
 
-### `clouder k8s create`
+### `clouder kubernetes create`
 
 Create a Kubernetes cluster.
 
 ```bash
-clouder k8s create <name>
+clouder kubernetes create <name>
 ```
 
 | Argument | Description |
@@ -24,31 +24,31 @@ clouder k8s create <name>
 **Example:**
 
 ```bash
-clouder k8s create my-cluster
+clouder kubernetes create my-cluster
 ```
 
-This provisions the necessary VMs and bootstraps a Kubernetes cluster using Kubeadm. See the [Kubeadm documentation](/cli/kubeadm) for details on the bootstrap process.
+This creates an OVH Managed Kubernetes cluster in the active OVH project context.
 
 ---
 
-### `clouder k8s ls`
+### `clouder kubernetes ls`
 
 List Kubernetes clusters.
 
 ```bash
-clouder k8s ls
+clouder kubernetes ls
 ```
 
 Shows all clusters managed by Clouder in the current context.
 
 ---
 
-### `clouder k8s kubeconfig`
+### `clouder kubernetes kubeconfig`
 
 Download the kubeconfig for a Kubernetes cluster.
 
 ```bash
-clouder k8s kubeconfig <name>
+clouder kubernetes kubeconfig <name>
 ```
 
 | Argument | Description |
@@ -58,19 +58,19 @@ clouder k8s kubeconfig <name>
 **Example:**
 
 ```bash
-clouder k8s kubeconfig my-cluster
+clouder kubernetes kubeconfig my-cluster
 ```
 
 Downloads the kubeconfig file and saves it locally.
 
 ---
 
-### `clouder k8s use`
+### `clouder kubernetes use`
 
 Set a cluster's kubeconfig as the default kubectl context.
 
 ```bash
-clouder k8s use <name>
+clouder kubernetes use <name>
 ```
 
 | Argument | Description |
@@ -80,7 +80,7 @@ clouder k8s use <name>
 **Example:**
 
 ```bash
-clouder k8s use my-cluster
+clouder kubernetes use my-cluster
 
 # Verify
 kubectl get nodes
@@ -88,12 +88,12 @@ kubectl get nodes
 
 ---
 
-### `clouder k8s create-nodepool`
+### `clouder kubernetes create-nodepool`
 
 Create a node pool in a Kubernetes cluster.
 
 ```bash
-clouder k8s create-nodepool <cluster_name> <nodepool_name> [OPTIONS]
+clouder kubernetes create-nodepool <cluster_name> <nodepool_name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -115,19 +115,19 @@ clouder k8s create-nodepool <cluster_name> <nodepool_name> [OPTIONS]
 
 ```bash
 # System node pool
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     system --flavor Standard_D4s_v5 \
     --min 1 --desired 2 --max 10 \
     --roles system --xpu cpu
 
 # GPU node pool for Jupyter
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     jupyter-gpu --flavor Standard_NC6s_v3 \
     --min 0 --desired 1 --max 5 \
     --roles jupyter --variant medium --xpu gpu-cuda
 
 # CPU node pool for Jupyter
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     jupyter-cpu --flavor Standard_B4ms \
     --min 0 --desired 3 --max 10 \
     --roles jupyter --variant small --xpu cpu
@@ -135,12 +135,12 @@ clouder k8s create-nodepool my-cluster \
 
 ---
 
-### `clouder k8s update-nodepool`
+### `clouder kubernetes update-nodepool`
 
 Update a node pool in a Kubernetes cluster (e.g., scale up or down).
 
 ```bash
-clouder k8s update-nodepool <cluster_name> <nodepool_name> [OPTIONS]
+clouder kubernetes update-nodepool <cluster_name> <nodepool_name> [OPTIONS]
 ```
 
 | Argument | Description |
@@ -150,19 +150,19 @@ clouder k8s update-nodepool <cluster_name> <nodepool_name> [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--min` | `0` | Minimum nodes |
-| `--desired` | `0` | Desired nodes |
+| `--min` | `3` | Minimum nodes |
+| `--desired` | `3` | Desired nodes |
 | `--max` | `10` | Maximum nodes |
 
 **Examples:**
 
 ```bash
 # Scale down to zero (cost saving)
-clouder k8s update-nodepool my-cluster \
+clouder kubernetes update-nodepool my-cluster \
     jupyter-gpu --min 0 --desired 0 --max 5
 
 # Scale up
-clouder k8s update-nodepool my-cluster \
+clouder kubernetes update-nodepool my-cluster \
     system --min 2 --desired 4 --max 10
 ```
 
@@ -171,20 +171,23 @@ clouder k8s update-nodepool my-cluster \
 ## Example: Full Cluster Workflow
 
 ```bash
+# Requires OVH context
+clouder ctx set ovh <project-id>
+
 # 1. Create the cluster
-clouder k8s create my-cluster
+clouder kubernetes create my-cluster
 
 # 2. Get kubeconfig and set as default
-clouder k8s kubeconfig my-cluster
-clouder k8s use my-cluster
+clouder kubernetes kubeconfig my-cluster
+clouder kubernetes use my-cluster
 
 # 3. Create node pools
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     system --flavor Standard_D4s_v5 \
     --min 1 --desired 2 --max 10 \
     --roles system --xpu cpu
 
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     jupyter-gpu --flavor Standard_NC6s_v3 \
     --min 0 --desired 1 --max 5 \
     --roles jupyter --xpu gpu-cuda
@@ -193,9 +196,9 @@ clouder k8s create-nodepool my-cluster \
 kubectl get nodes
 
 # 5. Scale GPU nodes to zero when idle
-clouder k8s update-nodepool my-cluster \
+clouder kubernetes update-nodepool my-cluster \
     jupyter-gpu --desired 0
 
 # 6. List clusters
-clouder k8s ls
+clouder kubernetes ls
 ```

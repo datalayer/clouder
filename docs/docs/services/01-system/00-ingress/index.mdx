@@ -1,0 +1,258 @@
+---
+title: Ingress
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🛣️ Datalayer Ingress
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">Service</Label>
+</Stack>
+
+`Ingress` ensures that external requests are secured and routed to the correct target.
+
+It implements the needed authentication and authorisation controls defined by Datalayer IAM.
+
+- `HTTP` requests are redirected to the target service.
+- `SSH` requests are handled to ensure access to the Git repositories as for the SSHFS mounting support.
+
+You will need to choose one of the following options to implement the Ingress:
+
+- Ingress Traefik.
+- Ingress Nginx - This is deprecated as suffering from IP availability latency.
+
+## Deploy Datalayer Ingress Traefik
+
+```bash
+helm repo add traefik https://traefik.github.io/charts
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-traefik
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+globalArguments:
+- "--global.checknewversion"
+nodeSelector:
+  role.datalayer.io/router: "true"
+EOF
+  export RELEASE=datalayer-traefik
+  export NAMESPACE=datalayer-traefik
+  helm upgrade \
+    --install $RELEASE \
+    traefik/traefik \
+    --version 28.0.0 \
+    --namespace $NAMESPACE \
+    --create-namespace \
+    --values /tmp/values.yaml \
+    --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-traefik.sh
+```
+  </TabItem>
+</Tabs>
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Ingress Traefik Pods.
+
+```bash
+kubectl get pods -n datalayer-traefik
+```
+
+Ensure the `datalayer-traefik` Ingress Class is available.
+
+```bash
+kubectl get ingressclass
+# NAME                CONTROLLER                      PARAMETERS   AGE
+# datalayer-traefik   traefik.io/ingress-controller   <none>       116m
+```
+
+:::warning
+
+## [DEPRECATED] Deploy Datalayer Ingress Nginx
+
+Instead of Traefik, you may deploy Nginx (watch out for potential latency for the creation of the Ingress Kubernetes objects, impacting the [Datalayer Runtimes](/services/runtimes/) service).
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-nginx
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+imagePullSecrets:
+  - name: reg-creds
+allowSnippetAnnotations: "true"
+controller:
+  image:
+    image: ingress-nginx-controller
+    tag: v1.0.0-beta.3
+    digest: sha256:7d3e2f788cf096e44449113fbea079869b563ce1da17cb7ac032bb5a21fc07ef
+  nodeSelector:
+    role.datalayer.io/router: "true"
+defaultBackend:
+  nodeSelector:
+    role.datalayer.io/router: "true"
+EOF
+  export RELEASE=datalayer-nginx
+  export NAMESPACE=datalayer-nginx
+  helm upgrade \
+    --install $RELEASE \
+    ingress-nginx/ingress-nginx \
+    --version 4.10.1 \
+    --namespace $NAMESPACE \
+    --create-namespace \
+    --values /tmp/values.yaml \
+    --set controller.image.registry="${DATALAYER_DOCKER_REGISTRY}" \
+    --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-nginx.sh
+```
+  </TabItem>
+</Tabs>
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane ls
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+helm ls -A
+```
+  </TabItem>
+</Tabs>
+
+```bash
+kubectl get pods -n datalayer-nginx
+```
+
+Ensure the `nginx` Ingress Class is available.
+
+```bash
+kubectl get ingressclass
+# NAME                CONTROLLER                      PARAMETERS   AGE
+# nginx               nginx.org/ingress-controller    <none>       116m
+```
+
+:::
+
+## Update DNS
+
+Take note of the IP address (or in the EKS case, the hostname), you will need that to update your DNS. In the below example, the IP address is `A.B.C.D`.
+
+For Ingress Traefik.
+
+```bash
+POD_NAME=$(kubectl get pods -l app.kubernetes.io/name=traefik -n datalayer-traefik -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod $POD_NAME -n datalayer-traefik
+kubectl get svc datalayer-traefik -n datalayer-traefik -w
+# datalayer-traefik   LoadBalancer   10.100.113.174   A.B.C.D   80:32664/TCP,443:32671/TCP   11m
+```
+
+:::warning
+
+[DEPRECATED] For Ingress Nginx.
+
+```bash
+POD_NAME=$(kubectl get pods -l app.kubernetes.io/name=ingress-nginx -n datalayer-nginx -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod $POD_NAME -n datalayer-nginx
+kubectl exec -it $POD_NAME -n datalayer-nginx -- /nginx-ingress-controller --version
+kubectl get svc datalayer-nginx-ingress-nginx-controller -n datalayer-nginx -w
+# datalayer-nginx-ingress-nginx-controller   LoadBalancer   10.100.113.174   A.B.C.D   80:32664/TCP,443:32671/TCP   11m
+```
+
+Create a A DNS record (or CNAME if the Load Balancer gave you a hostname) to resolve the `DATALAYER_RUN_HOST` hostname to the Load Balancer IP address.
+
+In the previous example, `DATALAYER_RUN_HOST` should be resolved to `A.B.C.D`.
+
+```bash
+# A.B.C.D $DATALAYER_RUN_HOST
+nslookup $DATALAYER_RUN_HOST
+```
+
+:::
+
+## Tear Down Datalayer Ingress
+
+If needed, tear down the Ingress.
+
+Tear down Ingress Traefik.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-traefik
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-traefik
+export NAMESPACE=datalayer-traefik
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>
+
+[DEPRECATED] Tear down Ingress Nginx.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-nginx
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-nginx
+export NAMESPACE=datalayer-nginx
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>

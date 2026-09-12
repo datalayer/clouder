@@ -6,7 +6,9 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# Certificate Manager
+# ☰ 📜 Datalayer Certificate Manager
+
+## Deploy Datalayer Certificate Manager
 
 ```bash
 helm repo add jetstack https://charts.jetstack.io
@@ -58,7 +60,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-cert-manager.sh
 ```
   </TabItem>
@@ -69,6 +71,8 @@ Check the availability of the Cert Manager Pods.
 ```bash
 kubectl get pods -n datalayer-cert-manager
 ```
+
+## Create the Certificate Managers
 
 Create the Production Certificate Issuer.
 
@@ -133,7 +137,9 @@ spec:
     - http01:
         ingress:
             ingressClassName: datalayer-traefik
-EOF
+EOF## Tear Down Datalayer Certificate Manager
+
+
 kubectl describe clusterissuer letsencrypt-staging
 ```
 
@@ -146,7 +152,7 @@ cmctl renew ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
 cmctl status certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
 ```
 
-If needed, tear down.
+## Tear Down Datalayer Certificate Manager
 
 <Tabs groupId="k8s">
   <TabItem value="plane-cert-down" label="Plane" default>

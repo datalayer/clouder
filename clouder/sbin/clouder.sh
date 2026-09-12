@@ -11,6 +11,11 @@ export PATH=$CLOUDER_SBIN:$PATH
 source $CLOUDER_SBIN/cli.sh
 source $CLOUDER_SBIN/os.sh
 
+if [ "$1" == "about" ] || [ "$1" == "about.sh" ]
+then
+	export CLOUDER_SKIP_HEADER=true
+fi
+
 $CLOUDER_SBIN/header.sh "$@"
 
 # if [ $# == 0 ] ; then

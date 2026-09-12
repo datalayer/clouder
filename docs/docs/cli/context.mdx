@@ -1,6 +1,6 @@
 ---
 title: clouder ctx
-sidebar_position: 3
+sidebar_position: 4
 ---
 
 # clouder ctx
@@ -18,6 +18,18 @@ clouder ctx init
 ```
 
 Scans configured cloud providers and creates local context entries for discovered projects and subscriptions.
+
+---
+
+### `clouder ctx sync`
+
+Discover the currently accessible Azure subscriptions and AWS account, then create or update local context entries.
+
+```bash
+clouder ctx sync
+```
+
+This command is non-destructive for existing entries: it updates discovered Azure/AWS context names and adds missing IDs, while leaving other clouds (for example `ovh`) untouched.
 
 ---
 
@@ -55,8 +67,13 @@ clouder ctx set <cloud> <context-id>
 
 | Argument | Description |
 |----------|-------------|
-| `cloud` | Cloud provider: `ovh`, `azure` |
+| `cloud` | Cloud provider: `ovh`, `azure`, `aws` |
 | `context_id` | The project or subscription ID |
+
+Behavior notes:
+- Switches the active current context to the selected cloud/id.
+- Preserves existing context metadata (name and provider-specific details) if the context already exists locally.
+- Creates a new local entry only when the context id is not present yet.
 
 **Examples:**
 
@@ -75,7 +92,7 @@ clouder ctx set ovh abc123def456
 Remove a context.
 
 ```bash
-clouder ctx rm <context-id>
+clouder ctx rm <cloud> <context-id>
 ```
 
 Removes the specified context from the local configuration.
@@ -87,6 +104,9 @@ Removes the specified context from the local configuration.
 ```bash
 # Initialize contexts from all configured cloud providers
 clouder ctx init
+
+# Refresh Azure/AWS contexts from current credentials
+clouder ctx sync
 
 # See what's available
 clouder ctx ls

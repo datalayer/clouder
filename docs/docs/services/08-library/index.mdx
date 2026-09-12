@@ -1,0 +1,107 @@
+---
+title: Datalayer Library
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 📚 Datalayer Library
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">REST API</Label>
+</Stack>
+
+`Datalayer Library` provides a searchable index of artifacts useful for data analysis.
+
+```
+- Cell.
+- Notebook.
+- Environment.
+- Runtime.
+```
+
+Dataset publications are owned and indexed by the `Contents` service; the Library surfaces them alongside the items above.
+
+## Deploy Datalayer Library
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-library
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
+
+Check the availability of the Datalayer Library Pods.
+
+```bash
+kubectl get pods -n datalayer-api -l app=library
+```
+
+Check the logs of the Datalayer Library Pods.
+
+```bash
+kubectl logs -n datalayer-api -l app=library
+```
+
+Check the availability of the Datalayer Library Certificate.
+
+```bash
+kubectl describe certificate ${DATALAYER_RUN_HOST}-datalayer-api-cert-secret -n datalayer-api
+```
+
+Check the availability of the Datalayer Library Endpoints.
+
+```bash
+open https://${DATALAYER_RUN_HOST}/api/library/version
+open https://${DATALAYER_RUN_HOST}/api/library/v1/ping
+```
+
+## Tear Down Datalayer Library
+
+If needed, tear down.
+
+```bash
+plane down datalayer-library
+```
+
+## What was made of an artifact
+
+Beside each artifact's orbits, the Library keeps the **derivations** that came
+of it: `type_s:derivation` documents in the `library` collection. Each one has
+a deterministic id (`derivation-<kind>-<from>-<to>`), so recording the same
+derivation twice writes one edge. Each edge names:
+
+- the source (`from_uid_s`) and the version taken, when there is one
+  (`from_version_i`);
+- the result (`to_uid_s`);
+- the kind (`kind_s`): `fork`, `reproduce`, `compare`, `cite` or `revise`;
+- the artifact type, and who made it (`actor_uid_s`).
+
+The service that makes the result writes the edge through
+`datalayer_solr.library.add_derivation`. Today a benchmark clone in ai-agents
+writes a `fork`.
+
+`GET /api/library/v1/items/{id}/derivations?offset=&max=` answers anybody,
+signed in or not, for a public artifact, and `404` for any other. It returns:
+
+- `counts`: every derivation, by kind;
+- `derivations`: newest first, naming only the results that are public
+  themselves, each with `kind`, `fromVersion`, `derivedAt`, and the `item` as a
+  search result;
+- `total`: how many edges there are.
+
+A clone somebody keeps private adds one to the count and is never named. The
+public pages draw these as **Reused by**.
+
+## OpenAPI Specification
+
+The OpenAPI (Swagger) specification is [available online](https://prod1.datalayer.run/api/library/v1/docs).

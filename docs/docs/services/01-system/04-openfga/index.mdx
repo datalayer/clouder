@@ -1,0 +1,89 @@
+---
+title: OpenFGA
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 🛂 Datalayer OpenFGA
+
+Follow the [OpenFGA](https://artifacthub.io/packages/helm/openfga/openfga) installation guide.
+
+```bash
+helm repo add openfga https://openfga.github.io/helm-charts
+helm repo update
+```
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-openfga
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+cat << 'EOF' > /tmp/values.yaml
+nodeSelector:
+  role.datalayer.io/system: "true"
+experimentals:
+  - enable-list-users
+EOF
+  export RELEASE=datalayer-openfga
+  export NAMESPACE=datalayer-openfga
+  helm upgrade \
+    --install $RELEASE \
+    openfga/openfga \
+    --create-namespace \
+    --values /tmp/values.yaml \
+    --namespace $NAMESPACE \
+    --timeout 5m
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+terraform init
+terraform apply
+./generated/clouder-Kubeadm-setup.sh
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
+./generated/services/deploy-datalayer-openfga.sh
+```
+  </TabItem>
+</Tabs>
+
+Connect to the API.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+echo open http://localhost:8098/stores
+plane pf-openfga
+```
+  </TabItem>
+  <TabItem value="bash" label="Helm">
+```bash
+export POD_NAME=$(kubectl get pods --namespace datalayer-openfga -l "app.kubernetes.io/name=openfga,app.kubernetes.io/instance=datalayer-openfga" -o jsonpath="{.items[0].metadata.name}")
+export CONTAINER_PORT=$(kubectl get pod --namespace datalayer-openfga $POD_NAME -o jsonpath="{.spec.containers[0].ports[1].containerPort}")
+echo open http://localhost:8098/stores
+kubectl --namespace datalayer-openfga port-forward $POD_NAME 8098:$CONTAINER_PORT
+```
+  </TabItem>
+</Tabs>
+
+Tear down OpenFGA if needed.
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane down datalayer-openfga
+```
+  </TabItem>
+  <TabItem value="helm" label="Helm">
+```bash
+export RELEASE=datalayer-openfga
+export NAMESPACE=datalayer-openfga
+helm delete $RELEASE --namespace $NAMESPACE
+```
+  </TabItem>
+</Tabs>

@@ -1,0 +1,48 @@
+---
+title: Bring Your Own Container (BYOC)
+sidebar_position: 5
+---
+
+# Bring Your Own Container (BYOC)
+
+:::info
+
+Datalayer will publish AWS Marketplace offerings for BYOC-enabled deployment patterns soon.
+
+:::
+
+Bring Your Own Container (BYOC) allows Datalayer Runtimes to enroll remote containers as execution targets for workloads.
+
+These enrolled containers behave like virtual pod capacity from the user point of view: workloads are scheduled to them through the runtime control plane, while the container itself can live outside the primary Kubernetes node pool.
+
+## What BYOC Enables
+
+1. Reuse pre-existing containers managed by another platform.
+2. Attach specialized runtime images without rebuilding the cluster base image.
+3. Expand workload capacity with remote container pools.
+4. Keep a consistent Datalayer runtime API for users.
+
+## Enrollment Model
+
+A typical BYOC enrollment flow is:
+
+1. Register a remote container endpoint with Datalayer Runtimes.
+2. Publish capability metadata (CPU/GPU/memory/runtime type/labels).
+3. Establish trust and access policy (identity, tokens, network allow rules).
+4. Expose health and heartbeat so the scheduler can place workloads safely.
+5. Mark the container as available for specific workload classes.
+
+## Architecture Behavior
+
+After enrollment, Datalayer can treat remote containers as runtime slots similar to virtual pods:
+
+1. Workloads are assigned through runtime scheduling policy.
+2. Isolation and limits are enforced per container target.
+3. Runtime status is surfaced through the same operational interfaces.
+
+## Operational Notes
+
+1. Use BYOC for controlled remote capacity, not as an unmanaged bypass.
+2. Restrict enrollment to trusted container endpoints.
+3. Define clear lifecycle ownership for image updates and container rotation.
+4. Monitor heartbeat and readiness to avoid stale capacity.

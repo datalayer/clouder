@@ -7,11 +7,12 @@ echo -e "\033[0;32m┏┓┓     ┓
 ┃ ┃┏┓┓┏┏┫┏┓┏┓
 ┗┛┗┗┛┗┻┗┻┗ ┛ \033[0m"
 
-echo """
+echo -e """
+☁️  Clouder — Create, manage and share Kubernetes clusters.
+
+https://clouder.sh https://github.com/datalayer/clouder
+
 Copyright (c) Datalayer, Inc. https://datalayer.ai
 
-☰ ☁️  Clouder - Create, manage and share Kubernetes clusters.
-
-Documentation: https://clouder.sh
-Source code: https://github.com/datalayer/clouder
-"""
+\033[0;32m☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷☷\033[0m \033[1;32m☰ DATA\033[0m\033[1;92mLAYER\033[0m
+"

@@ -1,0 +1,54 @@
+---
+title: clouder kubectl
+sidebar_position: 10
+---
+
+# clouder kubectl
+
+Run kubectl commands against a Clouder kubeadm cluster using the persisted kubeconfig.
+
+## Usage
+
+```bash
+clouder kubectl [name] <kubectl-args...>
+```
+
+- `[name]`: optional kubeadm cluster name. If omitted, Clouder uses the default kubeadm cluster.
+- `<kubectl-args...>`: any standard kubectl arguments (for example `get nodes`, `get pods -A`, `apply -f ...`).
+
+The kubeconfig path used by the wrapper is:
+
+```text
+~/.clouder/kubeadm/<name>/kubeconfig
+```
+
+If the kubeconfig is missing, run:
+
+```bash
+clouder kubeadm get-config <name>
+```
+
+## Examples
+
+```bash
+# Cluster nodes
+clouder kubectl my-cluster get nodes
+
+# If a default kubeadm cluster is configured
+clouder kubectl get nodes
+
+# Pods in all namespaces
+clouder kubectl my-cluster get pods -A
+
+# Apply a manifest
+clouder kubectl my-cluster apply -f deployment.yaml
+
+# Stream pod logs
+clouder kubectl my-cluster logs my-pod
+```
+
+Equivalent direct kubectl command:
+
+```bash
+kubectl --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig get nodes
+```

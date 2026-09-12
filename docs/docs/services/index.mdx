@@ -13,7 +13,7 @@ Use it as your service map before running Plane deployment commands.
 Services are grouped in three layers:
 
 1. System services: cluster foundations such as ingress, certificates, storage and observability.
-2. Core services: IAM, operator, runtimes, library, spacer, AI agents, functions, scheduler, spider, manager, status.
+2. Core services: IAM, operator, runtimes, spacer, contents, library, AI agents, Jupyter MCP Server, functions, scheduler, spider, manager, status.
 3. Optional and addons: extra capabilities you enable depending on your use case.
 
 ## Recommended First Deployment Order
@@ -23,12 +23,19 @@ Services are grouped in three layers:
 	- [Ingress](/services/system/ingress/)
 	- [Solr](/services/system/solr/)
 	- [OTEL](/services/system/otel/)
+	- [Durable](/services/system/durable/) — workflows that outlive the process that started them; deploy it after the PostgreSQL operator and before the gateway, on the runtimes plane
+	- [Node Mounts](/services/system/node-mounts/) — the privileged node DaemonSet holding the two below; off by default
+		- [Node Mount Gateway](/services/system/node-mount-gateway/) — home folders, datasets, NFS, Git and buckets into Pods that are already running
+		- [Local CSI driver](/services/system/local-csi/) — `local.csi.datalayer.io`, a folder of a user's own computer inside a sandbox
 2. Core Platform Layer:
 	- [Datalayer IAM](/services/iam/)
 	- [Datalayer Operator](/services/operator/)
 	- [Datalayer Runtimes](/services/runtimes/)
 	- [Datalayer Spacer](/services/spacer/)
+	- [Datalayer Contents](/services/contents/)
+	- [Datalayer Dataservers](/services/dataservers/) — a governed query gateway that runs close to data and only ever dials out
 	- [Datalayer Library](/services/library/)
+	- [Datalayer Jupyter MCP Server](/services/jupyter-mcp-server/) — the hosted MCP endpoint agents connect to; deploy it after IAM, Spacer, Runtimes and Contents
 3. Optional Services and Addons:
 	- [Addons](/services/addons/)
 
@@ -42,7 +49,8 @@ For a base deployment, start with:
 4. [Datalayer Operator](/services/operator/)
 5. [Datalayer IAM](/services/iam/)
 6. [Datalayer Runtimes](/services/runtimes/)
-7. [Datalayer AI Agents](/services/ai-agents/)
+7. [Datalayer Contents](/services/contents/)
+8. [Datalayer AI Agents](/services/ai-agents/)
 
 Each service page below documents purpose, deployment details, and operational checks.
 
@@ -57,7 +65,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-$(terraform output -raw cluster_name)
+export KUBECONFIG=~/.clouder/kubeadm/$(terraform output -raw cluster_name)/kubeconfig
 kubectl get nodes -o wide
 ```
 

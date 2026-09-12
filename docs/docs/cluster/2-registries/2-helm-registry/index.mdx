@@ -7,9 +7,29 @@ import TabItem from '@theme/TabItem';
 
 # ⚓ Helm Registry
 
-## Public Helm Charts
+## Where the charts live
 
-Each service is a ⚓ Helm Chart developed in the public [datalayer/helm-charts](https://github.com/datalayer/helm-charts) GitHub repository.
+Most services are a ⚓ Helm Chart developed in the public
+[datalayer/helm-charts](https://github.com/datalayer/helm-charts) GitHub
+repository, checked out as a submodule at `$PLANE_HOME/etc/helm`.
+
+The charts for **Contents and the storage under it** are not public. They are
+in the Plane repository itself, at `$PLANE_HOME/etc/helm-private`, alongside
+the other private charts:
+
+| Chart | What it deploys |
+| --- | --- |
+| `datalayer-contents` | The Contents control and data plane |
+| `datalayer-shared-filesystem` | The RWX claim every home folder lives on |
+| `datalayer-ceph-operator`, `datalayer-ceph-cluster` | Ceph, one of the three shared-filesystem backends |
+| `datalayer-node-mounts` | The node DaemonSet: the Local CSI driver and the Node Mount Gateway agent |
+| `datalayer-datashim` | Datashim, [deprecated](/services/system/datashim/) — the Operator no longer uses it |
+| `datalayer-data-server` | The outbound query gateway for a customer network |
+
+Both trees have the same shape, so a chart path is the only thing that differs:
+`$PLANE_HOME/etc/helm/charts/<name>` or
+`$PLANE_HOME/etc/helm-private/charts/<name>`. `plane up` knows which is which;
+a `helm` command typed by hand does not, so check the path before assuming.
 
 ## Datalayer OCI Registry
 
