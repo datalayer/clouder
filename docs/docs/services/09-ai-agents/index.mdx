@@ -401,9 +401,10 @@ all, so a search page with an empty box costs no queries. The answer carries
 and the ids it belongs to.
 
 Notebooks, files and datasets are **not** in these results: they are Spacer's,
-and `datalayer_solr.spaces.search_items` has no owner scoping, so it must not
-be routed for a private search until it takes the space access its items
-already carry.
+and answered by `GET /api/spacer/v1/spaces/items/search`, which scopes every
+private search through the same access clauses that decide who may open an
+item. The product's search page asks both and shows them under separate
+headings.
 
 ### What a subject has run
 
@@ -422,6 +423,43 @@ Where a subject has never been run, every list is empty and the totals are
 `null`. The agent page in the product draws that state as "nothing measured
 yet": it used to generate a plausible history instead, which is the one answer
 an operator should never see.
+
+### What a sandbox is doing, and whether anything will run one
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /sandboxes/{sandbox_ref}/provenance` | the account scope | The benchmark, launch, run and task a sandbox belongs to, each with the page it opens |
+| `GET /compute/operations` | the account scope | Whether a worker polls the benchmark queue, and the account's own queued and running launches |
+
+A sandbox page shows a pod — an environment, a reservation, a burning rate —
+and could not say why the pod exists. There are two joins, and the ref is
+either:
+
+- **a pool slot's name**, `benchmark-<run>-slot-<n>`, which the durable worker
+  writes when it launches a slot. Runtimes honours a requested uid only for a
+  launch that brings attachments made for it, so the *name* is what a caller
+  can rely on; `datalayer_solr.evals_sandbox_names` is the one definition of
+  it, used by the worker that writes it and the route that reads it;
+- **the name a sandbox was restored under** for an investigation (B3-05),
+  which the investigation record remembers (`runtime_name_s`), falling back to
+  the snapshot uid itself, which every task result records.
+
+Everything is read inside the caller's account: a sandbox of somebody else's
+run answers `found: false` rather than naming their benchmark, and so does a
+sandbox nobody launched for a benchmark — which is most of them, and is not an
+error.
+
+`GET /compute/operations` asks the durable service `/operations` and answers
+**only** what is about this account's benchmarks: the engine, whether a worker
+polls the `evals` queue, the catalogue version, and the caller's own queued
+and running launches with the slots they hold. The deployment's other runs,
+queues and workflows are not passed through — `/operations` lists the newest
+runs whoever they belong to, and a page about one account's compute is not
+where another account's run ids belong (`evals_compute.operational_view`).
+
+The state worth naming is the third one: a worker that is healthy and polls no
+benchmark queue. Everything looks well and nothing runs, so that answers
+`serving: false` with a `detail` that says so.
 
 ### Comparing launches, and the leaderboard
 
