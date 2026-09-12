@@ -214,6 +214,20 @@ shared authentication (`datalayer_common.auth`) verified them and then
 dropped them with the rest of the top-level claims, so every service saw the
 person and none saw the agent.
 
+**The share dialog can now make that grant.** The routes read `agentUids`
+before anything offered an agent, so the grant existed and was unreachable
+from the UI. IAM's `GET /api/iam/v1/principals/shareable` now also answers the
+live service agents of every organization the caller belongs to
+(`kind: "agent"`, carrying the organization that owns it); a revoked agent is
+left out, because it can no longer act and offering it would be a grant that
+does nothing. The Core share dialog carries `agentUids` through the payload it
+saves and lists agents under **Agents**, drawn as a key with an "Agent" label
+rather than through the personal/team/organization avatar system — an agent has
+no picture, handle or banner, and must not be mistaken for a person. Agents are
+offered from that list rather than the typeahead: `/principals/search` is typed
+by `PrincipalsSearchResponseData` in datalayer-core, so putting them there would
+cost an OSS release and is not needed to make the grant.
+
 **The grant holds at both doors, which is the half that matters.** An agent
 reads a notebook through its collaboration room, not through the item
 routes, so a grant enforced only on the routes would hold nowhere it counts.
