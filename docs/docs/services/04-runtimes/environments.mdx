@@ -73,7 +73,29 @@ A build is recorded `queued` by the registry and run by the durable service, on 
 - **Reading and writing back:** the worker uses `DATALAYER_DURABLE_RUNTIMES_API_KEY` on Runtimes' internal routes: the build's inputs, the build's and the version's status, the version's lock, its builds, the owner's cache and the artifacts. Every write is replay-safe, so a replayed step stores nothing twice.
 - **Two keys, easily confused:** `DATALAYER_RUNTIMES_DURABLE_API_KEY` is Runtimes calling durable. `DATALAYER_DURABLE_RUNTIMES_API_KEY` is durable calling Runtimes. `plane up` sets each on both sides from the rc, and both are the owner's to put there.
 - **When durable can't be reached:** cancelling a build answers `503` and leaves the build as it was, rather than marking it cancelled.
-- **Not built yet:** the builder itself, the registry it pushes to, scanning and signing. Until they land, a build reaches the step that needs them and is refused with `DL_ENV_CAPABILITY_UNSUPPORTED`, naming what is missing.
+- **Not deployed yet:** the registry the builder pushes to, and the build pool it pushes from. A build reaches the step that needs them and is refused with `DL_ENV_CAPABILITY_UNSUPPORTED`, naming what is missing — `buildctl`, an ECR credential, a base channel digest. The resolver and the Datalayer builder themselves are written (`code-sandboxes` 1.7.0 and after).
+
+### Resolving a version
+
+A version with no lock is resolved by the workflow's `resolve` step before anything builds: Datalayer's protected constraints — the kernel stack a sandbox needs to connect — are merged over the user's requirements, the base resolves to a digest per requested variant, and the lock is stored once by its digest. Every variant then builds from that one lock.
+
+| Setting on the durable worker | Default | What it chooses |
+| --- | --- | --- |
+| `DATALAYER_ENVIRONMENTS_RESOLVER` | `buildkit` | Where the solve runs: `buildkit` is the solve `FROM` the resolved base digest, which needs `buildctl` and the build pool; `local` runs `uv` in the worker, which is what `plane local` has. |
+| `DATALAYER_BUILDKIT_ADDR` | the default socket | `buildkitd`'s address. |
+| `DATALAYER_APT_SNAPSHOT` | unset | The snapshot mirror apt versions are pinned against, at the base channel's date. |
+
+- **What a resolve refuses, and how it reads:** a requirement that contradicts a protected pin is `DL_ENV_PROTECTED_PACKAGE` with the range that is supported; two requirements that cannot both hold are `DL_ENV_RESOLVE_CONFLICT` naming the pair; a package no index has is `DL_ENV_PACKAGE_NOT_FOUND`. A failure that is not about the version at all — an index unreachable — is `DL_ENV_PROVIDER_ERROR`, which is retryable.
+- **What a resolve waits for here:** no channel of the approved base has a published digest yet, so a resolve answers `DL_ENV_ARTIFACT_MISSING` with the reason `base_channel_unpublished`, naming the channel and the repository it resolves from once it is pushed.
+- **The lock is a requirements file:** `uv pip compile --generate-hashes` output, with the apt versions and the protected pins above it as comments. `pip install -r` reads it, and so does the CLI's `diff`.
+
+### What the builder does with it
+
+The Datalayer builder generates the Dockerfile from the lock, never from the spec's loose list: `uv pip sync --require-hashes` installs exactly what was resolved, apt installs the versions the lock recorded, `env` is set before anything installs, and `postInstall` runs as uid 1000 with `--network=none`. The push is by digest with `--attest type=sbom` and `--attest type=provenance,mode=max`, under the operability tag `v<n>-<build_uid>` so a retried build cannot collide with the attempt before it — and the reference kept is the digest, never the tag.
+
+- **The image needs:** `buildctl` on the worker's `PATH`, and `code-sandboxes[environments-builder]` for the ECR API calls.
+- **The credential** is minted per build and written into a docker config of that build's own, so `buildkitd` holds no AWS key.
+- **The owner's repository** is created if missing, with immutable tags, scan-on-push and KMS. The cache is `environments/cache/u/<owner_uid>`, imported and exported per owner and never shared between owners.
 
 ### What a build costs, and what refuses one
 
@@ -103,6 +125,42 @@ The durable worker appends a build's log through `POST /api/runtimes/v1/internal
 - **Conflicts:** a gap, or a new chunk after the build ended, answers `409` with `nextSequence`.
 
 The redactor ships in a `code-sandboxes` release after 1.5.0. On a Runtimes image without it, the append route answers `503` with `DL_ENV_UNAVAILABLE` and stores nothing; reading and following a log work either way. `DATALAYER_DURABLE_RUNTIMES_API_KEY` goes in the plane's rc when the build worker ships.
+
+## Retention: what is kept, and what is collected
+
+Storage is paid for, so an artifact nothing can reach any more is deleted at its provider. Three things are kept: the promoted version, the newest few `ready` versions — so a rollback is a promotion and not a rebuild — and anything a live runtime is running, which Runtimes reads from the Operator by the label every pod of a user environment carries. Everything else is deleted once it has been unused for the retention window.
+
+| Setting on Runtimes | Default | What it does |
+| --- | --- | --- |
+| `DATALAYER_RUNTIMES_RETENTION_READY_VERSIONS` | 5 | How many `ready` versions are kept beside the promoted one. |
+| `DATALAYER_RUNTIMES_RETENTION_COLLECT_AFTER_DAYS` | 30 | How long an unkept artifact is left alone before it is deleted. |
+| `DATALAYER_RUNTIMES_RETENTION_BATCH` | 200 | How many artifacts one run looks at. |
+| `DATALAYER_RUNTIMES_RETENTION_INTERVAL_SECONDS` | 3600 | How often Runtimes asks for the day's run. |
+
+- **Who runs it:** Runtimes asks hourly for one run a day, keyed on the date and the plane, so the first replica to ask starts it and the others find it; the sweep itself is `EnvironmentsRetentionWorkflow` on the durable `environments` queue, because a provider delete belongs in the worker.
+- **Nothing goes on a guess:** an environment whose runtimes the Operator cannot answer for yields no candidate at all, and the run says so in `unreadableEnvironments`. A runtime whose version is unknown keeps every artifact of its environment.
+- **The order matters:** an artifact is deleted at the provider *then* marked `collected`. One deleted and not marked is found again tomorrow; one marked and not deleted is storage nobody will look at again.
+- **A provider that refuses one** does not stop the sweep, and the artifact stays `eligible` for tomorrow.
+- **Without a durable service configured**, nothing is swept and the log says so at startup.
+
+## What it reports
+
+The measures of the plan's section 14, written where the work happens and read through the OTEL query API. No uid is ever a metric label — the environment, version and build uids are on the spans instead, where an unbounded value costs nothing — and every span of a build carries the one correlation id the API put on the build, so the API call, the workflow, the provider call and the check read as one trace.
+
+| Metric | Written by | What it says |
+| --- | --- | --- |
+| `environments.builds` | durable | Builds that ended, by variant, region, status and `DL_ENV_*` code. Failures by code are a slice of it. |
+| `environments.build.queue_wait` | durable | From the build being recorded `queued` to a worker claiming it. |
+| `environments.build.duration` | durable | From that claim to the end. |
+| `environments.build.retries` | durable | Attempts after the first. |
+| `environments.cache.lookups` | durable | Every lookup, with `hit` true or false: the hit rate is a ratio of its two series. |
+| `environments.resolves`, `environments.resolve.duration` | durable | Resolutions that ended, and how long they took. |
+| `environments.artifact.bytes` | durable | An artifact's size: what a cold start waits for and egress is billed on. |
+| `environments.artifacts.collected` | durable | What the retention sweep collected, and what it could not. |
+| `environments.artifact.resolution` | Runtimes | Version to immutable reference on the launch path, resolved or refused. The SLO is p99 under 100 ms. |
+| `environments.launches`, `environments.launch.refusals` | Runtimes | Launches of a user environment, and the refusals by code. |
+
+A measure is never why a build fails: each is taken inside a `try`, and a broken instrument is a warning in the log.
 
 ## Check
 
