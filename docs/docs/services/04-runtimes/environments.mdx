@@ -144,6 +144,16 @@ A version whose required variants built and whose optional ones did not is `part
 
 The same route repairs an artifact that was deleted out of band, which is what E2-09's reconciliation will start: pass `"force": true` so the owner's cache does not answer with the artifact being replaced.
 
+### One dependency set on every variant
+
+A lock pins one set of top-level package versions, but four different builders install it — a Modal image is not a Daytona snapshot is not `datalayer`'s own Dockerfile. Appendix B check 5 is the proof that installing the same lock four different ways still answers the same versions.
+
+- **Every smoke test answers it.** After `smoke_test` passes its usual checks, it reads check 5's per-package answer (`code_sandboxes.environments.conformance.package_versions_of`) and, if the variant reported any packages, folds them into the version's cross-variant report.
+- **A version keeps one report, built up variant by variant.** The first variant to finish just writes its answer. Each variant after that either agrees — and its packages join the report — or disagrees on some package's version, and the build is refused before the report changes.
+- **A drift is a refusal, not a silent record.** A disagreement fails the build with `DL_ENV_SMOKE_TEST_FAILED`, naming the package and the two versions that disagree (which variant reported which). Nothing about the version or its other artifacts changes — the drifted variant is the one left unavailable.
+- **It is stored on the version**, not derived on read: `PUT /internal/environment-versions/{uid}/package-report/{variant}` (Runtimes' internal route 13, `environment-builds:write`) does the compare-and-set against Solr's `environments` collection, and the result comes back on the version as `packageReport` — including through `build_inputs`, so a build always sees what every variant before it found.
+- **It costs nothing extra to check.** The comparison is pure (`drifted_from`, `cross_variant_packages`) and runs against whatever the report already holds; there is no separate reconciliation pass and no additional build.
+
 ### A degraded provider stops taking optional builds
 
 When a managed provider is failing, the platform's default behaviour would be the worst one available: keep sending it builds, and let each user learn about the outage separately from their own build's failure. A breaker per provider replaces that with one answer.
