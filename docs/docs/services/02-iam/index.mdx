@@ -459,6 +459,62 @@ to it and an operator should know:
   are the right answer to a stolen bearer token, and building against a draft
   that then changes would leave a deployed proof format nobody else speaks.
 
+## An organization's identity provider
+
+Enterprise sign-in used to be a single Okta for the whole deployment, read from
+`DATALAYER_OKTA_DOMAIN`, `DATALAYER_OKTA_CLIENT_ID` and
+`DATALAYER_OKTA_CLIENT_SECRET`. Every organization shared it, and one that
+already had a directory could not use it. An organization now registers its
+own, and a sign-in is routed to it by an email domain the organization claims.
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/iam/v1/organizations/{uid}/identity-providers` | a member | The organization's providers, disabled ones included |
+| `POST …/identity-providers` | an owner | Register one |
+| `GET …/identity-providers/{uid}` | a member | One of them |
+| `PUT …/identity-providers/{uid}` | an owner | Change it, keeping what the request does not name |
+| `POST …/identity-providers/{uid}/disable` and `/enable` | an owner | Stop and restart sign-in through it |
+| `DELETE …/identity-providers/{uid}` | an owner | Remove it outright |
+
+A registration is `{"name", "issuer", "client_id", "domains", "group_claim",
+"client_secret_ref", "enabled"}`. Owners register and change, because a
+provider decides who gets into the organization at all; members may read,
+because it is what they are sent to. A provider belonging to another
+organization answers `404` rather than `403` — saying it exists but is not
+yours says that it exists.
+
+**A domain belongs to one provider.** Routing by email domain is what lets
+somebody sign in without first being asked which company they work for, so two
+organizations claiming `acme.com` is not an ambiguity to settle at sign-in:
+whichever record sorted first would take the other's people into its directory.
+The claim is refused when it is made. A **disabled** provider keeps its claim,
+so re-enabling one cannot quietly capture a domain another organization has
+since started using, and the lookup answers nothing at all on a double claim
+rather than choosing between them.
+
+**The issuer must be `https://`.** The discovery document, the signing keys and
+the sign-in redirect all travel over it.
+
+**The client secret is never stored.** IAM is the *client* to the
+organization's provider, so unlike an inbound client secret it cannot be kept
+as a hash — it has to be sent. `client_secret_ref` names a secret in the
+organization's own IAM secret store, and IAM resolves it by the organization's
+uid when a sign-in needs it, there being no caller at that moment to read it
+as. A reference that looks like a URL, or a secret pasted into the field, is
+refused: this record is rendered in a console.
+
+There is deliberately **no route that resolves an email address to a
+provider**. The sign-in flow needs that lookup and calls the service directly;
+an endpoint for it would answer, one domain at a time, which companies are
+Datalayer customers.
+
+:::note Not the sign-in flow yet
+A registered provider is configuration until an authorization-code exchange
+runs through it — that is the next increment, and where the resolved client
+secret is first used. Group-to-role mapping, the ID-JAG grant, workload
+identity federation and SCIM build on this registry and are not here.
+:::
+
 ## Anonymous trials
 
 A visitor who has never signed in can be allowed to run one public benchmark
