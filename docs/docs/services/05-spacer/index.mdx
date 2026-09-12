@@ -268,10 +268,12 @@ it is verified without the session revocation cache, a short TTL bounding it
 instead. A room accepts it only for the document it names and refuses it at any
 other; a full user token still works, falling through to the session-token
 path. The room **still** runs the item's access check on connect, so the token
-narrows who a leaked credential can act for, never widens it. The consumer half
-— the gateway requesting one and the runtime using it per execution — is the
-remaining piece; until a caller sends a scoped token the door behaves exactly
-as above.
+narrows who a leaked credential can act for, never widens it. The consumer —
+the MCP worker (`jupyter-mcp-server` ≥ 2.1.14), which on a Datalayer document
+server fetches the session id with the caller's token and then opens the room
+with the scoped one — is built; until a Spacer and a gateway carrying both ship
+together the door behaves exactly as above, and the worker falls back to the
+caller token, so the two deploy in either order.
 
 ## A token narrowed to resources
 
