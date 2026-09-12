@@ -291,6 +291,25 @@ which is what **Compare my agent** sends before it opens the wizard on the copy.
 The public page also counts it as a reuse, through
 `POST /api/library/v1/items/{id}/reused`.
 
+### How far a record reaches
+
+The five visibility levels of the benchmarks plan (section 14.5) are
+**derived**, never stored: `datalayer_solr.evals_sharing.visibility_of` answers
+the widest thing that is true of a record — `public`, `organization`, `team`,
+`users`, `private` — from the grants it already carries and its public flag. A
+level stored beside the grants can disagree with them, and then nothing says
+who may actually read the record.
+
+- `GET /evalsets/{id}/permissions` answers it as `visibility`, from the access
+  record the permission check already read.
+- The library projection carries `visibility_s` and `organization_uids_ss`,
+  worked out once per write in the evals dual write. The library index cannot
+  read the grants itself, and a search over somebody's own shelf has to filter
+  on something.
+
+A grant at any level counts: a Runner's exposes the record as surely as a
+Viewer's.
+
 ### The published package
 
 Making a benchmark public publishes a package: an immutable `type_s:
