@@ -657,6 +657,10 @@ caller can set, which is why it limits the rate and authorizes nothing.
 | `DATALAYER_TRIAL_CREDITS` | Credits one trial may spend; default `25`. A value that is not a positive number is a misconfiguration and the default is used rather than an uncapped trial |
 | `DATALAYER_TRIAL_TTL_SECONDS` | How long a trial and its key live; default `1800` |
 
+Turned on for prod1 2026-09-12, at the defaults, against the B0-13 fixture
+(the same public benchmark the sample and section 16's live report read):
+`GET /trials/offer` there answers `offered: true`.
+
 **Claiming.** `POST /trials/{uid}/claim` takes two credentials: the person's,
 which authenticates the request, and the trial's own key in
 `X-Datalayer-Trial-Token`, because a trial uid appears in a URL and knowing
