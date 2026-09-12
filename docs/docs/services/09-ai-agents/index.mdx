@@ -350,6 +350,19 @@ writing a second one. Withdrawing moves `status_s` to `unpublished` and changes
 nothing else, so a snapshot never becomes editable. Audited as
 `evals.package.publish` and `evals.package.unpublish`.
 
+### What was decided about a benchmark
+
+`GET /decisions?evalset_id=&launch_id=` answers the decisions recorded about a
+benchmark or one of its launches. The per-report and per-investigation listings
+answer what was decided *in* one place; this answers what was decided about the
+benchmark, which is what something outside the product has to ask — CI knows the
+benchmark it ran and nothing else.
+
+Naming neither parameter answers an empty list rather than every decision the
+account has ever recorded. The GitHub action's `post-decision` mode is the
+caller: it posts the decisions and a link to the report back to the pull
+request, and nothing else.
+
 ### Search across an account
 
 `GET /search?q=&kinds=&limit=` finds benchmarks, launches, tasks, reports and
