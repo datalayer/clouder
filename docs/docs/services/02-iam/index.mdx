@@ -563,12 +563,69 @@ into one account. `email_verified` is carried through rather than acted on —
 whether an unverified address may be linked to an account is a provisioning
 rule, decided where the account is.
 
+### The account a verified identity signs in as
+
+A verified token is not yet a session. Which Datalayer account it is, whether
+one is made, and what the person gets in the organization are policy decisions
+rather than protocol ones, so each is set out here.
+
+**The address must be at a domain the provider has proved** — checked a second
+time, and not redundantly. Routing checks the domain somebody *typed*; this
+checks the one the provider *came back with*, and they need not be the same.
+Without it, a registered provider could assert an address at any domain at all
+and verification would only ever have decided which button was shown.
+
+**An account that already exists is not taken.** If the asserted address
+matches a Datalayer account that nobody has linked to this provider — somebody
+who signed up with their work address through GitHub, most often — the sign-in
+is **refused** and says what to do about it. Holding a domain means holding its
+mailboxes, so the organization could reach the address; that is not the same as
+being handed a live session for an account carrying personal work, credits and
+membership of *other* organizations, whose owner was never asked. The person
+connects the two themselves from a session they already have
+(`GET /oauth2/enterprise/authz/url/link`).
+
+An organization that wants the smoother rollout sets `allow_email_linking` on
+its provider. Then the adoption happens — but only on a proved domain **and**
+an `email_verified` claim, and never when two accounts share the address. The
+default is the cautious one because the costs are not symmetric: refusing locks
+somebody out of a sign-in route they were not using yet, adopting hands over an
+account.
+
+**Joining the organization is automatic; being anything in it is not.** Signing
+in through a directory an organization registered, on a domain it proved, is
+what membership means, so the person is added as an `organization_member`. No
+sign-in confers more: the token's groups are recorded and not acted on until
+group-to-role mapping lands.
+
+| Route | Who | What |
+|---|---|---|
+| `GET /oauth2/enterprise/authz/url` | anyone | Where an address should sign in. `enterprise: false` is the ordinary answer, not a failure — the caller then shows the sign-in it always did |
+| `GET /oauth2/enterprise/authz/url/link` | a member | The same, from a session, to attach the directory to that account |
+| `GET /oauth2/enterprise/callback` | the provider's redirect | Completes the sign-in and hands the browser back to the application |
+
+The first route is unauthenticated because somebody signing in has no session
+yet, and so it does say, one address at a time, whether a domain belongs to a
+customer. That is inherent to routing by domain and is what every product with
+enterprise sign-in answers when you type a work address.
+
+**What the sign-in keeps while the browser is away** lives in Solr rather than
+in the `state` parameter. The other sign-ins here put a nonce in the URL, which
+is fine for a nonce; the PKCE **verifier** is not, because a verifier carried
+through the browser and the provider is one an interceptor has too. So `state`
+is an opaque handle — single-use, spent as it is read, and expiring after ten
+minutes — and the verifier, the nonce, the redirect and which provider this was
+sit behind it. A callback URL replayed from browser history, a proxy log or a
+referrer finds nothing, and a forged handle is refused with the same words as a
+spent one.
+
+The provider is **re-read at the callback** rather than carried: one disabled,
+re-pointed or deleted while somebody was away has had its rules changed, and
+the record at the end is the one that applies.
+
 :::note What is not here yet
-Linking a verified identity to an account, or creating one, is the remaining
-increment — with it the rules about matching an existing Datalayer user by
-email and about who may be auto-provisioned into an organization. Group-to-role
-mapping, the ID-JAG grant, workload identity federation and SCIM build on this
-registry and are not here.
+Group-to-role mapping, the ID-JAG grant, workload identity federation and SCIM
+build on this registry and are not here.
 :::
 
 ## Anonymous trials
