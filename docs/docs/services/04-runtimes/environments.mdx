@@ -144,6 +144,18 @@ A version whose required variants built and whose optional ones did not is `part
 
 The same route repairs an artifact that was deleted out of band, which is what E2-09's reconciliation will start: pass `"force": true` so the owner's cache does not answer with the artifact being replaced.
 
+### A degraded provider stops taking optional builds
+
+When a managed provider is failing, the platform's default behaviour would be the worst one available: keep sending it builds, and let each user learn about the outage separately from their own build's failure. A breaker per provider replaces that with one answer.
+
+- **Nothing is stored.** A provider's health is counted from its recent build records every time it is asked — every Runtimes replica answers the same thing, and a pod that just restarted knows what the others know.
+- **Two arms**, checked independently: an error rate of at least 50% over at least 4 attempts in a 15-minute window (`code_sandboxes.environments.breaker.Thresholds`), and a queue of 8 or more of the provider's builds still open.
+- **Only two codes count against a provider** (section 10): `DL_ENV_PROVIDER_ERROR` and `DL_ENV_BUILD_TIMEOUT`. A `DL_ENV_BUILD_FAILED` is the spec's fault and never closes a provider for anybody else.
+- **`datalayer` is never breakable.** It is the platform's own builder, not a third party to route around; its health is still counted and shown, but its builds are never stopped.
+- **A required variant is never stopped**, whatever the breaker says — the version cannot become ready without it. `POST /builds` queues what it can and reports the rest in `degradedVariants`, one entry per stopped variant with its `reason`, `arm` and, for the error-rate arm, `retryAfterSeconds`. Only when every requested variant is degraded is the whole request refused, `503` `DL_ENV_PROVIDER_ERROR`. A `retry` of one degraded optional build is refused the same way; a retry of a required variant is untouched.
+- **It closes on its own.** The error-rate arm reopens once the newest counted failure is older than its 10-minute cool-down — the half-open state of a textbook breaker, with no probe to schedule. The queue-depth arm just tracks the number waiting.
+- **`GET /sandbox-providers`** carries each entry's `degraded` state, and the full reason when it is true — the place a person looks when their optional builds are being refused.
+
 ## Build logs
 
 The durable worker appends a build's log through `POST /api/runtimes/v1/internal/environment-builds/{uid}/logs`. That route answers only durable's own key, `DATALAYER_DURABLE_RUNTIMES_API_KEY`. A person's token and the shared `DATALAYER_RUNTIMES_API_KEY` are refused with `401`.
