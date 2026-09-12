@@ -126,6 +126,73 @@ The durable worker appends a build's log through `POST /api/runtimes/v1/internal
 
 The redactor ships in a `code-sandboxes` release after 1.5.0. On a Runtimes image without it, the append route answers `503` with `DL_ENV_UNAVAILABLE` and stores nothing; reading and following a log work either way. `DATALAYER_DURABLE_RUNTIMES_API_KEY` goes in the plane's rc when the build worker ships.
 
+## The scan and the signature
+
+Two gates stand between a build and a sandbox, in this order (D-11).
+
+**The scan.** ECR scans on push. The worker waits for that scan with a time
+bound, reads the findings — enhanced or basic, whichever the repository is
+configured for — and decides. The default, and what it means:
+
+| | |
+| --- | --- |
+| Blocks | A `CRITICAL` finding **that has a fixed version** |
+| Records, and does not block | A `CRITICAL` finding nothing fixes yet, counted as `unfixable` |
+| Does not block | Anything below `CRITICAL`, and any advisory the owner has allowed |
+
+Both halves of the default are deliberate: `CRITICAL` alone would block on
+findings nobody can act on, and blocking the unfixable leaves an owner with
+nothing to do but wait. A blocked build ends `failed` with
+`DL_ENV_SCAN_BLOCKED`, naming each finding with its package, the version
+installed and the version to ask for, and the decision record — the threshold,
+the counts by severity, the blocking findings — is stored on the artifact, so
+why a build stopped can be read a month later without asking the scanner
+again. An organization tightens the threshold in E3-06.
+
+A scan that never finishes inside the bound, or a scanner that refuses the
+image, is `DL_ENV_PROVIDER_ERROR`: retryable, because nothing about the
+version is wrong.
+
+**The signature.** Once the scan passes, and before the smoke test, cosign
+signs the digest with the KMS key named by `DATALAYER_ENVIRONMENTS_KMS_KEY`.
+The signature sits beside the image in the same repository, at cosign's own
+`sha256-<hex>.sig` tag, and a replayed attestation finds it rather than
+pushing a second one — which the immutable tags refuse, and which would be two
+words about one artifact. A worker with no key or no cosign refuses **before**
+asking the registry anything: an artifact nobody can sign can never be used,
+so spending the scan's wait to reach the same refusal would only make the log
+read as though the scan were the problem.
+
+### What the Operator does with it
+
+Before creating **any** pod from an `environments/` image — a launch, a
+warm-pool pod, a restored checkpoint — the Operator verifies the signature
+against the key's public half and refuses an unsigned or wrongly signed digest
+with `DL_ENV_SIGNATURE_INVALID`, 422 on the launch route, raised before
+anything is reserved.
+
+| Setting on the Operator | Default | What it does |
+| --- | --- | --- |
+| `DATALAYER_ENVIRONMENTS_KMS_KEY` | unset | The key to verify against. **Unset means nothing starts.** |
+| `DATALAYER_ENVIRONMENTS_VERDICT_TTL_SECONDS` | 3600 | How long a pass is believed. |
+| `DATALAYER_ENVIRONMENTS_REFUSAL_TTL_SECONDS` | 30 | How long a refusal is believed. |
+| `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` | 20 | How long `cosign verify` is waited for. |
+
+- **It fails closed.** No key, no `cosign` in the Operator's image, a verifier
+  that cannot be run or does not answer, or an image pinned by a tag rather
+  than a digest: the pod is refused. So the key and cosign reach the Operator
+  **before** the first artifact exists — which E1-06 does, deploying the key
+  with the registry — or every user-environment launch is refused. That is the
+  safe direction, and a plane with no user environments notices nothing.
+- **Only `environments/` images are checked.** A platform image on OVH is
+  unsigned and launches unchecked until E1-28 moves those onto the pipeline.
+- **The verdict is cached per digest**, because a warm pool creates pods faster
+  than cosign answers and a digest's verdict is content: it cannot change. A
+  refusal is re-checked much sooner, since the usual reason for one is a
+  signature that has not been pushed yet.
+- **There is no admission webhook.** A pod created by any path other than the
+  Operator is unchecked, which is accepted until E4-10.
+
 ## Retention: what is kept, and what is collected
 
 Storage is paid for, so an artifact nothing can reach any more is deleted at its provider. Three things are kept: the promoted version, the newest few `ready` versions — so a rollback is a promotion and not a rebuild — and anything a live runtime is running, which Runtimes reads from the Operator by the label every pod of a user environment carries. Everything else is deleted once it has been unused for the retention window.
