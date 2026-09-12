@@ -75,6 +75,24 @@ A build is recorded `queued` by the registry and run by the durable service, on 
 - **When durable can't be reached:** cancelling a build answers `503` and leaves the build as it was, rather than marking it cancelled.
 - **Not built yet:** the builder itself, the registry it pushes to, scanning and signing. Until they land, a build reaches the step that needs them and is refused with `DL_ENV_CAPABILITY_UNSUPPORTED`, naming what is missing.
 
+### What a build costs, and what refuses one
+
+Creating a build answers with an estimate before anything is queued: how many builds it would start, their minutes, their storage and their credits, per variant and in total. A request that would put its owner over one of the preview limits is refused with `429` and `DL_ENV_QUOTA_EXCEEDED`, naming the limit in `detail.quota`.
+
+| Limit | Default | Setting |
+| --- | --- | --- |
+| Builds at once | 2 | `DATALAYER_RUNTIMES_BUILD_QUOTA_CONCURRENT` |
+| Build-minutes a day | 120 | `DATALAYER_RUNTIMES_BUILD_QUOTA_MINUTES_PER_DAY` |
+| Retained versions | 10 | `DATALAYER_RUNTIMES_BUILD_QUOTA_RETAINED_VERSIONS` |
+| Stored GiB | 50 | `DATALAYER_RUNTIMES_BUILD_QUOTA_STORED_GIB` |
+
+- **A refusal costs nothing:** no build is written and no workflow starts. A quota checked after the workflow started has already spent what it was meant to save.
+- **The day's minutes** count what builds actually ran, a running one up to now, so a day's worth cannot start at once.
+- **Storage** is metered from the sizes builds recorded. A plane that meters it from the registry instead answers `503` until that registry exists, rather than passing a limit nobody could measure.
+- **The rate and the expected length** of a build are per variant: `DATALAYER_RUNTIMES_BUILD_RATE_<VARIANT>` and `DATALAYER_RUNTIMES_BUILD_MINUTES_<VARIANT>`.
+
+A `datalayer` build holds an IAM reservation against its owner for as long as it may run, made once and keyed on the build, and closed however the build ended. A managed variant holds none: its own provider bills the owner directly.
+
 ## Build logs
 
 The durable worker appends a build's log through `POST /api/runtimes/v1/internal/environment-builds/{uid}/logs`. That route answers only durable's own key, `DATALAYER_DURABLE_RUNTIMES_API_KEY`. A person's token and the shared `DATALAYER_RUNTIMES_API_KEY` are refused with `401`.
