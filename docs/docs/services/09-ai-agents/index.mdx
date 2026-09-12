@@ -330,6 +330,26 @@ writing a second one. Withdrawing moves `status_s` to `unpublished` and changes
 nothing else, so a snapshot never becomes editable. Audited as
 `evals.package.publish` and `evals.package.unpublish`.
 
+### Comparing launches, and the leaderboard
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /evalsets/{id}/comparison?launches=a,b` | Viewer | The launches side by side: per launch, per subject and per task, with the pairwise deltas |
+| `GET /public/evalsets/{id}/leaderboard` | Anybody | The subjects that ran a published benchmark, best first |
+
+The arithmetic is `datalayer_ai_agents.services.evals_comparison`, a pure
+module over `datalayer_solr.evals.run_pass_rate` and `run_cost` — the same
+functions the evalset summary and the report engine use, so no two surfaces
+can disagree about a pass rate. Launches are compared in the order the query
+names them, oldest first; where none is named, the two newest are taken. A
+delta is `later - earlier`, and the answer carries that convention rather than
+assuming the caller knows it.
+
+The leaderboard counts **only runs inside a published package** (see *The
+published package* above): a row names the publication its best run came from,
+so a reader can open and reproduce it. A withdrawn package stops counting the
+moment its status moves, without anything being recomputed.
+
 ### Imported CI reports
 
 A report the evals CLI or the GitHub action wrote can be imported on its
