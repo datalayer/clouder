@@ -483,14 +483,30 @@ because it is what they are sent to. A provider belonging to another
 organization answers `404` rather than `403` — saying it exists but is not
 yours says that it exists.
 
-**A domain belongs to one provider.** Routing by email domain is what lets
-somebody sign in without first being asked which company they work for, so two
-organizations claiming `acme.com` is not an ambiguity to settle at sign-in:
-whichever record sorted first would take the other's people into its directory.
-The claim is refused when it is made. A **disabled** provider keeps its claim,
-so re-enabling one cannot quietly capture a domain another organization has
-since started using, and the lookup answers nothing at all on a double claim
-rather than choosing between them.
+**A claim is not proof.** Whoever holds a domain's claim receives everybody who
+signs in with an address at it, so a registry that took an organization's word
+for `gmail.com` would hand it every sign-in for that domain. A claimed domain
+therefore **routes nothing until it is verified**:
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET …/identity-providers/{uid}/domains/{domain}/verification` | a member | The TXT record to publish |
+| `POST …/identity-providers/{uid}/domains/{domain}/verify` | an owner | Read it back and mark the domain proved |
+
+Publish a `TXT` record at `_datalayer-verification.<domain>` whose value is
+`datalayer-domain-verification=<token>`, then verify. The token is minted per
+provider, so a record published for one organization cannot prove another's
+claim to the same domain, and it is not a secret: it proves nothing without
+control of the domain's DNS, which is the whole point. The subdomain keeps the
+record away from SPF and DMARC at the apex.
+
+Uniqueness is between **verified** claims. An unverified claim blocks nobody —
+otherwise squatting one would be enough to stop a competitor signing in — and
+exclusivity is checked at verification as well as at registration, because a
+claim can sit unverified while somebody else proves the same domain. A
+**disabled** provider keeps its verification, so re-enabling one cannot quietly
+take a domain proved in the meantime, and the lookup answers nothing at all on
+a double proof rather than choosing between them.
 
 **The issuer must be `https://`.** The discovery document, the signing keys and
 the sign-in redirect all travel over it.
@@ -508,11 +524,51 @@ provider**. The sign-in flow needs that lookup and calls the service directly;
 an endpoint for it would answer, one domain at a time, which companies are
 Datalayer customers.
 
-:::note Not the sign-in flow yet
-A registered provider is configuration until an authorization-code exchange
-runs through it — that is the next increment, and where the resolved client
-secret is first used. Group-to-role mapping, the ID-JAG grant, workload
-identity federation and SCIM build on this registry and are not here.
+### Signing in through it
+
+A registered provider's endpoints are **discovered**, not configured: they are
+read from the OpenID configuration at its issuer and cached for an hour, so a
+provider's own availability is not on the sign-in path. Two checks are made on
+that document before anything is sent to what it names — it must **claim the
+issuer it was fetched from** (otherwise a provider registered as
+`acme.okta.com` could hand back somebody else's endpoints and take that
+organization's people, and their authorization codes, with them), and **every
+endpoint must be https**.
+
+The sign-in is started with **PKCE S256** and a **nonce**. PKCE is always used:
+a provider may be registered with no client secret at all, and for one of those
+PKCE is the only thing standing between an intercepted code and a session. A
+provider that offers only `plain` is refused rather than downgraded. The
+`state`, `nonce` and PKCE verifier are handed back to the caller to keep with
+that browser's session rather than stored here, because this service has
+several replicas.
+
+On the way back, the code is exchanged at the discovered token endpoint — with
+the client secret for a confidential client, on PKCE alone for a public one —
+and the **ID token is verified before any claim in it is believed**:
+
+| Checked | Why |
+|---|---|
+| Signature, against the key at `jwks_uri` under the token's own `kid` | Everything else is only as good as this |
+| Algorithm, against an asymmetric allow-list | `none` is unsigned; `HS256` verifies with a *shared* secret, so a provider's client could mint a token for anybody |
+| `iss` | A token from another provider is not accepted by this registration |
+| `aud`, and `azp` when several audiences are named | A token issued for another client of the same provider is not ours |
+| `nonce` | Makes a token captured from one sign-in useless in another |
+| `exp`, with a minute of skew | No more generous than that |
+
+The person is identified by **(issuer, `sub`)**, never `sub` alone: a `sub` is
+unique within one provider and says nothing across two, so two directories
+could each have a `00u123` and linking on it would join two different people
+into one account. `email_verified` is carried through rather than acted on —
+whether an unverified address may be linked to an account is a provisioning
+rule, decided where the account is.
+
+:::note What is not here yet
+Linking a verified identity to an account, or creating one, is the remaining
+increment — with it the rules about matching an existing Datalayer user by
+email and about who may be auto-provisioned into an organization. Group-to-role
+mapping, the ID-JAG grant, workload identity federation and SCIM build on this
+registry and are not here.
 :::
 
 ## Anonymous trials
