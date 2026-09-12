@@ -65,6 +65,16 @@ A write takes `If-Match` with the ETag read before it, which is the document's `
 
 `DELETE` asks the Operator which runtimes of the environment are running, on `GET /api/operator/v1/environments/{uid}/runtimes`, with the Runtimes key. When the Operator cannot answer, the deletion is refused with `503` and nothing is deleted. So the Operator deploys with Runtimes, or before it.
 
+## Builds
+
+A build is recorded `queued` by the registry and run by the durable service, on its own `environments` queue, one run per build.
+
+- **Starting one:** Runtimes starts it through durable only when both `DATALAYER_DURABLE_URL` and `DATALAYER_RUNTIMES_DURABLE_API_KEY` are set on Runtimes. Without them the build stays `queued` and nothing runs it.
+- **Reading and writing back:** the worker uses `DATALAYER_DURABLE_RUNTIMES_API_KEY` on Runtimes' internal routes: the build's inputs, the build's and the version's status, the version's lock, its builds, the owner's cache and the artifacts. Every write is replay-safe, so a replayed step stores nothing twice.
+- **Two keys, easily confused:** `DATALAYER_RUNTIMES_DURABLE_API_KEY` is Runtimes calling durable. `DATALAYER_DURABLE_RUNTIMES_API_KEY` is durable calling Runtimes. `plane up` sets each on both sides from the rc, and both are the owner's to put there.
+- **When durable can't be reached:** cancelling a build answers `503` and leaves the build as it was, rather than marking it cancelled.
+- **Not built yet:** the builder itself, the registry it pushes to, scanning and signing. Until they land, a build reaches the step that needs them and is refused with `DL_ENV_CAPABILITY_UNSUPPORTED`, naming what is missing.
+
 ## Build logs
 
 The durable worker appends a build's log through `POST /api/runtimes/v1/internal/environment-builds/{uid}/logs`. That route answers only durable's own key, `DATALAYER_DURABLE_RUNTIMES_API_KEY`. A person's token and the shared `DATALAYER_RUNTIMES_API_KEY` are refused with `401`.
