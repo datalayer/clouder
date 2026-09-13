@@ -73,6 +73,15 @@ service reaches five other services for the benchmarks (evals) API:
 | `DATALAYER_RUNTIMES_URL` | Where Runtimes is: a task's sandbox snapshot is checked, restored (through durable's `SandboxWorkflow`) and deleted as the person; the pre-launch validation (`POST /evalsets/{id}/launches/validate`) reads the environments this account is offered and their burning rate from it to estimate a launch's cost |
 | `DATALAYER_CONTENTS_URL` | Where Contents is: a benchmark's `dataset_ref` is validated against a dataset revision with the request's credential before it is saved, and again by the pre-launch validation |
 | `DATALAYER_AI_INFERENCE_URL` | Where AI Inference is: `GET /evals/subjects` lists the models it offers as the person, for an experiment whose subject is a `model` (run by durable over `chat/completions`, no sandbox), and the validation checks a model subject against that list. Unset, the subjects answer `models_available: false` rather than a made-up list |
+| `DATALAYER_AI_AGENTS_URL` | This service's own public URL, `--set` by `datalayer_ai_agents()` in `up.sh`. Doubles as the chart's ingress host (`aiagents.runHost` strips the scheme and path off it), so this is what a caller — the orchestration API's own clients included — reaches the service at, and it must name whichever cluster the service is actually deployed to |
+
+As of 2026-09-13, `ai-agents`, `datalayer-durable`, the Jupyter MCP Server
+gateway and the scheduler all run on **r1**, not `prod1` — a real
+redeployment, not a naming change (see the [Durable](/services/system/durable/)
+page's own note). `DATALAYER_AI_AGENTS_URL` and the durable, Spacer, Runtimes,
+Contents and AI Inference URLs above are read from whichever rc the release
+was made from, so a deployer's job is to know which plane's rc that was, not
+to assume from either service's usual name.
 
 An **anonymous trial** (`BENCHMARK.md`, B2-14) reaches this service as a
 principal carrying `platform_guest` whose uid names a trial in the `iam`
@@ -633,10 +642,11 @@ it.
   (`DATALAYER_SOLR_ORCHESTRATION_COLLECTION`), through a store opened per
   account: every record carries `account_uid_s`, and an idempotency key is
   claimed per account, so the same key from two accounts is two commands.
-- **Durable** is reached with the same `DATALAYER_DURABLE_URL` and
-  `DATALAYER_AI_AGENTS_API_KEY` benchmark runs use, through the one durable
-  client every service shares (`datalayer_common.durable_client`, the MCP
-  gateway's client lifted out of it). Unset or not answering,
+- **Durable** — [see its own page](/services/system/durable/) for what runs
+  the workflow and where — is reached with the same `DATALAYER_DURABLE_URL`
+  and `DATALAYER_AI_AGENTS_API_KEY` benchmark runs use, through the one
+  durable client every service shares (`datalayer_common.durable_client`, the
+  MCP gateway's client lifted out of it). Unset or not answering,
   `executions.delegate` answers `dispatched: false` and records a retryable
   `execution.error` on the execution; a request to a worker answers
   `delivered: false`. Neither loses the command: it is received, and waits in
@@ -717,6 +727,33 @@ it.
   with no supervisor, or whose members cannot be ordered is
   `invalid_command`; a team in a mode the control plane does not run is
   `unsupported_operation`.
+- **A team from the product** (O2-14 to O2-18): any runnable team's own page
+  — sequential or parallel, placed by the control plane, and supervisor,
+  whose own supervisor asks for the members it routes work to — delegates it
+  through the same `executions.delegate` route as the curl example above and
+  opens straight onto `/executions/:executionId/conversation` — the same
+  tree, drawn as the supervisor's brief to each member and each member's own
+  turns as it works, with a roster to focus on one member's messages and its
+  own `steer`, `pause`, `resume`, `cancel` and **Run again** wired to the same
+  `ExecutionActions` the execution page uses (O2-10), so an action taken from
+  the conversation reaches the control plane exactly the way one taken from
+  the tree does. Built 2026-09-13, server side and view alike; what keeps all
+  five plan items open is narrower than the code — nobody has yet watched a
+  team talk and acted on
+  it from an actual signed-in browser, which the plan calls out by name as
+  needing a person's session rather than a service call.
+  The **Notebook Benchmark Team** (`notebook-benchmark`, O2-13) is the
+  catalogue's concrete case: a runner executes the benchmark's notebook from
+  a clean sandbox, an analyst compares its outputs against the evalset's
+  expectations, and a reviewer checks the comparison before anything is
+  published, each depending on the one before. Delegating it ran end to end
+  on the reference benchmark on 2026-09-13, root and all three children
+  completed. What it does **not** yet do is become one of `ai-agents`'s own
+  evalset launches: the team answers all of an evalset's cases as one
+  combined objective, and the benchmarks report renderer
+  (`build_eval_report_lexical`) needs one experiment per case — bridging that
+  gap, or revisiting what "done" means for this slice, is an open product
+  decision, not a missing wire.
 - **Delegation** (O2-02) is the control plane's half of a delegation token,
   decided on `executions.delegate` without asking anybody. A child's
   references are in its parent's manifest (by kind and uid), a read-only one
@@ -742,7 +779,8 @@ it.
   covers is terminal. A connection dropped mid-stream and resumed receives
   every missed event exactly once (`tests/test_orchestration_api.py` drops
   one at the ASGI level). The app's execution page
-  (`/orchestration/:executionId`) reads it through `core`'s
+  (`/executions/:executionId`, renamed from `/orchestration/:executionId` on
+  2026-09-13) reads it through `core`'s
   `subscribeToExecution`, and the execution and its artifacts through
   `executions.get` and `executions.collect`. After each batch of events the
   stream sends `orchestration.tree` (O2-03): the `TreeSummary` the user

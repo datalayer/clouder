@@ -249,28 +249,45 @@ into a workflow.
 
 ## Where it runs, and what it talks to
 
-In **`datalayer-durable`** — and there is one of these **on each plane**,
-which is the thing to know before deploying it.
+**One `datalayer-durable`, on the runtimes plane** — not one per plane. `plane
+up datalayer-durable` (`datalayer_durable()` in `up.sh`) is a single release,
+placed beside the runtimes whose sessions its workflows execute in; nothing in
+it branches on which cluster happens to be current. Whichever cluster that is
+today, that is the one durable install that matters — never a peer copy for
+every plane that happens to call it.
 
-The r1 install sits beside the runtimes whose sessions its workflows execute
-in, and that is the placement this page was written for. But the callers
-reach it at `datalayer-durable-svc.datalayer-durable`, an in-cluster name, so
-**the install a caller talks to is the one on its own plane**: the gateway,
-ai-agents and the scheduler all run on prod1 and all reach prod1's. Rolling
-r1's changes nothing any of them can see — measured on 2026-09-12, when a
-reup of r1 left every ai-agents call answering `401`.
+**Every caller reaches it the same way, wherever the caller itself runs**: at
+its public URL, `DATALAYER_DURABLE_URL`, through the real ingress `plane reup
+datalayer-durable` renders at `DATALAYER_DURABLE_HOST` — never the in-cluster
+name `datalayer-durable-svc.datalayer-durable`, which only resolves for a
+caller already inside durable's own cluster, and a name that resolves today
+works right up until the caller moves. See
+[Reaching it from the API plane](#reaching-it-from-the-api-plane) for what
+that takes.
 
-Two consequences worth carrying:
+:::caution A second install is a bug, not a second thing to track
+On 2026-09-12 `datalayer-durable` existed on **both** prod1 and r1 — not by
+design, but because a rollout run against the wrong `kubectl` context does
+exactly this. The two had pulled `durable:0.1.7` three days apart and run
+different code under one tag: prod1's copy had five workflows and no
+`ai-agents` caller identity, so every `ai-agents` call that happened to reach
+it answered `401`. If `kubectl get pods -n datalayer-durable` answers on a
+cluster that is not today's runtimes plane, that is a leftover from a wrong
+context, not a second install to keep in sync — tear it down. Bump the image
+tag on every real build regardless, so two builds are never mistaken for one
+even when there is properly only one install.
+:::
 
-- **Deploy both, and know which one you are proving.** The services README
-  lists durable under the runtime plane only; an orchestration, benchmark or
-  scheduler change is proved on **prod1's**.
-- **Bump the image tag every build.** The two planes pulled `durable:0.1.7`
-  three days apart and ran different code under one tag — prod1's copy had
-  five workflows and no `ai-agents` caller identity, so a key that matched on
-  both sides was refused because the running build did not know the caller
-  existed. That is not a thing a digest check catches if you only look at one
-  cluster.
+**As of 2026-09-13, `datalayer-durable`, `ai-agents`, the gateway
+(`jupyter-mcp-server`) and the `scheduler` all run on r1, not prod1** — a real
+redeployment this session, not a renaming. Elsewhere on this page and its
+neighbours, "prod1" and "the API plane" for one of those four now means
+wherever that service actually answers — check with `kubectl` against the
+plane in question rather than assume from a cluster's name. The mechanism
+above is unchanged by the move: a caller reaches durable at its public URL
+through the real ingress whether or not it happens to share durable's own
+cluster today, because that placement is not guaranteed to survive the next
+migration either.
 
 Three namespaces, one for each thing that has its own lifecycle:
 
@@ -285,10 +302,7 @@ live in the namespace of the engine they happen to be using: switching engines
 would otherwise mean moving them. And the engines are separated from each other
 so tearing one down cannot put a `kubectl delete namespace` near the other's
 store — or near `datalayer-postgresql`, which holds the platform's own database
-and has nothing to do with durable execution. The gateway is on the platform plane and calls it across planes at
-`DATALAYER_DURABLE_URL` — a public URL, never an in-cluster name, because the
-two are not guaranteed to share a cluster and a name that resolves in one
-works right up until they do not.
+and has nothing to do with durable execution.
 
 It asks the control plane for things and waits on what it reports. It holds no
 Kubernetes permission and no provider SDK, so a workflow can never race the
