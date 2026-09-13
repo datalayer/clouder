@@ -92,6 +92,13 @@ This is the cheap answer: a GPU spec sent to E2B would otherwise queue a build, 
 - **Runtimes needs no provider SDK to answer.** The capability half of every adapter imports nothing of its provider; the SDK is imported inside the operations that build, inspect or delete an artifact, which run on the durable worker. So `validate` is the same answer on a Runtimes that has no provider extra installed, which is every Runtimes.
 - **A managed build itself is not deployed yet.** An operation that reaches E2B, Daytona or Modal answers `DL_ENV_CAPABILITY_UNSUPPORTED` with `detail.missing` naming the item that ships it. The capability report is exact today; the build is not there yet.
 
+### Sources other than a package list
+
+`spec.build.source` is `packages` by default; two more resolve today, on Datalayer only so far (managed variants still refuse both, until a managed builder accepts them):
+
+- **`dependencyFile`** (E3-01): a `requirements.txt` resolves the way `packages` does — the same merge, the same solve. A `pyproject.toml` with its own `uv.lock` is never re-resolved: the lock is checked against the file with `uv lock --dry-run` and exported, because a lock the author already made is the point of bringing one; any drift refuses naming the package and both versions.
+- **`image`** (E3-04): an existing image — `python:3.12-slim-bookworm`, or pinned by digest — replaces the approved base entirely. The reference is resolved to a digest over the registry's own v2 API, no credential, and only a registry in a bootstrap allowlist is accepted (`docker.io`, `ghcr.io`, `quay.io`, `gcr.io`, `registry.k8s.io`, `public.ecr.aws`) — one off it is `DL_ENV_POLICY_DENIED` at `validate` and at version creation, until an organization's own policy (E3-06) replaces this list. Datalayer's protected pins are still merged in on top, the same as for `packages`; the one difference under the hood is that the solve installs `uv` and the jupyter-server fork's wheelhouse itself rather than assuming an approved base's own. Private registries and their IAM-secret credentials are this box's own second half, not built yet.
+
 ### Resolving a version
 
 A version with no lock is resolved by the workflow's `resolve` step before anything builds: Datalayer's protected constraints — the kernel stack a sandbox needs to connect — are merged over the user's requirements, the base resolves to a digest per requested variant, and the lock is stored once by its digest. Every variant then builds from that one lock.
