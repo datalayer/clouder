@@ -22,7 +22,7 @@ The registry API, its four Solr collections, and the environment recorded on res
 
 1. **The collections**, on the runtimes plane, with the Runtimes set of `plane solr-init`. The init image must carry the current configset, `*_stored` included, as the [Solr page](/services/system/solr/) explains.
 2. **IAM**, before any Operator that sends the environment on reservations. IAM refuses a metadata key it does not know, and every runtime start fails if the Operator is deployed first.
-3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships.
+3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships. r1 runs `code-sandboxes` 1.8.1 as of 2026-09-13 (`runtimes:1.0.11`, `operator:1.0.26`, `durable:0.1.19`) — the floor is not just 1.6.0 in practice: 1.8.1 carries the cosign transparency-log fix "The signature" below depends on, and the protected-pin check E3-01's `dependencyFile` source needs. An older image still starts, but signs and verifies wrongly (see below).
 4. **Durable and the key**, when builds run: `DATALAYER_RUNTIMES_DURABLE_API_KEY` goes in the plane's rc, and `plane up` sets it into the durable release's Secret and into the Runtimes Deployment, beside `DATALAYER_DURABLE_URL`.
 
 ```bash
@@ -220,6 +220,20 @@ words about one artifact. A worker with no key or no cosign refuses **before**
 asking the registry anything: an artifact nobody can sign can never be used,
 so spending the scan's wait to reach the same refusal would only make the log
 read as though the scan were the problem.
+
+:::warning A gotcha found live, 2026-09-13, worth knowing before touching either side
+`cosign sign` reaches for the public Rekor transparency log by default, which for a
+private user environment's digest and repository path (naming the owner) is a real
+data leak, and which a non-interactive worker cannot even consent to — so the builder
+must pass `--tlog-upload=false`. Once signing skips the log, `cosign verify` must be
+told the same thing (`--insecure-ignore-tlog=true`), or it insists on finding a log
+entry that was never made and refuses **every** signature, signed or not — which
+means no environment could ever launch. Neither flag had ever been exercised against
+a real signature before this date; both are fixed in `code-sandboxes` 1.8.1 (the
+builder's `Attestor.sign`) and in `operator:1.0.26`'s `environment_signatures.py`
+verifier. clouder's own deploy-check already had both flags right — the one place in
+the codebase that did — and neither side had read from it.
+:::
 
 ### What the Operator does with it
 
