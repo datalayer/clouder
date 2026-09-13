@@ -112,7 +112,11 @@ away would turn a redeploy into a re-bootstrap.
 | `DATALAYER_DATASERVERS_NAMESPACE` | `datalayer-dataservers` | Where it runs |
 | `DATALAYER_DATASERVER_API_KEY_SECRET` | `datalayer-dataservers-api-key` | The Secret holding the `dataserver` service key |
 | `DATALAYER_DATASERVER_IDENTITY_SECRET` | `datalayer-dataservers-identity` | The Secret holding the mTLS identity |
-| `DATALAYER_DATASERVER_SELF_BOOTSTRAP` | `false` | Obtain the certificate at start instead of mounting one. Needs `DATALAYER_DATASERVER_REGISTRATION_UID`, and Contents issues only for a registration marked `managed` — the switch grants nothing by itself |
+| `DATALAYER_DATASERVER_SELF_BOOTSTRAP` | `false` | Obtain the certificate at start instead of mounting one |
+
+`DATALAYER_DATASERVER_SELF_BOOTSTRAP` also needs `DATALAYER_DATASERVER_REGISTRATION_UID`,
+and Contents issues only for a registration marked `managed` — the switch
+grants nothing by itself.
 
 `contentsUrl` comes from `DATALAYER_CONTENTS_URL` (or `DATALAYER_RUNTIMES_URL`).
 
@@ -135,12 +139,16 @@ datalayer-data-server run       # registers, heartbeats, serves
 
 ## What it does once it is running
 
-`run` registers (`POST /dataservers/register`, retrying an unreachable
-Contents with backoff — a refusal of the *identity* ends the process instead,
-since that will not fix itself), heartbeats every third of the lease, and
-long-polls `GET /dataservers/{uid}/jobs?wait=N` while it has capacity. Each
-job runs on its own thread, and a `query_uid` in the answer's `cancel` list
-stops it — the connector is told, so DuckDB is interrupted, an Athena
+`run` does three things while it has capacity:
+
+- **Registers** — `POST /dataservers/register`, retrying an unreachable
+  Contents with backoff. A refusal of the *identity* ends the process
+  instead, since that will not fix itself.
+- **Heartbeats** every third of the lease.
+- **Long-polls** `GET /dataservers/{uid}/jobs?wait=N`.
+
+Each job runs on its own thread, and a `query_uid` in the answer's `cancel`
+list stops it — the connector is told, so DuckDB is interrupted, an Athena
 execution stopped, a BigQuery job cancelled.
 
 A result is spooled to disk, shaped by the policy **as it is written**,
@@ -193,11 +201,13 @@ registration:
   that could be copied off a host is an identity that can be used from
   anywhere.
 - `GET /dataservers/ca` publishes the CA the certificates chain to.
-- The gateway routes — register, heartbeat, jobs, result — take the
-  `dataserver` service key plus the identity the ingress forwards in
-  `X-Client-Cert-Subject` and `X-Client-Cert-Serial`. The owner's routes —
-  status, drain, resume, revoke, identity — take the owner's IAM JWT. Tickets
-  are validated with the `flight` key.
+- Three kinds of route, three credentials:
+  - The **gateway routes** — register, heartbeat, jobs, result — take the
+    `dataserver` service key plus the identity the ingress forwards in
+    `X-Client-Cert-Subject` and `X-Client-Cert-Serial`.
+  - The **owner's routes** — status, drain, resume, revoke, identity — take
+    the owner's IAM JWT.
+  - **Tickets** are validated with the `flight` key.
 
 `revoke` is what to reach for if a host is lost: it ends the identity at
 Contents, and no certificate on any disk is worth anything afterwards.
@@ -239,8 +249,11 @@ by one, so it is configured, deployed and debugged as
 | CLI | `datalayer-data-server` — `run`, `check`, `bootstrap` |
 | Image | `plane/etc/dockerfiles/datalayer-dataservers` |
 | Chart | `plane/etc/helm-private/charts/datalayer-data-server`, released as `datalayer-dataservers` |
-| Plane | `plane up datalayer-dataservers`, `plane down datalayer-dataservers` — off unless `DATALAYER_DATASERVERS_ENABLED=true`, since most clusters have no Dataserver in them |
+| Plane | `plane up datalayer-dataservers`, `plane down datalayer-dataservers` |
 | Contents routes | `/api/contents/v1/dataservers/*` — see [Contents](/services/contents/) |
+
+`plane up datalayer-dataservers` is off unless `DATALAYER_DATASERVERS_ENABLED=true`,
+since most clusters have no Dataserver in them.
 
 ## From a sandbox (not built yet)
 

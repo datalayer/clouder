@@ -148,9 +148,17 @@ API:
 
 | Annotation on the runtime Pod | Written by | Meaning |
 | --- | --- | --- |
-| `runtime-pools.datalayer.io/node-mount-gateway-mounts` | Operator | The mount set: `{"hash": …, "mounts": [{"source": "home/users/UID", "target": "HANDLE", "mode": "rw", "allow_exec": true}]}`. `source` is relative to the claim; `target` is one path segment. |
-| `runtime-pools.datalayer.io/node-mount-gateway-ready` | Gateway agent | What it applied: `{"hash": …, "state": "ready\|degraded\|failed", "mounted": [...], "failed": {...}}`. The Operator waits for the **hash it asked for** — an answer for the previous set is not an answer for this one. |
-| `runtime-pools.datalayer.io/node-mount-gateway` (label) | Operator | Whether the Pod carries the gateway volume. A pool built before the gateway still holds Pods without it, and one of those must never be handed to a hot attach. |
+| `runtime-pools.datalayer.io/node-mount-gateway-mounts` | Operator | The mount set the Pod should have |
+| `runtime-pools.datalayer.io/node-mount-gateway-ready` | Gateway agent | What the agent applied |
+| `runtime-pools.datalayer.io/node-mount-gateway` (label) | Operator | Whether the Pod carries the gateway volume |
+
+- **`node-mount-gateway-mounts`** is the mount set:
+  `{"hash": …, "mounts": [{"source": "home/users/UID", "target": "HANDLE", "mode": "rw", "allow_exec": true}]}`.
+  `source` is relative to the claim; `target` is one path segment.
+- **`node-mount-gateway-ready`** is what the agent applied:
+  `{"hash": …, "state": "ready|degraded|failed", "mounted": [...], "failed": {...}}`.
+  The Operator waits for the **hash it asked for** — an answer for the previous set is not an answer for this one.
+- **`node-mount-gateway` (label)** is whether the Pod carries the gateway volume. A pool built before the gateway still holds Pods without it, and one of those must never be handed to a hot attach.
 
 There is no gateway port to authenticate, no key to rotate, and nothing inside
 the tenant Pod that can reach it: **authorization is RBAC on patching a runtime
@@ -322,13 +330,24 @@ ready annotation rather than only a node log:
 | --- | --- |
 | `NODE_MOUNT_GATEWAY_UNSUPPORTED_KIND` | A kind this deployment does not serve — or one nothing serves anywhere |
 | `NODE_MOUNT_GATEWAY_INVALID_SOURCE` | A source that is not the shape its kind requires, or a path that walks outside the shared claim |
-| `GATEWAY_KIND_OFF` | Refused by the **Operator**, not the agent: a grant of a kind whose switch is off on this deployment. The Operator reads the same four switches (`DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS`, `_BUCKETS`, `_LOCAL_BRIDGES`, `_REPOSITORIES`) so it never writes what the agent would answer `SECRET_REFUSED`; for an Environment's content it means the pool is declined and the launch spawns with the content. |
-| `NODE_MOUNT_GATEWAY_INVALID_TARGET` | A target that is not a relative path of clean segments — one for a Home Folder or a share, `datasets/<name>` for an Environment's contents, three at most; never absolute, never walking |
+| `GATEWAY_KIND_OFF` | Refused by the **Operator**, not the agent: a grant of a kind whose switch is off on this deployment |
+| `NODE_MOUNT_GATEWAY_INVALID_TARGET` | A target that is not a relative path of clean segments, three at most; never absolute, never walking |
 | `NODE_MOUNT_GATEWAY_SECRET_REFUSED` | A Secret the Pod does not own, or one the agent may not read |
 | `NODE_MOUNT_GATEWAY_MOUNT_FAILED` | The mount was attempted and did not happen — including a checkout that failed or timed out |
 | `NODE_MOUNT_GATEWAY_MOUNT_DEAD` | A `process` mount whose filesystem died; the Pod is `degraded` |
 | `NODE_MOUNT_GATEWAY_PROCESS_UNSUPPORTED` | A `process` grant on an agent with that kind switched off |
 | `NODE_MOUNT_GATEWAY_TOO_MANY_MOUNTS` | Past `maxMountsPerPod` or `maxMountsPerNode` |
+
+Two of these carry more detail than the table has room for:
+
+- **`GATEWAY_KIND_OFF`** — the Operator reads the same four switches
+  (`DATALAYER_NODE_MOUNT_GATEWAY_CREDENTIALS`, `_BUCKETS`, `_LOCAL_BRIDGES`,
+  `_REPOSITORIES`) so it never writes what the agent would answer
+  `SECRET_REFUSED`; for an Environment's content it means the pool is
+  declined and the launch spawns with the content.
+- **`NODE_MOUNT_GATEWAY_INVALID_TARGET`** — the relative path is one segment
+  for a Home Folder or a share, and `datasets/<name>` for an Environment's
+  contents.
 
 A grant naming a kind this deployment does not serve is **refused with a
 reason** rather than dropped. A dropped grant is a missing folder the user is

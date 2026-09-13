@@ -109,7 +109,13 @@ It holds the state of the durable execution service and of `agent-runtimes`:
 | --- | --- | --- |
 | `dbos_durable` | `datalayer-durable` workers | Every workflow, every step's recorded result, every queue |
 | `dbos_agents` | `agent-runtimes` | Its own durable state, reached through `DBOS_DATABASE_URL` injected by the Operator |
-| `dbos_durable_dbos_sys` | DBOS itself | DBOS's **system** database, named for the application one. It creates this itself where the role may create databases; this role may not, so the cluster creates it at bootstrap. Without it the workers launch, fail on `database "dbos_durable_dbos_sys" does not exist`, and take no work at all |
+| `dbos_durable_dbos_sys` | DBOS itself | DBOS's **system** database, created at bootstrap |
+
+`dbos_durable_dbos_sys` is named for the application database it backs. DBOS
+normally creates its system database itself, where its role has permission to
+create databases; this role does not, so the cluster creates it at bootstrap
+instead. Without it, the workers launch, fail on `database
+"dbos_durable_dbos_sys" does not exist`, and take no work at all.
 
 ```bash
 plane postgresql-dbos-create      # cluster, its databases, and the workers' secret
@@ -165,14 +171,19 @@ it from the discovered username/password and host/port/db defaults.
 ### Agent runtime protocol state
 
 The same database holds what an agent runtime on Kubernetes promised over its
-protocols, so it outlives the pod: the A2A tasks it issued (with their history
-and artifacts), their conversation contexts, the runs still owed, and its ACP
-sessions with each turn of their conversations. They live in one table,
-`agent_runtime_protocol_state` (`kind`, `key`, `value` JSONB, `updated_at`),
-which the runtime creates on first use; keys are scoped by agent (`<agent>/<task>`)
-and by session (`<session>/<turn>`). A runtime that starts finds the tasks a
-client polls and the sessions a client loads again, and runs again the A2A
-tasks the previous pod left submitted or working.
+protocols, so it outlives the pod:
+
+- The A2A tasks it issued, with their history and artifacts.
+- Their conversation contexts.
+- The runs still owed.
+- Its ACP sessions, with each turn of their conversations.
+
+They live in one table, `agent_runtime_protocol_state` (`kind`, `key`, `value`
+JSONB, `updated_at`), which the runtime creates on first use; keys are scoped
+by agent (`<agent>/<task>`) and by session (`<session>/<turn>`). A runtime
+that starts finds the tasks a client polls and the sessions a client loads
+again, and runs again the A2A tasks the previous pod left submitted or
+working.
 
 The runtime picks this database with the rule its memory backends use: on
 Kubernetes (`KUBERNETES_SERVICE_HOST` set) and with the agent-memories variables

@@ -97,11 +97,24 @@ binary frames carried by the bridge filesystem.
 
 | Piece | Where |
 | --- | --- |
-| Driver package | `clouder/csi/` — `driver.py` (Node semantics), `server.py` (gRPC Identity and Node), `health.py`, `bridge_mount.py` (the per-bridge child process), `proto/` (CSI spec v1.11.0 and generated stubs). `mounter.py` (`ProcessMounter`, `FakeMounter`) is shared: everything that touches the node's mount table goes through it, the gateway included. The gateway's own modules live in the same package — `node_mount_gateway*.py`, `linux.py`, `git_materializer.py`, the process runners — because they share the mounter and the privilege, not because they are CSI |
+| Driver package | `clouder/csi/` — see the breakdown below |
 | Entrypoint | `python -m clouder.csi --endpoint unix:///csi/csi.sock --node-id $NODE_ID` |
 | Image, chart, install | Shared with the gateway: see [Node Mounts](/services/system/node-mounts/#what-ships-in-clouder) |
 | Check | `clouder node-mounts status` |
 | Tests | `clouder/tests/test_csi_driver.py`, `test_csi_server.py`, `test_csi_bridge_mount.py`, `test_csi_chart.py`, `test_node_mounts_cli.py` |
+
+Inside `clouder/csi/`:
+
+- `driver.py` — Node semantics
+- `server.py` — gRPC Identity and Node
+- `health.py`
+- `bridge_mount.py` — the per-bridge child process
+- `proto/` — CSI spec v1.11.0 and generated stubs
+- `mounter.py` (`ProcessMounter`, `FakeMounter`) — shared: everything that
+  touches the node's mount table goes through it, the gateway included
+- The gateway's own modules live in the same package — `node_mount_gateway*.py`,
+  `linux.py`, `git_materializer.py`, the process runners — because they share
+  the mounter and the privilege, not because they are CSI
 
 ## The node driver
 
@@ -114,10 +127,29 @@ mount point into each Pod that names the bridge.
 | --- | --- |
 | `GetPluginInfo` / `Probe` | `local.csi.datalayer.io`, the Clouder version; always ready |
 | `NodeGetInfo` / `NodeGetCapabilities` | The node name; `GET_VOLUME_STATS` and `VOLUME_CONDITION`, no staging |
-| `NodePublishVolume` | Refuse anything but an ephemeral inline volume (`csi.storage.k8s.io/ephemeral: "true"`, set by kubelet because the `CSIDriver` has `podInfoOnMount`). Read the four attributes and the `mount-token`; refuse a missing token, a `mount-mode` that disagrees with the Pod's `readOnly`, a `relay-url` that is not `wss://`, carries credentials, is on another host than `--relay-host`, or does not end in `/bridges/<bridge-uid>`; refuse any attribute that would carry a host path. Start the bridge filesystem for the `bridge-uid` at `/csi/mounts/<bridge-uid>/mnt` if it is not running, wait for it to be mounted, then `mount --bind` it at the target path, remounted `ro` when the mode is `ro`. A second call for the same volume and target is a no-op; a stale mount left at the target by a previous driver incarnation is unmounted first, never bound over. |
+| `NodePublishVolume` | Validates the volume and its attributes, then starts the bridge filesystem and bind-mounts it at the target path — full rules below the table |
 | `NodeUnpublishVolume` | Unmount the target, forget the volume, stop the bridge process when the last volume using it is gone. Idempotent: an unknown volume is not an error, though a stale mount at its target is still unmounted. |
 | `NodeGetVolumeStats` | Usage from `statvfs`, and `volume_condition.abnormal: true` with the stable message `bridge disconnected: <reason>` once the bridge process has exited, `target path is not mounted` if someone unmounted the target. |
 | `GET /healthz`, `GET /mounts` on `:9808` | Liveness, and the bridges and volumes of this node as JSON |
+
+**`NodePublishVolume`, in full:**
+
+- Refuses anything but an ephemeral inline volume
+  (`csi.storage.k8s.io/ephemeral: "true"`, set by kubelet because the
+  `CSIDriver` has `podInfoOnMount`).
+- Reads the four attributes and the `mount-token`, and refuses:
+  - a missing token;
+  - a `mount-mode` that disagrees with the Pod's `readOnly`;
+  - a `relay-url` that is not `wss://`, carries credentials, is on another
+    host than `--relay-host`, or does not end in `/bridges/<bridge-uid>`;
+  - any attribute that would carry a host path.
+- Starts the bridge filesystem for the `bridge-uid` at
+  `/csi/mounts/<bridge-uid>/mnt` if it is not running, waits for it to be
+  mounted, then `mount --bind` it at the target path, remounted `ro` when the
+  mode is `ro`.
+- A second call for the same volume and target is a no-op; a stale mount left
+  at the target by a previous driver incarnation is unmounted first, never
+  bound over.
 
 **Revocation, heartbeat expiry, laptop gone.** The bridge filesystem process
 exits when the relay refuses or closes the session. A watcher in the driver
@@ -170,11 +202,22 @@ the driver, and go when it does:
   serving both: the gateway adds the API server to it, and turning the gateway
   off does not close the relay.
 
-Values: `driver.image`, `driver.imagePullPolicy`, `driver.healthPort`,
-`driver.logLevel`, `driver.allowInsecureRelay` (development), `registrar.image`,
-`relay.host`, `relay.port`, `relay.cidr`, `relay.namespace`,
-`relay.podSelector`. The `nodeMountGateway.*` values are the gateway's, and
-`monitoring.*` and `apiServer.*` are shared.
+Values:
+
+- `driver.image`
+- `driver.imagePullPolicy`
+- `driver.healthPort`
+- `driver.logLevel`
+- `driver.allowInsecureRelay` (development)
+- `registrar.image`
+- `relay.host`
+- `relay.port`
+- `relay.cidr`
+- `relay.namespace`
+- `relay.podSelector`
+
+The `nodeMountGateway.*` values are the gateway's, and `monitoring.*` and
+`apiServer.*` are shared.
 
 ## Verify a local mount
 
@@ -191,10 +234,16 @@ datalayer contents mounts
 datalayer contents unmount MOUNT_UID
 ~~~
 
-The fixtures to pass on a cluster: `ro` and `rw`, kubelet retry after a driver
-restart, Pod deletion, laptop disconnect (mount reads as disconnected, not
-empty), revocation (no read succeeds after `DELETE /attachments/{uid}`), and
-root escape (a path outside the declared root is refused by the local client).
+The fixtures to pass on a cluster:
+
+- `ro` and `rw`
+- kubelet retry after a driver restart
+- Pod deletion
+- laptop disconnect (mount reads as disconnected, not empty)
+- revocation (no read succeeds after `DELETE /attachments/{uid}`)
+- root escape (a path outside the declared root is refused by the local
+  client)
+
 The unit tests cover the driver side of each with the `FakeMounter`:
 
 ~~~bash
@@ -210,12 +259,18 @@ python -m pytest clouder/tests/test_csi_driver.py clouder/tests/test_csi_server.
 
 Where: `src/k8s/services/contents/datalayer_contents/processes/bridge.py` and
 the chart's `processes.bridge` block, with a dedicated TCP route on `9402`.
-The relay mints the bridge session when an attachment with
-`delivery: local-bridge` is prepared, pairs the local client's stream with the
-node driver's, forwards operations without interpreting paths beyond refusing
-anything outside the declared root, and closes the session on heartbeat loss
-or `DELETE /attachments/{uid}` — token first, so a revoked session cannot serve
-one more read. The driver's side of that contract is the first websocket frame
+
+The relay:
+
+- mints the bridge session when an attachment with `delivery: local-bridge`
+  is prepared;
+- pairs the local client's stream with the node driver's;
+- forwards operations without interpreting paths beyond refusing anything
+  outside the declared root;
+- closes the session on heartbeat loss or `DELETE /attachments/{uid}` — token
+  first, so a revoked session cannot serve one more read.
+
+The driver's side of that contract is the first websocket frame
 `{"role": "mount", "token": <mount-token>}` and a process that exits when the
 relay refuses.
 

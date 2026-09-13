@@ -20,10 +20,16 @@ layout below or a path recorded by one is unresolvable in another:
 
 | Component | How it mounts it |
 | --- | --- |
-| Runtime Pods (Operator) | Whole claim in the companion container at `DATALAYER_SHARED_FS_MOUNT_PATH`. The runtime container gets its folders one of two ways: from the gateway when it is on, or — when it is off — one `subPath` per home folder, at `/home/datalayer/<handle>`. |
-| `datalayer-contents` | Whole claim, at the same path. It serves the Home Folder browser from the same bytes the sandbox sees. |
-| [Node Mount Gateway](/services/system/node-mount-gateway/) | Whole claim, **once per node** in the `datalayer-node-mounts` DaemonSet, at `nodeMountGateway.sharedFilesystemMountPath`. It binds sub-paths of it into Pods that are already running — home folders from `home/`, and Environment datasets from wherever an administrator put them. |
+| Runtime Pods (Operator) | Whole claim, in the companion container, at `DATALAYER_SHARED_FS_MOUNT_PATH`. |
+| `datalayer-contents` | Whole claim, at the same path. |
+| [Node Mount Gateway](/services/system/node-mount-gateway/) | Whole claim, **once per node**, in the `datalayer-node-mounts` DaemonSet, at `nodeMountGateway.sharedFilesystemMountPath`. |
 | `plane` provisioning | Creates the top-level directories and their ownership. |
+
+Each component adds one more detail beyond where it mounts:
+
+- **Runtime Pods (Operator):** the runtime container gets its folders one of two ways — from the gateway when it is on, or, when it is off, one `subPath` per home folder, at `/home/datalayer/<handle>`.
+- **`datalayer-contents`:** serves the Home Folder browser from the same bytes the sandbox sees.
+- **Node Mount Gateway:** binds sub-paths of the claim into Pods that are already running — home folders from `home/`, and Environment datasets from wherever an administrator put them.
 
 ### The layout
 
@@ -397,7 +403,7 @@ kubectl exec shared-fs-prepare -n datalayer-runtimes -it -- sh
 kubectl delete pod shared-fs-prepare -n datalayer-runtimes
 ```
 
-**What is deployed?**
+### What is deployed?
 
 The first piece is the Rook Ceph Operator. Then we create through a Custom Resource a Ceph Cluster using PVC as storage backend; see `cephClusterSpec.storage.storageClassDeviceSets`. This is important as it defines the real amount of available storage (that will contain all data replication).
 
@@ -429,13 +435,13 @@ flowchart TB
     rk-- mount -->userfs
 ```
 
-**Configuration**
+### Configuration
 
-Ceph Operator Configuration
+#### Ceph Operator Configuration
 
 The Ceph Operator configuration is defined in `datalayer-storage/values.yaml`. You can find more information about the available values in the [rook documentation](https://rook.io/rook/latest-release/Helm-Charts/operator-chart).
 
-Ceph Cluster Configuration
+#### Ceph Cluster Configuration
 
 The Ceph Cluster configuration is defined in `datalayer-storage-cluster/values.yaml`. You can find more information about the available values in the [rook documentation](https://rook.io/rook/latest-release/Helm-Charts/ceph-cluster-chart).
 
@@ -453,7 +459,7 @@ The users ceph storage is defined on top of the provisioned Filesystem as a PVC 
 
 That chart also defines an pod to set up the default content of the volume.
 
-### Teardown 
+### Teardown
 
 Make sure to check all resources are deleted before moving to the next steps. If you don't it is highly probable something will go wrong and you will have to delete resource manually (including editing specs to remove finalizers).
 
@@ -512,17 +518,17 @@ plane down datalayer-storage-operator
 
 ### Tips and Tricks for Ceph
 
-Monitoring
+#### Monitoring
 
 The default values are configuring the gathering of metrics by the Prometheus instance handles in `datalayer-observer`.
 
 Grafana dashboards for Ceph are also provisioned in `datalayer-observer` and should be populated out-of-the-box with the Ceph metrics.
 
-Handling Ceph OSDs
+#### Handling Ceph OSDs
 
 Refer to the [Rook documentation](https://rook.io/rook/latest-release/Storage-Configuration/Advanced/ceph-osd-mgmt) to remove or add OSDs.
 
-Scaling Ceph Global Storage
+#### Scaling Ceph Global Storage
 
 The [Rook documentation](https://rook.io/rook/latest-release/Storage-Configuration/Advanced/ceph-configuration/#auto-expansion-of-osds) describes how to scale up OSDs vertically and horizontally.
 

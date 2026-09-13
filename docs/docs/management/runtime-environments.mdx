@@ -81,7 +81,7 @@ The Platform Administrator is responsible for provisioning the Platform Environm
 
 :::note
 
-User Environments, which accounts and organizations define, version and build themselves, are on the [Environments](/services/runtimes/environments/) page, with what of them runs today.
+User Environments, which accounts and organizations define, version and build themselves, are on the [Environments](/services/environments/) page, with what of them runs today.
 
 :::
 
@@ -94,7 +94,7 @@ Once a User Environment's build produces an artifact — an image under `environ
 - **The check.** `cosign verify --key <the KMS key> <image>`, run once per digest and cached — a pass for an hour (a digest's verdict cannot change, it is content), a refusal for 30 seconds (the usual reason is a signature not pushed yet, and a pool retrying for an hour on a stale no would outlive the problem).
 - **It fails closed.** No `DATALAYER_ENVIRONMENTS_KMS_KEY` set on the Operator, no `cosign` binary, a check that cannot be run, one that never answers: every one of these refuses the pod, naming which. "We could not check" is never an answer that starts a container.
 - **What a refusal looks like**, in the Operator's log and in the pod's own event: `DL_ENV_SIGNATURE_INVALID`, naming the image, the digest, and the reason `cosign` gave — a missing signature, one from another key, or a tampered payload.
-- **Deploying it**: set `DATALAYER_ENVIRONMENTS_KMS_KEY` (the same `awskms:///alias/…` cosign itself takes) and `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` if the default 20 seconds is wrong for this plane, and make sure `cosign` is on the Operator image's `PATH` — nothing else to configure. Until the key is set, every `environments/` pod is refused, which is expected: there is no artifact to launch before [E1-06](/services/runtimes/environments/#builds) deploys the registry and the builder.
+- **Deploying it**: set `DATALAYER_ENVIRONMENTS_KMS_KEY` (the same `awskms:///alias/…` cosign itself takes) and `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` if the default 20 seconds is wrong for this plane, and make sure `cosign` is on the Operator image's `PATH` — nothing else to configure. Until the key is set, every `environments/` pod is refused, which is expected: there is no artifact to launch before [E1-06](/services/environments/#builds) deploys the registry and the builder.
 
 ## The home
 
