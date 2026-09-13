@@ -261,6 +261,14 @@ Storage is paid for, so an artifact nothing can reach any more is deleted at its
 - **A provider that refuses one** does not stop the sweep, and the artifact stays `eligible` for tomorrow.
 - **Without a durable service configured**, nothing is swept and the log says so at startup.
 
+## Reconciliation: checking what the registry believes
+
+Before the retention sweep runs, the same `EnvironmentsRetentionWorkflow` run checks every artifact still `retained` — current for its version, or under a live runtime, which is exactly what "the registry believes a provider still holds it" means — at that provider, through the same builder that would delete it. This is **detection only, for now**: an artifact the check finds missing is drift, logged and counted, never rebuilt from this step. Starting a build on this step's own authority means deciding who it runs as, and that design question is still open (`PLAN_ENV.md` E2-09) — a person, reading the alert, starts the backfill today.
+
+- **Who runs it:** the `reconcile` step of the same daily `EnvironmentsRetentionWorkflow` run, before `retention_candidates` reads the same collection. Runtimes' internal `GET /internal/environment-reconciliation/candidates` answers the batch; nothing about retention's own state machine is touched by it.
+- **A variant with no builder yet**, or one this build's account never reached, answers `DL_ENV_CAPABILITY_UNSUPPORTED` rather than a real yes or no — counted apart from drift, and does not stop the sweep, the same resilience `collect_artifacts` already has for a provider that refuses one delete.
+- **Nothing here changes a retention state or starts a build.** The backfill trigger, the authorization it needs, and Modal's unreferenced-intermediate-layer count are the rest of E2-09, not yet built.
+
 ## What it reports
 
 The measures of the plan's section 14, written where the work happens and read through the OTEL query API. No uid is ever a metric label — the environment, version and build uids are on the spans instead, where an unbounded value costs nothing — and every span of a build carries the one correlation id the API put on the build, so the API call, the workflow, the provider call and the check read as one trace.
@@ -275,6 +283,7 @@ The measures of the plan's section 14, written where the work happens and read t
 | `environments.resolves`, `environments.resolve.duration` | durable | Resolutions that ended, and how long they took. |
 | `environments.artifact.bytes` | durable | An artifact's size: what a cold start waits for and egress is billed on. |
 | `environments.artifacts.collected` | durable | What the retention sweep collected, and what it could not. |
+| `environments.artifacts.reconciled` | durable | What reconciliation checked at each artifact's provider, `present` or `drifted` — detection only for now (E2-09): the drift count has nothing yet to bring it back to zero on its own. |
 | `environments.artifact.resolution` | Runtimes | Version to immutable reference on the launch path, resolved or refused. The SLO is p99 under 100 ms. |
 | `environments.launches`, `environments.launch.refusals` | Runtimes | Launches of a user environment, and the refusals by code. |
 
