@@ -24,13 +24,15 @@ With the default options:
 | Base channel repositories | `environments/base/python-cpu`, `environments/base/python-cuda` | The approved bases every environment builds from |
 | KMS encryption key | `alias/datalayer-environments-ecr` | Encrypts every repository under `environments/` |
 | KMS signing key | `alias/datalayer-environments-signing` | cosign signs each image with it, and the operator verifies the signature before it starts a pod |
-| IAM user `datalayer-environments-builder` | Secret `ecr-environments-builder` in `datalayer-durable` | Creates repositories, pushes and signs, from the durable worker |
+| IAM user `datalayer-environments-builder` | Secret `ecr-environments-builder` in `datalayer-durable` | Creates repositories, pushes, signs and reads its images' scan findings, from the durable worker |
 | IAM user `datalayer-environments-reader` | Secret `ecr-environments-reader` in `datalayer-api` | Reads images and scan findings, from Runtimes |
 | IAM user `datalayer-environments-puller` | Secret `ecr-environments-puller` in `datalayer-runtimes` | Pulls, through the refresher |
 | IAM role `datalayer-environments-base-reader` | assumed by the builder only | Reads `environments/base/` for one managed-provider build, never a user's image |
 | CronJob `ecr-environments-refresher` | in `datalayer-runtimes` | Rewrites the pull secret `ecr-environments` every 6 hours |
 
 Every policy is scoped to the `environments/` prefix. A user environment gets its repository, `environments/u/<owner>/<environment>`, from the builder the first time it is built, and platform environments live under `environments/platform/`. Tags are immutable, except in the BuildKit caches under `environments/cache/`, and images are pulled by digest.
+
+The builder's policy statements are listed on the [BuildKit](/services/system/buildkit/#the-builders-aws-permissions) page. That includes `ReadFindings`, which every build's scan read needs. A registry deployed before clouder commit `ee85c7a` lacks that statement, and the same page shows how to add it.
 
 ## Prerequisites
 

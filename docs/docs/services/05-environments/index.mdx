@@ -132,21 +132,9 @@ The Datalayer builder generates the Dockerfile from the lock, never from the spe
 
 ### Build pool: `datalayer-buildkit`
 
-Rootless `buildkitd`, one replica, reached only by the durable `environments` worker over mTLS (PLAN_ENV.md E1-06). The chart lives at `plane/etc/helm-private/charts/datalayer-buildkit`; `plane up datalayer-buildkit` installs it like any other release.
+Builds run on [BuildKit](/services/system/buildkit/): one rootless `buildkitd` in `datalayer-builds`, reached only by this worker, over mTLS. That page covers the chart, the build node it needs, the builder's AWS permissions, and the fixes a real install needed.
 
-- **mTLS, not a shared secret:** a private, self-signed cert-manager CA (a `ClusterIssuer` → an `isCA: true` `Certificate` → a second, CA-backed `ClusterIssuer`) issues a server leaf certificate for `buildkitd` and a client leaf certificate for the durable worker, the client one living in `datalayer-durable` since that is where the worker's own pod mounts it. Verified end-to-end on r1 by a throwaway probe pod in `datalayer-durable` mounting the real client Secret and calling `buildctl debug workers` over the TLS listener — not just a dry run.
-- **The node is not the chart's to taint.** `role.datalayer.io/build=true` and `datalayer.io/build=true:NoSchedule` are applied by hand, deliberately: a taint is cluster state harder to reverse and more outward-facing than a Helm release should silently own. On r1 this is `r1-node-7-fb74`.
-- **Rootless needs `Unconfined` seccomp and AppArmor**, not a privileged container — `buildkitd`'s own `rootlesskit` wrapper needs an unprivileged user namespace, which the default confined profiles block. Confirmed live before committing to the design: `unshare --user --map-root-user` succeeds on r1 from a plain pod with no special `securityContext` at all.
-- **Two bugs a real install found, a dry run would not have:** the chart's first CPU request (1 whole core) didn't fit anywhere on r1 — every worker node already sits at 76–96% CPU requested — so `buildkitd` reserves `500m` instead, uncapped above that, since it sits mostly idle between builds; and a freshly-provisioned PVC mounts owned by root, so the non-root container's own lock file failed "permission denied" until the pod gained `fsGroup: 1000` (`OnRootMismatch`).
-- **Falco needed its own fix first.** Its DaemonSet tolerated only `node-role.kubernetes.io/{master,control-plane}` by the upstream chart's default, which would have left it off the one node this taint lands on — exactly the node running untrusted build steps, and so the one it most needs to reach. Fixed in `datalayer-falco`'s own `values-any.yaml` before the taint went on; the image pruner needed no change, its `tolerations: [{operator: Exists}]` already reaches any taint.
-- **Two known gaps, left open rather than silently declared done:**
-  - The taint blocks only *future* scheduling — it does not evict what a node already runs. `r1-node-7-fb74` was a general worker before this box, and still carries a live user `runtime-` pod and several shared services (`ai-inference`, `contents-bridge`, a `postgresql-dbos` pod, and more) alongside Falco, the pruner and `buildkitd`. Draining it is an outward-facing, hard-to-reverse step left for the owner to schedule, not done as part of standing this chart up.
-  - The chart's own `NetworkPolicy` — egress limited to DNS and 443, ingress limited to `datalayer-durable` on 1234 — is written and applied, but **inert**: neither r1 nor prod1 runs a policy-enforcing CNI (both run plain Flannel only, confirmed live — no Calico, Cilium, kube-router or Antrea anywhere). It starts working the moment a policy engine is added; until then a `RUN curl` from inside a build reaches anywhere IP routing allows.
-- **Also found live, universal to both planes, unrelated to Falco specifically:** neither r1 nor prod1 has the Prometheus Operator's `ServiceMonitor` or `PrometheusRule` CRDs installed — only `PodMonitor`'s is there. `datalayer-falco`'s own `serviceMonitor` stays off for this reason, and `up.sh`'s Falco step checks for the `PrometheusRule` CRD before applying one rather than failing the whole release over it.
-- **Two more bugs, found by the first real `buildctl` client and the first real `RUN` step — the daemon coming up healthy was not the same as a build actually working:**
-  - **No client spoke mTLS.** The resolver and the Datalayer builder (`code_sandboxes.environments.{resolve,adapters.datalayer}`) both drove `buildctl` with only `--addr` — right for every prior drill's plain-socket, ephemeral `buildkitd`, wrong for this chart's, which takes mTLS only. Fixed in `code-sandboxes` 1.9.1 (`tlscert`/`tlskey`/`tlscacert`, all three or none); `durable/pyproject.toml` now pins `>=1.9.1`, and the `datalayer-durable` chart's `environments` queue Deployment mounts the client cert and the builder's AWS credential.
-  - **Rootless `buildkitd` cannot sandbox a `RUN` step on Kubernetes, out of the box.** The first one ever run here failed mounting `/proc`, "operation not permitted" — a Kubernetes-specific gap in upstream's own rootless design: the per-step sandbox needs `docker run --security-opt systempaths=unconfined`, which Kubernetes has no flag for. Fixed with `--oci-worker-no-process-sandbox`, exactly as `buildkitd`'s own Kubernetes example (`examples/kubernetes/pod.rootless.yaml`) does it — a guess (`procMount: Unmasked`) tried first did not help and was removed.
-  - **With both fixed, confirmed live, end to end**, against the real daemon and the real registry: a solve (164.20s cold — see the resolver's own numbers above), a build that pushed a real 2.7 GB image, a retried build with no collision, and `exists`/`delete` both correct. Not yet exercised: the same chain through the real `EnvironmentBuildWorkflow`/Runtimes API, with signing (E1-09) included, and the p95 < 45s over 20 runs the resolver's own bar asks for — one cold run says nothing about that yet.
+Proven live on r1, 2026-09-14, against the real daemon and the real registry: a solve (164.20 s cold), a build that pushed a 2.7 GB image, a retried build with no collision, and `exists` and `delete`. Through the real Runtimes API and `EnvironmentBuildWorkflow`, a build reaches the push. Until the builder's `ReadFindings` statement was added, the same day, it then stopped at the scan read. Not yet proven: signing (E1-09) at the end of that chain, and the resolver's p95 under 45 s over 20 runs.
 
 ### What a build costs, and what refuses one
 
@@ -244,9 +232,11 @@ builder principal's. Enhanced scan findings belong to Amazon Inspector, so
 `ecr:DescribeImageScanFindings` alone is refused: the builder also needs
 `inspector2:ListFindings` and `inspector2:ListCoverage`. Without them, every
 build fails right after its push with `DL_ENV_PROVIDER_ERROR`, naming
-`inspector2:ListCoverage`. The Terraform module grants both since 2026-09-14.
-A registry deployed before that needs the module applied again, or the
-builder's policy updated by hand:
+`inspector2:ListCoverage`. The Terraform module grants both since 2026-09-14,
+and r1's builder has had them since the same day, added by hand. A registry
+deployed before that needs the module applied again, or the policy updated by
+hand as [BuildKit](/services/system/buildkit/#the-builders-aws-permissions)
+shows. To list what the builder's policy holds:
 
 ```bash
 aws iam get-user-policy --user-name datalayer-environments-builder \

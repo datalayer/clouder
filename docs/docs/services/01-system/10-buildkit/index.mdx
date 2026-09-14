@@ -1,0 +1,159 @@
+---
+title: BuildKit
+---
+
+# ☰ 🧱 Datalayer BuildKit
+
+`datalayer-buildkit` is the build pool for [Environments](/services/environments/). It runs one rootless [BuildKit](https://github.com/moby/buildkit) daemon, `buildkitd`. The durable `environments` worker is its only client, and reaches it over mutual TLS.
+
+Every Environment build runs here, in two steps: the resolver's solve, then the image build. The image build runs a Dockerfile that Datalayer generates from the resolved lock, never one a user submits.
+
+## What gets deployed
+
+| Piece | Namespace | What it is for |
+| --- | --- | --- |
+| Deployment `datalayer-buildkit`, 1 replica, `strategy: Recreate` | `datalayer-builds` | Rootless `buildkitd`, `moby/buildkit:v0.33.0-rootless` pinned by digest |
+| Service `datalayer-buildkit`, port `1234` | `datalayer-builds` | The TLS listener, `tcp://datalayer-buildkit.datalayer-builds.svc.cluster.local:1234` |
+| PVC `datalayer-buildkit-cache`, 100 Gi | `datalayer-builds` | The layer cache, kept across restarts and garbage-collected to keep 20% of the disk free |
+| ClusterIssuers `datalayer-buildkit-selfsigned` and `datalayer-buildkit-ca` | cluster-wide | A private CA that signs this pool's two certificates and nothing else |
+| Certificate `datalayer-buildkit-ca`, Secret `datalayer-buildkit-ca-secret` | `datalayer-cert-manager` | The CA, valid 1 year |
+| Certificate `datalayer-buildkit-server`, Secret `datalayer-buildkit-server-tls` | `datalayer-builds` | `buildkitd`'s server certificate, valid 90 days |
+| Certificate `datalayer-buildkit-client`, Secret `datalayer-buildkit-client-tls` | `datalayer-durable` | The durable worker's client certificate, valid 90 days |
+| NetworkPolicy `datalayer-buildkit` | `datalayer-builds` | Ingress from `datalayer-durable` on port 1234. Egress to DNS and port 443, never the cloud metadata address. Not enforced today: see [Known gaps](#known-gaps) |
+
+cert-manager renews the leaf certificates 15 days before they expire, and the CA 30 days before.
+
+The client certificate lives in `datalayer-durable` because a Certificate's Secret is always created in the Certificate's own namespace, and the worker's pod has to mount it.
+
+The chart is `plane/etc/helm-private/charts/datalayer-buildkit`.
+
+## Prerequisites
+
+1. **cert-manager**, deployed with `plane up datalayer-cert-manager`. The CA Secret is created in cert-manager's cluster resource namespace, `datalayer-cert-manager`.
+2. **A build node, labelled and tainted by hand.** Pick the node, then:
+
+   ```bash
+   kubectl label node <node> role.datalayer.io/build=true
+   kubectl taint node <node> datalayer.io/build=true:NoSchedule
+   ```
+
+   The chart never applies either. A taint decides what else may run on a node, so it is the operator's call. Only `buildkitd`, Falco and the image pruner tolerate this taint. Falco has to reach the build node, because that is where untrusted build steps run. On r1 the build node is `r1-node-7-fb74`.
+3. **The environments registry**, deployed with [`clouder aws ecr-environments deploy`](/cluster/registries/aws-ecr-environments). `buildkitd` holds no AWS credential of its own: the durable worker mints an ECR token for each build and hands it over for that build only.
+
+## Deploy
+
+```bash
+plane up datalayer-buildkit
+```
+
+`plane up` checks the first two prerequisites before it installs anything. If cert-manager or a labelled build node is missing, it stops and prints the commands above. A labelled node without the taint only gets a warning, since the pool still works there.
+
+Then point durable at the pool. Add this to the plane's rc, and run `plane up datalayer-durable`:
+
+```bash
+export DATALAYER_BUILDKIT_ADDR="tcp://datalayer-buildkit.datalayer-builds.svc.cluster.local:1234"
+```
+
+The durable chart mounts `datalayer-buildkit-client-tls` into the `environments` queue and sets `DATALAYER_BUILDKIT_TLSCERT`, `DATALAYER_BUILDKIT_TLSKEY` and `DATALAYER_BUILDKIT_TLSCACERT` from it. The mount is optional, so the worker starts without the Secret, but every build then fails at the TLS handshake.
+
+[Runtime Environments](/management/runtime-environments#deploying-the-builder) gives the full deploy order: registry, then this pool, then the `environments` queue.
+
+## Verify
+
+```bash
+kubectl -n datalayer-builds rollout status deployment/datalayer-buildkit
+kubectl -n datalayer-builds exec deploy/datalayer-buildkit -- \
+  buildctl --addr=unix:///run/user/1000/buildkit/buildkitd.sock debug workers
+kubectl get certificate -A | grep datalayer-buildkit
+```
+
+The three certificates should all be `True`. These commands prove the daemon. Only a real build proves the TLS path from durable.
+
+## The builder's AWS permissions
+
+The durable worker builds as the IAM user `datalayer-environments-builder`. Its key is in the Secret `ecr-environments-builder` in `datalayer-durable`. The user has one inline policy, also named `datalayer-environments-builder`, with six statements:
+
+| Statement | Allows |
+| --- | --- |
+| `Login` | `ecr:GetAuthorizationToken` |
+| `EnvironmentRepositories` | Creating, pushing to, reading and deleting repositories under `environments/` |
+| `EncryptRepositories` | Using the ECR encryption key |
+| `Sign` | Signing with the signing key |
+| `HandBasesToAProviderBuild` | Assuming `datalayer-environments-base-reader` for a managed-provider build |
+| `ReadFindings` | `inspector2:ListFindings` and `inspector2:ListCoverage` |
+
+Every build needs `ReadFindings`. The build's `attest` step reads its image's scan from Amazon Inspector, and without this statement every build fails there with `AccessDeniedException` on `inspector2:ListCoverage`.
+
+The Terraform module has included it since clouder commit `ee85c7a`. A registry deployed before that lacks it. Re-run `clouder aws ecr-environments deploy`, or add the statement by hand with AWS credentials for the registry's account:
+
+```bash
+aws iam get-user-policy --user-name datalayer-environments-builder \
+  --policy-name datalayer-environments-builder --query PolicyDocument --output json > builder-policy.json
+python3 - <<'EOF'
+import json
+d = json.load(open("builder-policy.json"))
+d["Statement"] = [s for s in d["Statement"] if s.get("Sid") != "ReadFindings"] + [
+    {"Sid": "ReadFindings", "Effect": "Allow",
+     "Action": ["inspector2:ListFindings", "inspector2:ListCoverage"], "Resource": "*"}]
+json.dump(d, open("builder-policy.json", "w"), indent=2)
+EOF
+aws iam put-user-policy --user-name datalayer-environments-builder \
+  --policy-name datalayer-environments-builder --policy-document file://builder-policy.json
+```
+
+Check that the policy now lists six statements, ending with `ReadFindings`:
+
+```bash
+aws iam get-user-policy --user-name datalayer-environments-builder \
+  --policy-name datalayer-environments-builder --query 'PolicyDocument.Statement[].Sid' --output text
+```
+
+On r1 the statement was added by hand on 2026-09-14. Confirm the worker itself can read the scans:
+
+```bash
+kubectl -n datalayer-durable exec deploy/datalayer-durable-environments -- python -c "
+import boto3
+c = boto3.client('inspector2', region_name='us-east-1')
+c.list_coverage(maxResults=1); c.list_findings(maxResults=1); print('ok')"
+```
+
+## Restarting it safely
+
+The pool is one replica with `strategy: Recreate`. A build's layer cache lives with the pod that made it, so a rolling update would only run two builders with two half-warm caches.
+
+The cost is that restarting it kills the build it is running. That happens with `plane up datalayer-buildkit` on a changed chart, with `plane down`, and with a node drain that evicts it. Before restarting it on purpose, check for builds in flight:
+
+```bash
+BASE="${DATALAYER_RUNTIMES_URL%/}/api/runtimes/v1"
+curl -s -H "Authorization: Bearer $DATALAYER_API_KEY" \
+  "$BASE/environment-builds?status=resolving,building&variant=datalayer"
+```
+
+An empty list means nothing is running. Otherwise, wait for each build to reach `ready`, `partially_ready` or `failed`. Any build still running when the daemon goes ends `failed` with `DL_ENV_PROVIDER_ERROR`, which is retryable. A retry starts again from `resolving`, because nothing about a killed solve can be resumed. The daemon has no drain signal of its own: this check is the whole mechanism.
+
+## Tear down
+
+```bash
+plane down datalayer-buildkit
+```
+
+This deletes the release, and the layer cache PVC with it, so the next build starts cold. It also deletes the three certificate Secrets: cert-manager created them, so Helm does not delete them. The durable worker keeps running, and its builds fail until the pool is back. The build node keeps its label and taint.
+
+## Troubleshooting
+
+Each of these was found standing the pool up on r1, and the chart or its clients now carry the fix.
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The pod stays `Pending` for CPU | A whole-core request fit on no r1 node, all at 76–96% CPU requested | The chart requests `500m` and sets no CPU limit, so a build can burst |
+| `permission denied` on the cache's lock file | A new PVC is mounted owned by root | `fsGroup: 1000` with `fsGroupChangePolicy: OnRootMismatch` |
+| `rootlesskit` cannot create a user namespace | The default seccomp and AppArmor profiles block it | `Unconfined` seccomp and AppArmor, while the container stays non-root and unprivileged |
+| A `RUN` step fails mounting `/proc` with `operation not permitted` | Rootless per-step sandboxing needs `systempaths=unconfined`, which Kubernetes cannot set | `--oci-worker-no-process-sandbox`, as in BuildKit's own `examples/kubernetes/pod.rootless.yaml`. `procMount: Unmasked` does not help |
+| Clients fail the TLS handshake | The daemon accepts mTLS only | `code-sandboxes` 1.9.1 or later, which passes `--tlscert`, `--tlskey` and `--tlscacert` to `buildctl` |
+| A build stops at `attest` with `AccessDeniedException` on `inspector2:ListCoverage` | The builder policy lacks `ReadFindings` | See [the builder's AWS permissions](#the-builders-aws-permissions) |
+
+## Known gaps
+
+- **The NetworkPolicy is not enforced.** r1 and prod1 both run plain Flannel, which enforces no NetworkPolicy. Until a policy engine is added, a `RUN curl` from inside a build reaches anything IP routing allows. Egress to the package indexes and ECR is by hostname, so enforcing it properly needs an FQDN-aware engine.
+- **The taint did not empty the build node.** A taint stops new pods, not running ones. `r1-node-7-fb74` still runs a user runtime pod and shared services next to `buildkitd`. Draining it is an operator decision that has not been made.
+- **`clouder aws ecr-environments plan` resolved the wrong AWS account on r1.** It planned against 575108930674 instead of the registry's 773842031886, so r1's `ReadFindings` statement was added by hand rather than through Terraform.
