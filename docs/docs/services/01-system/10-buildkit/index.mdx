@@ -14,7 +14,7 @@ Every Environment build runs here, in two steps: the resolver's solve, then the 
 | --- | --- | --- |
 | Deployment `datalayer-buildkit`, 1 replica, `strategy: Recreate` | `datalayer-builds` | Rootless `buildkitd`, `moby/buildkit:v0.33.0-rootless` pinned by digest |
 | Service `datalayer-buildkit`, port `1234` | `datalayer-builds` | The TLS listener, `tcp://datalayer-buildkit.datalayer-builds.svc.cluster.local:1234` |
-| PVC `datalayer-buildkit-cache`, 100 Gi | `datalayer-builds` | The layer cache, kept across restarts and garbage-collected to keep 20% of the disk free |
+| PVC `datalayer-buildkit-cache`, 100 Gi | `datalayer-builds` | The layer cache, kept across restarts. Build contexts go after 24 h. Bases, layers and `uv`'s cache are kept 30 days, with 30 GB always kept, at most 80 GB used and 15% left free (`values.gcPolicy`) |
 | ClusterIssuers `datalayer-buildkit-selfsigned` and `datalayer-buildkit-ca` | cluster-wide | A private CA that signs this pool's two certificates and nothing else |
 | Certificate `datalayer-buildkit-ca`, Secret `datalayer-buildkit-ca-secret` | `datalayer-cert-manager` | The CA, valid 1 year |
 | Certificate `datalayer-buildkit-server`, Secret `datalayer-buildkit-server-tls` | `datalayer-builds` | `buildkitd`'s server certificate, valid 90 days |
@@ -151,6 +151,7 @@ Each of these was found standing the pool up on r1, and the chart or its clients
 | A `RUN` step fails mounting `/proc` with `operation not permitted` | Rootless per-step sandboxing needs `systempaths=unconfined`, which Kubernetes cannot set | `--oci-worker-no-process-sandbox`, as in BuildKit's own `examples/kubernetes/pod.rootless.yaml`. `procMount: Unmasked` does not help |
 | Clients fail the TLS handshake | The daemon accepts mTLS only | `code-sandboxes` 1.9.1 or later, which passes `--tlscert`, `--tlskey` and `--tlscacert` to `buildctl` |
 | A build stops at `attest` with `AccessDeniedException` on `inspector2:ListCoverage` | The builder policy lacks `ReadFindings` | See [the builder's AWS permissions](#the-builders-aws-permissions) |
+| Every first resolve after an idle spell takes about 3 minutes, and `buildctl du` shows almost nothing cached | GC rules with no limit, which reclaim everything: `keepBytes = 0`, or a key BuildKit does not know, such as `keepBytesFreePercent` | BuildKit's own keys (`keepDuration`, `reservedSpace`, `maxUsedSpace`, `minFreeSpace`). Check what `buildkitd` parsed with `buildctl debug workers --verbose` |
 
 ## Known gaps
 
