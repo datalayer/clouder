@@ -127,6 +127,7 @@ The Datalayer builder generates the Dockerfile from the lock, never from the spe
 
 - **The image needs:** `buildctl` on the worker's `PATH`, and `code-sandboxes[environments-builder]` for the ECR API calls.
 - **The credential** is minted per build and written into a docker config of that build's own, so `buildkitd` holds no AWS key.
+- **A build secret** the spec declares is fetched from IAM once, before the build's log exists, mounted with `--secret` on the `postInstall` step, and redacted from the log. Durable fetches it with `DATALAYER_DURABLE_IAM_API_KEY`, which IAM must hold too: put the same value in the rc of both planes, then deploy IAM and durable. Without it, a spec that declares a build secret fails before anything is built, with `DL_ENV_BUILD_SECRET_UNAVAILABLE` naming the variable.
 - **The owner's repository** is created if missing, with immutable tags, scan-on-push and KMS. The cache is `environments/cache/u/<owner_uid>`, imported and exported per owner and never shared between owners.
 
 ### Build pool: `datalayer-buildkit`
