@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from botocore.exceptions import ClientError
 from typer.testing import CliRunner
 
@@ -37,7 +38,9 @@ SCRATCH = "datalayer-scratch-environments-scratch"
 
 
 def denied(operation: str) -> ClientError:
-    return ClientError({"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, operation)
+    return ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, operation
+    )
 
 
 def said(result) -> str:
@@ -56,7 +59,10 @@ class FakeRegistry:
         self.configuration = {
             "scanType": scan_type,
             "rules": [
-                {"scanFrequency": "CONTINUOUS_SCAN", "repositoryFilters": [{"filter": item, "filterType": "WILDCARD"}]}
+                {
+                    "scanFrequency": "CONTINUOUS_SCAN",
+                    "repositoryFilters": [{"filter": item, "filterType": "WILDCARD"}],
+                }
                 for item in filters
             ],
         }
@@ -64,7 +70,10 @@ class FakeRegistry:
 
     def get_registry_scanning_configuration(self):
         self.reads += 1
-        return {"registryId": "123456789012", "scanningConfiguration": self.configuration}
+        return {
+            "registryId": "123456789012",
+            "scanningConfiguration": self.configuration,
+        }
 
 
 class Recorder:
@@ -82,7 +91,9 @@ class Recorder:
         if "plan" in command and "-detailed-exitcode" in command:
             code, stdout = self.plan_code, "Plan: 14 to add, 0 to change, 0 to destroy."
         elif command[-2:] == ["output", "-json"]:
-            stdout = json.dumps({name: {"value": value} for name, value in OUTPUTS.items()})
+            stdout = json.dumps(
+                {name: {"value": value} for name, value in OUTPUTS.items()}
+            )
         elif command[-2:] == ["config", "current-context"]:
             stdout = "r1\n"
         return subprocess.CompletedProcess(command, code, stdout, "")
@@ -91,10 +102,17 @@ class Recorder:
         return [command[1:] for command in self.commands if command[0] == "terraform"]
 
     def applied(self) -> list[dict]:
+        """Parsed the way `kubectl apply -f -` itself parses a multi-document
+        stream — as YAML, not by naively splitting on `---` and decoding
+        each piece as its own JSON document (found live: that hid a real
+        bug, since JSON has no such thing as a multi-document stream at
+        all — `kubectl`'s own parser, once it commits to JSON from the
+        first document, reads a later `---` as the start of a malformed
+        number and refuses the whole thing)."""
         documents = []
         for command, text in zip(self.commands, self.inputs, strict=True):
             if "apply" in command and "--server-side" in command:
-                documents += [json.loads(part) for part in text.split("\n---\n")]
+                documents += list(yaml.safe_load_all(text))
         return documents
 
 
@@ -131,10 +149,21 @@ def write_keys(directory: Path) -> Path:
 # --- Terraform ---------------------------------------------------------------------------
 
 
-def test_plan_writes_the_variables_of_its_workspace_and_a_plan(root: Path, recorder: Recorder) -> None:
+def test_plan_writes_the_variables_of_its_workspace_and_a_plan(
+    root: Path, recorder: Recorder
+) -> None:
     result = runner.invoke(
         cli.ecr_environments_app,
-        ["plan", "--region", "eu-west-3", "--base-channel", "python-cpu", "--json", "--terraform-dir", str(root)],
+        [
+            "plan",
+            "--region",
+            "eu-west-3",
+            "--base-channel",
+            "python-cpu",
+            "--json",
+            "--terraform-dir",
+            str(root),
+        ],
     )
     assert result.exit_code == 0, result.output
     tfvars = tfvars_of(root).read_text()
@@ -146,17 +175,33 @@ def test_plan_writes_the_variables_of_its_workspace_and_a_plan(root: Path, recor
     assert recorder.terraform() == [
         ["init", "-input=false", "-no-color"],
         ["workspace", "select", "-or-create", WORKSPACE],
-        ["plan", "-input=false", "-no-color", "-detailed-exitcode", f"-var-file=workspaces/{WORKSPACE}.tfvars", "-out=tfplan"],
+        [
+            "plan",
+            "-input=false",
+            "-no-color",
+            "-detailed-exitcode",
+            f"-var-file=workspaces/{WORKSPACE}.tfvars",
+            "-out=tfplan",
+        ],
         ["show", "-json", "tfplan"],
     ]
     assert (root / "tfplan.json").exists()
 
 
-def test_a_scratch_registry_has_a_workspace_of_its_own(root: Path, recorder: Recorder) -> None:
+def test_a_scratch_registry_has_a_workspace_of_its_own(
+    root: Path, recorder: Recorder
+) -> None:
     """Two registries in one state would plan to replace each other; a workspace each keeps them apart."""
     arguments = [
-        "plan", "--project-name", "datalayer-scratch", "--repository-prefix", "environments-scratch",
-        "--kms-deletion-window", "7", "--terraform-dir", str(root),
+        "plan",
+        "--project-name",
+        "datalayer-scratch",
+        "--repository-prefix",
+        "environments-scratch",
+        "--kms-deletion-window",
+        "7",
+        "--terraform-dir",
+        str(root),
     ]
     result = runner.invoke(cli.ecr_environments_app, arguments)
     assert result.exit_code == 0, result.output
@@ -167,8 +212,13 @@ def test_a_scratch_registry_has_a_workspace_of_its_own(root: Path, recorder: Rec
     assert not tfvars_of(root).exists()
 
 
-def test_a_deletion_window_kms_does_not_allow_is_refused(root: Path, recorder: Recorder) -> None:
-    result = runner.invoke(cli.ecr_environments_app, ["plan", "--kms-deletion-window", "3", "--terraform-dir", str(root)])
+def test_a_deletion_window_kms_does_not_allow_is_refused(
+    root: Path, recorder: Recorder
+) -> None:
+    result = runner.invoke(
+        cli.ecr_environments_app,
+        ["plan", "--kms-deletion-window", "3", "--terraform-dir", str(root)],
+    )
     assert result.exit_code != 0
     assert recorder.commands == []
 
@@ -177,38 +227,62 @@ def test_the_region_comes_from_the_rc_when_no_option_sets_it(
     root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DATALAYER_ECR_ENVIRONMENTS_REGION", "ca-central-1")
-    assert runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]
+        ).exit_code
+        == 0
+    )
     assert 'aws_region = "ca-central-1"' in tfvars_of(root).read_text()
 
 
 def test_a_plan_without_changes_says_so(root: Path, recorder: Recorder) -> None:
     recorder.plan_code = 0
-    result = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 0
     assert "No changes" in said(result)
 
 
 def test_apply_needs_a_saved_plan(root: Path, recorder: Recorder) -> None:
-    refused = runner.invoke(cli.ecr_environments_app, ["apply", "--terraform-dir", str(root)])
+    refused = runner.invoke(
+        cli.ecr_environments_app, ["apply", "--terraform-dir", str(root)]
+    )
     assert refused.exit_code == 1 and recorder.commands == []
     (root / "tfplan").write_text("plan")
-    applied = runner.invoke(cli.ecr_environments_app, ["apply", "--terraform-dir", str(root)])
+    applied = runner.invoke(
+        cli.ecr_environments_app, ["apply", "--terraform-dir", str(root)]
+    )
     assert applied.exit_code == 0
     assert recorder.terraform()[-1] == ["apply", "-input=false", "-no-color", "tfplan"]
 
 
-def test_outputs_of_a_named_workspace_select_it_first(root: Path, recorder: Recorder) -> None:
-    result = runner.invoke(cli.ecr_environments_app, ["outputs", "--workspace", SCRATCH, "--terraform-dir", str(root)])
+def test_outputs_of_a_named_workspace_select_it_first(
+    root: Path, recorder: Recorder
+) -> None:
+    result = runner.invoke(
+        cli.ecr_environments_app,
+        ["outputs", "--workspace", SCRATCH, "--terraform-dir", str(root)],
+    )
     assert result.exit_code == 0, result.output
-    assert recorder.terraform() == [["init", "-input=false", "-no-color"], ["workspace", "select", SCRATCH], ["output", "-json"]]
+    assert recorder.terraform() == [
+        ["init", "-input=false", "-no-color"],
+        ["workspace", "select", SCRATCH],
+        ["output", "-json"],
+    ]
 
 
 def test_terraform_runs_in_its_pinned_image_when_it_is_not_installed(
     root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "_which", lambda tool: None if tool == "terraform" else f"/usr/bin/{tool}")
+    monkeypatch.setattr(
+        cli, "_which", lambda tool: None if tool == "terraform" else f"/usr/bin/{tool}"
+    )
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "operator-secret")
-    result = runner.invoke(cli.ecr_environments_app, ["outputs", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["outputs", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 0, result.output
     command = recorder.commands[0]
     assert command[:2] == ["docker", "run"]
@@ -223,7 +297,9 @@ def test_without_terraform_or_docker_the_command_says_so(
     root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(cli, "_which", lambda tool: None)
-    result = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 1
     assert "docker" in result.output
     assert recorder.commands == []
@@ -238,7 +314,9 @@ def test_scanning_that_already_covers_the_prefix_is_left_as_it_is(
 ) -> None:
     """The account this was first run against scanned `*` continuously; replacing it would have stopped that."""
     use_registry(monkeypatch, FakeRegistry("ENHANCED", ("*",)))
-    result = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 0, result.output
     assert "manage_registry_scanning = false" in tfvars_of(root).read_text()
     assert "left as it is" in said(result)
@@ -248,11 +326,14 @@ def test_other_scanning_rules_are_replaced_only_when_they_are_named_again(
     root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     use_registry(monkeypatch, FakeRegistry("ENHANCED", ("services/*",)))
-    refused = runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)])
+    refused = runner.invoke(
+        cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]
+    )
     assert refused.exit_code == 1
     assert "services/*" in said(refused) and recorder.commands == []
     kept = runner.invoke(
-        cli.ecr_environments_app, ["plan", "--extra-scan-filter", "services/*", "--terraform-dir", str(root)]
+        cli.ecr_environments_app,
+        ["plan", "--extra-scan-filter", "services/*", "--terraform-dir", str(root)],
     )
     assert kept.exit_code == 0, kept.output
     tfvars = tfvars_of(root).read_text()
@@ -265,7 +346,12 @@ def test_a_fresh_account_gets_enhanced_scanning_and_an_opt_out_reads_nothing(
 ) -> None:
     registry = FakeRegistry()
     use_registry(monkeypatch, registry)
-    assert runner.invoke(cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli.ecr_environments_app, ["plan", "--terraform-dir", str(root)]
+        ).exit_code
+        == 0
+    )
     assert "manage_registry_scanning = true" in tfvars_of(root).read_text()
     registry.reads = 0
     arguments = ["plan", "--no-manage-registry-scanning", "--terraform-dir", str(root)]
@@ -286,7 +372,9 @@ def test_a_fresh_account_gets_enhanced_scanning_and_an_opt_out_reads_nothing(
         ("environments/u/*", False),
     ],
 )
-def test_a_filter_covers_the_prefix_only_when_it_matches_everything_under_it(repository_filter: str, covered: bool) -> None:
+def test_a_filter_covers_the_prefix_only_when_it_matches_everything_under_it(
+    repository_filter: str, covered: bool
+) -> None:
     assert cli._covers(repository_filter, "environments") is covered
 
 
@@ -304,7 +392,10 @@ class FakeIAM:
 
     def create_access_key(self, UserName: str):  # noqa: N803
         self.created.append(UserName)
-        key = {"AccessKeyId": f"AKIA{UserName[-6:].upper()}", "SecretAccessKey": f"secret-of-{UserName}"}
+        key = {
+            "AccessKeyId": f"AKIA{UserName[-6:].upper()}",
+            "SecretAccessKey": f"secret-of-{UserName}",
+        }
         return {"AccessKey": key}
 
     def delete_access_key(self, UserName: str, AccessKeyId: str):  # noqa: N803
@@ -317,14 +408,18 @@ def test_rotate_keys_writes_private_files_and_never_prints_a_secret(
     monkeypatch.setattr(cli, "_client", lambda service, region=None: FakeIAM())
     keys = tmp_path / "keys"
     result = runner.invoke(
-        cli.ecr_environments_app, ["rotate-keys", "--keys-dir", str(keys), "--terraform-dir", str(root)]
+        cli.ecr_environments_app,
+        ["rotate-keys", "--keys-dir", str(keys), "--terraform-dir", str(root)],
     )
     assert result.exit_code == 0, result.output
     assert "secret-of" not in result.output
     for name in cli.PRINCIPALS:
         path = keys / f"{name}.env"
         assert path.stat().st_mode & 0o777 == 0o600
-        assert f"AWS_SECRET_ACCESS_KEY=secret-of-datalayer-environments-{name}" in path.read_text()
+        assert (
+            f"AWS_SECRET_ACCESS_KEY=secret-of-datalayer-environments-{name}"
+            in path.read_text()
+        )
         assert "AWS_REGION=us-east-1" in path.read_text()
     assert keys.stat().st_mode & 0o777 == 0o700
 
@@ -335,7 +430,9 @@ def test_key_files_live_under_their_workspace_by_default(
     monkeypatch.setattr(cli, "_client", lambda service, region=None: FakeIAM())
     (root / ".terraform").mkdir()
     (root / ".terraform" / "environment").write_text(SCRATCH)
-    result = runner.invoke(cli.ecr_environments_app, ["rotate-keys", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["rotate-keys", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 0, result.output
     assert (tmp_path / "clouder-keys" / SCRATCH / "keys" / "builder.env").is_file()
 
@@ -350,7 +447,15 @@ def test_a_third_key_is_refused_and_old_keys_are_retired_on_request(
     ]
     iam = FakeIAM({"datalayer-environments-builder": two})
     monkeypatch.setattr(cli, "_client", lambda service, region=None: iam)
-    arguments = ["rotate-keys", "--principal", "builder", "--keys-dir", str(tmp_path), "--terraform-dir", str(root)]
+    arguments = [
+        "rotate-keys",
+        "--principal",
+        "builder",
+        "--keys-dir",
+        str(tmp_path),
+        "--terraform-dir",
+        str(root),
+    ]
     refused = runner.invoke(cli.ecr_environments_app, arguments)
     assert refused.exit_code == 1
     assert "retire-old" in refused.output
@@ -361,7 +466,8 @@ def test_a_third_key_is_refused_and_old_keys_are_retired_on_request(
 
 def test_an_unknown_principal_is_refused(root: Path, recorder: Recorder) -> None:
     result = runner.invoke(
-        cli.ecr_environments_app, ["rotate-keys", "--principal", "admin", "--terraform-dir", str(root)]
+        cli.ecr_environments_app,
+        ["rotate-keys", "--principal", "admin", "--terraform-dir", str(root)],
     )
     assert result.exit_code == 1
 
@@ -369,31 +475,94 @@ def test_an_unknown_principal_is_refused(root: Path, recorder: Recorder) -> None
 # --- Kubernetes --------------------------------------------------------------------------
 
 
-def test_secrets_go_to_their_namespaces_by_server_side_apply(tmp_path: Path, recorder: Recorder) -> None:
+def test_secrets_go_to_their_namespaces_by_server_side_apply(
+    tmp_path: Path, recorder: Recorder
+) -> None:
     keys = write_keys(tmp_path / "keys")
-    result = runner.invoke(cli.ecr_environments_app, ["secrets", "--keys-dir", str(keys), "--yes"])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["secrets", "--keys-dir", str(keys), "--yes"]
+    )
     assert result.exit_code == 0, result.output
     apply = next(command for command in recorder.commands if "apply" in command)
-    assert apply[:6] == ["kubectl", "apply", "--server-side", "--field-manager=clouder-ecr-environments", "--force-conflicts", "-f"]
+    assert apply[:6] == [
+        "kubectl",
+        "apply",
+        "--server-side",
+        "--field-manager=clouder-ecr-environments",
+        "--force-conflicts",
+        "-f",
+    ]
     documents = recorder.applied()
-    placed = {(item["metadata"]["name"], item["metadata"]["namespace"]) for item in documents if item["kind"] == "Secret"}
+    placed = {
+        (item["metadata"]["name"], item["metadata"]["namespace"])
+        for item in documents
+        if item["kind"] == "Secret"
+    }
     assert placed == {
         ("ecr-environments-builder", "datalayer-durable"),
         ("ecr-environments-reader", "datalayer-api"),
         ("ecr-environments-puller", "datalayer-runtimes"),
     }
     kinds = [item["kind"] for item in documents]
-    assert {item["metadata"]["name"] for item in documents if item["kind"] == "Namespace"} == {
+    assert {
+        item["metadata"]["name"] for item in documents if item["kind"] == "Namespace"
+    } == {
         "datalayer-durable",
         "datalayer-api",
         "datalayer-runtimes",
     }
-    assert max(index for index, kind in enumerate(kinds) if kind == "Namespace") < kinds.index("Secret")
-    builder = next(item for item in documents if item["metadata"]["name"] == "ecr-environments-builder")
+    assert max(
+        index for index, kind in enumerate(kinds) if kind == "Namespace"
+    ) < kinds.index("Secret")
+    builder = next(
+        item
+        for item in documents
+        if item["metadata"]["name"] == "ecr-environments-builder"
+    )
     assert "stringData" not in builder
-    assert base64.b64decode(builder["data"]["AWS_SECRET_ACCESS_KEY"]).decode() == "secret-of-builder"
-    assert not any("secret-of" in part for command in recorder.commands for part in command)
+    assert (
+        base64.b64decode(builder["data"]["AWS_SECRET_ACCESS_KEY"]).decode()
+        == "secret-of-builder"
+    )
+    assert not any(
+        "secret-of" in part for command in recorder.commands for part in command
+    )
     assert "secret-of" not in result.output
+
+
+def test_the_applied_stream_is_real_multi_document_yaml_not_json(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    """`kubectl apply -f -` sniffs its format from the first document, and
+    JSON has no multi-document form at all — a stream of JSON objects
+    joined by `---` reads as one committed-to-JSON document followed by a
+    malformed number, and kubectl refuses it outright (found live, kubectl
+    1.29 against a 1.32 server: "invalid character '-' in numeric
+    literal"). `Recorder.applied()` used to hide this by decoding each
+    `---`-split piece as its own JSON object rather than parsing the whole
+    stream the way kubectl actually does — this decodes the raw text with
+    `yaml.safe_load_all` directly, the same call kubectl's own YAML/JSON
+    front end makes underneath, so a regression back to JSON output (valid
+    piece by piece, invalid as a whole) fails here even though `applied()`
+    itself would no longer notice."""
+    keys = write_keys(tmp_path / "keys")
+    result = runner.invoke(
+        cli.ecr_environments_app, ["secrets", "--keys-dir", str(keys), "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    apply_index = next(
+        index
+        for index, command in enumerate(recorder.commands)
+        if "apply" in command and "--server-side" in command
+    )
+    text = recorder.inputs[apply_index]
+    documents = list(yaml.safe_load_all(text))
+    assert len(documents) >= 2
+    assert all(
+        isinstance(document, dict) and document.get("kind") for document in documents
+    )
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
 
 
 def test_the_builder_secret_follows_the_durable_namespace_of_the_rc(
@@ -404,58 +573,96 @@ def test_the_builder_secret_follows_the_durable_namespace_of_the_rc(
     arguments = ["secrets", "--principal", "builder", "--keys-dir", str(keys), "--yes"]
     assert runner.invoke(cli.ecr_environments_app, arguments).exit_code == 0
     secrets = [item for item in recorder.applied() if item["kind"] == "Secret"]
-    assert [(item["metadata"]["name"], item["metadata"]["namespace"]) for item in secrets] == [
-        ("ecr-environments-builder", "durable-r1")
-    ]
+    assert [
+        (item["metadata"]["name"], item["metadata"]["namespace"]) for item in secrets
+    ] == [("ecr-environments-builder", "durable-r1")]
 
 
-def test_secrets_need_the_key_files_before_touching_the_cluster(tmp_path: Path, recorder: Recorder) -> None:
-    result = runner.invoke(cli.ecr_environments_app, ["secrets", "--keys-dir", str(tmp_path / "none"), "--yes"])
+def test_secrets_need_the_key_files_before_touching_the_cluster(
+    tmp_path: Path, recorder: Recorder
+) -> None:
+    result = runner.invoke(
+        cli.ecr_environments_app,
+        ["secrets", "--keys-dir", str(tmp_path / "none"), "--yes"],
+    )
     assert result.exit_code == 1
     assert "rotate-keys" in result.output
     assert recorder.commands == []
 
 
-def test_secrets_ask_before_writing_into_a_context(tmp_path: Path, recorder: Recorder) -> None:
+def test_secrets_ask_before_writing_into_a_context(
+    tmp_path: Path, recorder: Recorder
+) -> None:
     keys = write_keys(tmp_path / "keys")
     result = runner.invoke(
-        cli.ecr_environments_app, ["secrets", "--keys-dir", str(keys), "--context", "r1"], input="n\n"
+        cli.ecr_environments_app,
+        ["secrets", "--keys-dir", str(keys), "--context", "r1"],
+        input="n\n",
     )
     assert result.exit_code == 1
     assert recorder.applied() == []
 
 
 def test_the_refresher_is_a_hardened_cronjob_scoped_to_its_secret() -> None:
-    documents = {item["kind"]: item for item in cli.refresher_manifests("datalayer-runtimes", OUTPUTS["registry"])}
+    documents = {
+        item["kind"]: item
+        for item in cli.refresher_manifests("datalayer-runtimes", OUTPUTS["registry"])
+    }
     cronjob = documents["CronJob"]
     assert cronjob["spec"]["schedule"] == "0 */6 * * *"
     assert cronjob["spec"]["concurrencyPolicy"] == "Forbid"
     pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert pod["securityContext"]["runAsNonRoot"] is True
-    images = [container["image"] for container in pod["initContainers"] + pod["containers"]]
+    images = [
+        container["image"] for container in pod["initContainers"] + pod["containers"]
+    ]
     assert images == [cli.AWS_CLI_IMAGE, cli.PYTHON_IMAGE]
     assert all(":" in image and not image.endswith(":latest") for image in images)
-    assert pod["initContainers"][0]["envFrom"] == [{"secretRef": {"name": "ecr-environments-puller"}}]
+    assert pod["initContainers"][0]["envFrom"] == [
+        {"secretRef": {"name": "ecr-environments-puller"}}
+    ]
     environment = {item["name"]: item["value"] for item in pod["containers"][0]["env"]}
     assert environment["REGISTRY"] == OUTPUTS["registry"]
     assert environment["SECRET_NAME"] == "ecr-environments"  # noqa: S105 - a Secret's name
     rules = documents["Role"]["rules"]
-    assert rules[0] == {"apiGroups": [""], "resources": ["secrets"], "resourceNames": ["ecr-environments"], "verbs": ["get", "update"]}
-    assert documents["ConfigMap"]["data"]["refresh.py"] == Path(refresher.__file__).read_text()
+    assert rules[0] == {
+        "apiGroups": [""],
+        "resources": ["secrets"],
+        "resourceNames": ["ecr-environments"],
+        "verbs": ["get", "update"],
+    }
+    assert (
+        documents["ConfigMap"]["data"]["refresh.py"]
+        == Path(refresher.__file__).read_text()
+    )
 
 
 def test_the_refresher_installs_then_runs_once(recorder: Recorder) -> None:
-    arguments = ["refresher", "--registry", OUTPUTS["registry"], "--runtime-namespace", "runtimes-a", "--yes"]
+    arguments = [
+        "refresher",
+        "--registry",
+        OUTPUTS["registry"],
+        "--runtime-namespace",
+        "runtimes-a",
+        "--yes",
+    ]
     result = runner.invoke(cli.ecr_environments_app, arguments)
     assert result.exit_code == 0, result.output
     steps = [command[1:5] for command in recorder.commands]
     assert ["-n", "runtimes-a", "get", "secret"] in steps
     assert ["-n", "runtimes-a", "create", "job"] in steps
     assert ["-n", "runtimes-a", "wait", "--for=condition=complete"] in steps
-    assert {item["kind"] for item in recorder.applied()} >= {"CronJob", "Role", "RoleBinding", "ConfigMap"}
+    assert {item["kind"] for item in recorder.applied()} >= {
+        "CronJob",
+        "Role",
+        "RoleBinding",
+        "ConfigMap",
+    }
 
 
-def test_the_refresher_needs_the_puller_secret(recorder: Recorder, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_refresher_needs_the_puller_secret(
+    recorder: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def run(command, **kwargs):
         if "get" in command and "secret" in command:
             recorder.commands.append(list(command))
@@ -464,7 +671,9 @@ def test_the_refresher_needs_the_puller_secret(recorder: Recorder, monkeypatch: 
         return recorder(command, **kwargs)
 
     monkeypatch.setattr(cli, "_run", run)
-    result = runner.invoke(cli.ecr_environments_app, ["refresher", "--registry", "r", "--yes"])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["refresher", "--registry", "r", "--yes"]
+    )
     assert result.exit_code == 1
     assert "--principal puller" in said(result)
     assert recorder.applied() == []
@@ -476,27 +685,72 @@ def test_the_refresher_needs_the_puller_secret(recorder: Recorder, monkeypatch: 
 @pytest.fixture
 def aws(monkeypatch: pytest.MonkeyPatch) -> FakeIAM:
     iam = FakeIAM()
-    monkeypatch.setattr(cli, "_client", lambda service, region=None: iam if service == "iam" else FakeRegistry())
-    monkeypatch.setattr(cli, "get_aws_identity", lambda: {"account_id": "123456789012", "arn": "arn:aws:iam::123456789012:user/owner"})
-    monkeypatch.setattr(cli, "run_check", lambda values, keys_dir, probe_image, scan_timeout: [cli.Step("push by the builder", True)])
+    monkeypatch.setattr(
+        cli,
+        "_client",
+        lambda service, region=None: iam if service == "iam" else FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        cli,
+        "get_aws_identity",
+        lambda: {
+            "account_id": "123456789012",
+            "arn": "arn:aws:iam::123456789012:user/owner",
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_check",
+        lambda values, keys_dir, probe_image, scan_timeout: [
+            cli.Step("push by the builder", True)
+        ],
+    )
     return iam
 
 
-def test_deploy_runs_every_step_in_order(root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM) -> None:
+def test_deploy_runs_every_step_in_order(
+    root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM
+) -> None:
     keys = tmp_path / "keys"
-    result = runner.invoke(cli.ecr_environments_app, ["deploy", "--keys-dir", str(keys), "--yes", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app,
+        ["deploy", "--keys-dir", str(keys), "--yes", "--terraform-dir", str(root)],
+    )
     assert result.exit_code == 0, result.output
-    assert [command[0] for command in recorder.terraform()] == ["init", "workspace", "plan", "init", "apply", "output"]
+    assert [command[0] for command in recorder.terraform()] == [
+        "init",
+        "workspace",
+        "plan",
+        "init",
+        "apply",
+        "output",
+    ]
     assert aws.created == [OUTPUTS[f"{name}_user"] for name in cli.PRINCIPALS]
     kinds = [item["kind"] for item in recorder.applied()]
     assert kinds.index("Secret") < kinds.index("CronJob")
-    assert any(command[1:5] == ["-n", "datalayer-runtimes", "create", "job"] for command in recorder.commands)
-    assert f"export DATALAYER_ECR_ENVIRONMENTS_REGISTRY={OUTPUTS['registry']}" in result.output
+    assert any(
+        command[1:5] == ["-n", "datalayer-runtimes", "create", "job"]
+        for command in recorder.commands
+    )
+    assert (
+        f"export DATALAYER_ECR_ENVIRONMENTS_REGISTRY={OUTPUTS['registry']}"
+        in result.output
+    )
     assert "push by the builder" in result.output
 
 
-def test_deploy_without_kubernetes_writes_no_secret(root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM) -> None:
-    arguments = ["deploy", "--skip-kubernetes", "--keys-dir", str(tmp_path / "keys"), "--yes", "--terraform-dir", str(root)]
+def test_deploy_without_kubernetes_writes_no_secret(
+    root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM
+) -> None:
+    arguments = [
+        "deploy",
+        "--skip-kubernetes",
+        "--keys-dir",
+        str(tmp_path / "keys"),
+        "--yes",
+        "--terraform-dir",
+        str(root),
+    ]
     result = runner.invoke(cli.ecr_environments_app, arguments)
     assert result.exit_code == 0, result.output
     assert not any(command[0] == "kubectl" for command in recorder.commands)
@@ -508,7 +762,10 @@ def test_deploy_run_again_changes_nothing_and_keeps_the_keys(
 ) -> None:
     keys = write_keys(tmp_path / "keys")
     recorder.plan_code = 0
-    result = runner.invoke(cli.ecr_environments_app, ["deploy", "--keys-dir", str(keys), "--yes", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app,
+        ["deploy", "--keys-dir", str(keys), "--yes", "--terraform-dir", str(root)],
+    )
     assert result.exit_code == 0, result.output
     assert "No changes" in said(result)
     assert "apply" not in [command[0] for command in recorder.terraform()]
@@ -521,15 +778,33 @@ def test_deploy_stops_when_a_principal_has_a_key_nobody_kept(
     aws.keys = {OUTPUTS["puller_user"]: [{"AccessKeyId": "AKIAOLD"}]}
     result = runner.invoke(
         cli.ecr_environments_app,
-        ["deploy", "--keys-dir", str(tmp_path / "keys"), "--yes", "--skip-check", "--terraform-dir", str(root)],
+        [
+            "deploy",
+            "--keys-dir",
+            str(tmp_path / "keys"),
+            "--yes",
+            "--skip-check",
+            "--terraform-dir",
+            str(root),
+        ],
     )
     assert result.exit_code == 1
     assert "rotate-keys --principal puller" in said(result)
     assert recorder.applied() == []
 
 
-def test_deploy_asks_before_applying(root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM) -> None:
-    arguments = ["deploy", "--keys-dir", str(tmp_path / "keys"), "--skip-kubernetes", "--skip-check", "--terraform-dir", str(root)]
+def test_deploy_asks_before_applying(
+    root: Path, tmp_path: Path, recorder: Recorder, aws: FakeIAM
+) -> None:
+    arguments = [
+        "deploy",
+        "--keys-dir",
+        str(tmp_path / "keys"),
+        "--skip-kubernetes",
+        "--skip-check",
+        "--terraform-dir",
+        str(root),
+    ]
     result = runner.invoke(cli.ecr_environments_app, arguments, input="n\n")
     assert result.exit_code == 1
     assert "apply" not in [command[0] for command in recorder.terraform()]
@@ -543,28 +818,47 @@ class FakeAccount:
 
     def __init__(self, repositories: list[str]) -> None:
         self.repositories = list(repositories)
-        self.keys = {OUTPUTS["builder_user"]: ["AKIABUILDER"], OUTPUTS["puller_user"]: [], OUTPUTS["reader_user"]: ["AKIAREADER"]}
+        self.keys = {
+            OUTPUTS["builder_user"]: ["AKIABUILDER"],
+            OUTPUTS["puller_user"]: [],
+            OUTPUTS["reader_user"]: ["AKIAREADER"],
+        }
         self.deleted_repositories: list[str] = []
         self.deleted_keys: list[str] = []
 
     def describe_repositories(self, nextToken: str | None = None):  # noqa: N803
         half = len(self.repositories) // 2
         if nextToken is None:
-            return {"repositories": [{"repositoryName": name} for name in self.repositories[:half]], "nextToken": "page-2"}
-        return {"repositories": [{"repositoryName": name} for name in self.repositories[half:]]}
+            return {
+                "repositories": [
+                    {"repositoryName": name} for name in self.repositories[:half]
+                ],
+                "nextToken": "page-2",
+            }
+        return {
+            "repositories": [
+                {"repositoryName": name} for name in self.repositories[half:]
+            ]
+        }
 
     def delete_repository(self, repositoryName: str, force: bool = False):  # noqa: N803
         assert force, "a repository holding images is only deleted with force"
         self.deleted_repositories.append(repositoryName)
 
     def list_access_keys(self, UserName: str):  # noqa: N803
-        return {"AccessKeyMetadata": [{"AccessKeyId": key} for key in self.keys.get(UserName, [])]}
+        return {
+            "AccessKeyMetadata": [
+                {"AccessKeyId": key} for key in self.keys.get(UserName, [])
+            ]
+        }
 
     def delete_access_key(self, UserName: str, AccessKeyId: str):  # noqa: N803
         self.deleted_keys.append(AccessKeyId)
 
 
-def a_scratch_registry(root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repositories: list[str]) -> tuple[FakeAccount, Path]:
+def a_scratch_registry(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repositories: list[str]
+) -> tuple[FakeAccount, Path]:
     account = FakeAccount(repositories)
     monkeypatch.setattr(cli, "_client", lambda service, region=None: account)
     tfvars_of(root, SCRATCH).parent.mkdir(parents=True, exist_ok=True)
@@ -576,17 +870,52 @@ def test_destroy_removes_the_registry_its_keys_and_its_workspace(
     root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     account, keys = a_scratch_registry(
-        root, tmp_path, monkeypatch, ["environments/base/python-cpu", "services/api", "environments/u/clouder-check/probe"]
+        root,
+        tmp_path,
+        monkeypatch,
+        [
+            "environments/base/python-cpu",
+            "services/api",
+            "environments/u/clouder-check/probe",
+        ],
     )
-    arguments = ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--keys-dir", str(keys), "--terraform-dir", str(root)]
+    arguments = [
+        "destroy",
+        "--workspace",
+        SCRATCH,
+        "--confirm",
+        SCRATCH,
+        "--keys-dir",
+        str(keys),
+        "--terraform-dir",
+        str(root),
+    ]
     result = runner.invoke(cli.ecr_environments_app, arguments)
     assert result.exit_code == 0, result.output
-    assert sorted(account.deleted_repositories) == ["environments/base/python-cpu", "environments/u/clouder-check/probe"]
+    assert sorted(account.deleted_repositories) == [
+        "environments/base/python-cpu",
+        "environments/u/clouder-check/probe",
+    ]
     assert sorted(account.deleted_keys) == ["AKIABUILDER", "AKIAREADER"]
     terraform = recorder.terraform()
-    destroyed = terraform.index(["destroy", "-input=false", "-no-color", "-auto-approve", f"-var-file=workspaces/{SCRATCH}.tfvars"])
-    assert terraform[:destroyed] == [["init", "-input=false", "-no-color"], ["workspace", "select", SCRATCH], ["output", "-json"]]
-    assert terraform[destroyed + 1 :] == [["workspace", "select", "default"], ["workspace", "delete", SCRATCH]]
+    destroyed = terraform.index(
+        [
+            "destroy",
+            "-input=false",
+            "-no-color",
+            "-auto-approve",
+            f"-var-file=workspaces/{SCRATCH}.tfvars",
+        ]
+    )
+    assert terraform[:destroyed] == [
+        ["init", "-input=false", "-no-color"],
+        ["workspace", "select", SCRATCH],
+        ["output", "-json"],
+    ]
+    assert terraform[destroyed + 1 :] == [
+        ["workspace", "select", "default"],
+        ["workspace", "delete", SCRATCH],
+    ]
     assert not keys.exists()
     assert not tfvars_of(root, SCRATCH).exists()
 
@@ -598,7 +927,15 @@ def test_destroy_removes_a_default_key_directory_with_its_workspace_directory(
     a_scratch_registry(root, tmp_path, monkeypatch, [])
     monkeypatch.setattr(cli, "DEFAULT_KEYS_ROOT", tmp_path / "ecr-environments")
     keys = write_keys(tmp_path / "ecr-environments" / SCRATCH / "keys")
-    arguments = ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--terraform-dir", str(root)]
+    arguments = [
+        "destroy",
+        "--workspace",
+        SCRATCH,
+        "--confirm",
+        SCRATCH,
+        "--terraform-dir",
+        str(root),
+    ]
     result = runner.invoke(cli.ecr_environments_app, arguments)
     assert result.exit_code == 0, result.output
     assert not keys.parent.exists()
@@ -608,14 +945,35 @@ def test_destroy_removes_a_default_key_directory_with_its_workspace_directory(
 def test_destroy_refuses_the_default_workspace_and_a_registry_holding_environments(
     root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    account, keys = a_scratch_registry(root, tmp_path, monkeypatch, ["environments/u/01OWNER/geospatial"])
+    account, keys = a_scratch_registry(
+        root, tmp_path, monkeypatch, ["environments/u/01OWNER/geospatial"]
+    )
     default = runner.invoke(
-        cli.ecr_environments_app, ["destroy", "--workspace", "default", "--confirm", "default", "--terraform-dir", str(root)]
+        cli.ecr_environments_app,
+        [
+            "destroy",
+            "--workspace",
+            "default",
+            "--confirm",
+            "default",
+            "--terraform-dir",
+            str(root),
+        ],
     )
     assert default.exit_code == 1 and recorder.commands == []
     held = runner.invoke(
         cli.ecr_environments_app,
-        ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--keys-dir", str(keys), "--terraform-dir", str(root)],
+        [
+            "destroy",
+            "--workspace",
+            SCRATCH,
+            "--confirm",
+            SCRATCH,
+            "--keys-dir",
+            str(keys),
+            "--terraform-dir",
+            str(root),
+        ],
     )
     assert held.exit_code == 1
     assert "--delete-environment-images" in said(held)
@@ -626,16 +984,37 @@ def test_destroy_refuses_the_default_workspace_and_a_registry_holding_environmen
 def test_destroy_asks_before_removing_anything(
     root: Path, tmp_path: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    account, keys = a_scratch_registry(root, tmp_path, monkeypatch, ["environments/base/python-cpu"])
-    arguments = ["destroy", "--workspace", SCRATCH, "--keys-dir", str(keys), "--terraform-dir", str(root)]
+    account, keys = a_scratch_registry(
+        root, tmp_path, monkeypatch, ["environments/base/python-cpu"]
+    )
+    arguments = [
+        "destroy",
+        "--workspace",
+        SCRATCH,
+        "--keys-dir",
+        str(keys),
+        "--terraform-dir",
+        str(root),
+    ]
     result = runner.invoke(cli.ecr_environments_app, arguments, input="n\n")
     assert result.exit_code == 1
     assert account.deleted_repositories == [] and account.deleted_keys == []
 
 
-def test_destroy_needs_the_variables_the_registry_was_deployed_with(root: Path, recorder: Recorder) -> None:
+def test_destroy_needs_the_variables_the_registry_was_deployed_with(
+    root: Path, recorder: Recorder
+) -> None:
     result = runner.invoke(
-        cli.ecr_environments_app, ["destroy", "--workspace", SCRATCH, "--confirm", SCRATCH, "--terraform-dir", str(root)]
+        cli.ecr_environments_app,
+        [
+            "destroy",
+            "--workspace",
+            SCRATCH,
+            "--confirm",
+            SCRATCH,
+            "--terraform-dir",
+            str(root),
+        ],
     )
     assert result.exit_code == 1
     assert "not deployed from this root" in said(result)
@@ -646,14 +1025,24 @@ def test_destroy_needs_the_variables_the_registry_was_deployed_with(root: Path, 
 
 
 class FakeECR:
-    def __init__(self, *, allow_outside: bool = False, allow_base_reader: bool = False) -> None:
+    def __init__(
+        self, *, allow_outside: bool = False, allow_base_reader: bool = False
+    ) -> None:
         self.allow_outside = allow_outside
         self.allow_base_reader = allow_base_reader
         self.created: list[str] = []
         self.deleted_images: list[dict] = []
 
     def get_authorization_token(self):
-        return {"authorizationData": [{"authorizationToken": base64.b64encode(b"AWS:registry-password").decode()}]}
+        return {
+            "authorizationData": [
+                {
+                    "authorizationToken": base64.b64encode(
+                        b"AWS:registry-password"
+                    ).decode()
+                }
+            ]
+        }
 
     def create_repository(self, repositoryName: str, **_):  # noqa: N803
         if not repositoryName.startswith("environments/") and not self.allow_outside:
@@ -667,7 +1056,10 @@ class FakeECR:
         return {"imageDetails": [{"imageDigest": DIGEST}]}
 
     def describe_image_scan_findings(self, **_):
-        return {"imageScanStatus": {"status": "COMPLETE"}, "imageScanFindings": {"findingSeverityCounts": {"LOW": 2}}}
+        return {
+            "imageScanStatus": {"status": "COMPLETE"},
+            "imageScanFindings": {"findingSeverityCounts": {"LOW": 2}},
+        }
 
     def batch_get_image(self, **_):
         if not self.allow_base_reader:
@@ -688,18 +1080,32 @@ class FakeSession:
     def client(self, service: str):
         if service == "sts":
             return SimpleNamespace(
-                assume_role=lambda **_: {"Credentials": {"AccessKeyId": "ASIA", "SecretAccessKey": "s", "SessionToken": "t"}}
+                assume_role=lambda **_: {
+                    "Credentials": {
+                        "AccessKeyId": "ASIA",
+                        "SecretAccessKey": "s",
+                        "SessionToken": "t",
+                    }
+                }
             )
         return self.ecr
 
     def get_credentials(self):
-        frozen = SimpleNamespace(access_key="AKIA", secret_key="principal-secret", token=None)  # noqa: S106 - a fake
+        frozen = SimpleNamespace(
+            access_key="AKIA", secret_key="principal-secret", token=None
+        )  # noqa: S106 - a fake
         return SimpleNamespace(get_frozen_credentials=lambda: frozen)
 
 
-def stub_sessions(monkeypatch: pytest.MonkeyPatch, principal: FakeECR, base_reader: FakeECR) -> None:
-    monkeypatch.setattr(cli, "_principal_session", lambda path, region: FakeSession(principal))
-    monkeypatch.setattr(cli, "_assumed_session", lambda credentials, region: FakeSession(base_reader))
+def stub_sessions(
+    monkeypatch: pytest.MonkeyPatch, principal: FakeECR, base_reader: FakeECR
+) -> None:
+    monkeypatch.setattr(
+        cli, "_principal_session", lambda path, region: FakeSession(principal)
+    )
+    monkeypatch.setattr(
+        cli, "_assumed_session", lambda credentials, region: FakeSession(base_reader)
+    )
 
 
 def test_the_check_passes_every_step_on_a_registry_that_behaves(
@@ -707,9 +1113,14 @@ def test_the_check_passes_every_step_on_a_registry_that_behaves(
 ) -> None:
     ecr = FakeECR()
     stub_sessions(monkeypatch, ecr, FakeECR())
-    result = runner.invoke(cli.ecr_environments_app, ["check", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["check", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 0, result.output
-    names = [step.name for step in cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)]
+    names = [
+        step.name
+        for step in cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
+    ]
     assert names == [
         "log in as the builder",
         "create environments/u/clouder-check/probe",
@@ -727,24 +1138,51 @@ def test_the_check_passes_every_step_on_a_registry_that_behaves(
     pinned = f"{OUTPUTS['registry']}/environments/u/clouder-check/probe@{DIGEST}"
     signing = "awskms:///alias/datalayer-environments-signing"
     commands = recorder.commands
-    assert ["cosign", "sign", "--yes", "--tlog-upload=false", "--key", signing, pinned] in commands
-    assert ["cosign", "verify", "--insecure-ignore-tlog=true", "--key", signing, pinned] in commands
+    assert [
+        "cosign",
+        "sign",
+        "--yes",
+        "--tlog-upload=false",
+        "--key",
+        signing,
+        pinned,
+    ] in commands
+    assert [
+        "cosign",
+        "verify",
+        "--insecure-ignore-tlog=true",
+        "--key",
+        signing,
+        pinned,
+    ] in commands
     assert ecr.deleted_images, "the probe image is cleaned up"
 
 
 def test_cosign_runs_in_its_pinned_image_with_the_login_in_a_private_config(
     root: Path, recorder: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli, "_which", lambda tool: None if tool == "cosign" else f"/usr/bin/{tool}")
+    monkeypatch.setattr(
+        cli, "_which", lambda tool: None if tool == "cosign" else f"/usr/bin/{tool}"
+    )
     stub_sessions(monkeypatch, FakeECR(), FakeECR())
     steps = cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
     assert all(step.ok for step in steps)
-    sign = next(command for command in recorder.commands if "sign" in command and cli.COSIGN_IMAGE in command)
+    sign = next(
+        command
+        for command in recorder.commands
+        if "sign" in command and cli.COSIGN_IMAGE in command
+    )
     assert sign[:2] == ["docker", "run"]
-    assert sign[sign.index(cli.COSIGN_IMAGE) + 1 :][:3] == ["sign", "--yes", "--tlog-upload=false"]
+    assert sign[sign.index(cli.COSIGN_IMAGE) + 1 :][:3] == [
+        "sign",
+        "--yes",
+        "--tlog-upload=false",
+    ]
     assert "DOCKER_CONFIG=/cosign-docker" in sign
     assert "AWS_SECRET_ACCESS_KEY" in sign
-    assert not any("registry-password" in part or "principal-secret" in part for part in sign)
+    assert not any(
+        "registry-password" in part or "principal-secret" in part for part in sign
+    )
 
 
 class FreshKeyECR(FakeECR):
@@ -758,7 +1196,12 @@ class FreshKeyECR(FakeECR):
         if self.refusals > 0:
             self.refusals -= 1
             raise ClientError(
-                {"Error": {"Code": "UnrecognizedClientException", "Message": "The security token included in the request is invalid."}},
+                {
+                    "Error": {
+                        "Code": "UnrecognizedClientException",
+                        "Message": "The security token included in the request is invalid.",
+                    }
+                },
                 "GetAuthorizationToken",
             )
         return super().get_authorization_token()
@@ -781,9 +1224,13 @@ def test_a_key_that_never_becomes_usable_fails_the_check_rather_than_crashing(
     monkeypatch.setattr(cli, "NEW_KEY_TIMEOUT", 0)
     stub_sessions(monkeypatch, FreshKeyECR(refusals=1_000), FakeECR())
     steps = cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
-    assert [(step.name, step.ok) for step in steps] == [("log in as the builder", False)]
+    assert [(step.name, step.ok) for step in steps] == [
+        ("log in as the builder", False)
+    ]
     assert "security token" in steps[0].detail
-    result = runner.invoke(cli.ecr_environments_app, ["check", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["check", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 1
     assert "Traceback" not in result.output
 
@@ -791,8 +1238,16 @@ def test_a_key_that_never_becomes_usable_fails_the_check_rather_than_crashing(
 @pytest.mark.parametrize(
     ("principal", "base_reader", "step"),
     [
-        (FakeECR(allow_outside=True), FakeECR(), "the builder is refused outside the prefix"),
-        (FakeECR(), FakeECR(allow_base_reader=True), "the base-reader is refused a user image"),
+        (
+            FakeECR(allow_outside=True),
+            FakeECR(),
+            "the builder is refused outside the prefix",
+        ),
+        (
+            FakeECR(),
+            FakeECR(allow_base_reader=True),
+            "the base-reader is refused a user image",
+        ),
     ],
 )
 def test_the_check_fails_when_a_refusal_is_allowed(
@@ -804,16 +1259,24 @@ def test_the_check_fails_when_a_refusal_is_allowed(
     step: str,
 ) -> None:
     stub_sessions(monkeypatch, principal, base_reader)
-    steps = {item.name: item for item in cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)}
+    steps = {
+        item.name: item
+        for item in cli.run_check(OUTPUTS, Path("keys"), cli.DEFAULT_PROBE_IMAGE, 1)
+    }
     assert not steps[step].ok
     assert all(item.ok for name, item in steps.items() if name != step)
-    result = runner.invoke(cli.ecr_environments_app, ["check", "--terraform-dir", str(root)])
+    result = runner.invoke(
+        cli.ecr_environments_app, ["check", "--terraform-dir", str(root)]
+    )
     assert result.exit_code == 1
 
 
-def test_the_check_needs_the_key_files(root: Path, tmp_path: Path, recorder: Recorder) -> None:
+def test_the_check_needs_the_key_files(
+    root: Path, tmp_path: Path, recorder: Recorder
+) -> None:
     result = runner.invoke(
-        cli.ecr_environments_app, ["check", "--keys-dir", str(tmp_path / "none"), "--terraform-dir", str(root)]
+        cli.ecr_environments_app,
+        ["check", "--keys-dir", str(tmp_path / "none"), "--terraform-dir", str(root)],
     )
     assert result.exit_code == 1
     assert "rotate-keys" in result.output
@@ -823,7 +1286,9 @@ def test_the_check_needs_the_key_files(root: Path, tmp_path: Path, recorder: Rec
 
 
 def test_the_pull_secret_carries_a_docker_config_for_the_registry() -> None:
-    secret = refresher.pull_secret("ecr-environments", "datalayer-runtimes", "r.example", "pw")
+    secret = refresher.pull_secret(
+        "ecr-environments", "datalayer-runtimes", "r.example", "pw"
+    )
     assert secret["type"] == "kubernetes.io/dockerconfigjson"
     config = json.loads(base64.b64decode(secret["data"][".dockerconfigjson"]))
     assert config["auths"]["r.example"]["username"] == "AWS"
@@ -840,8 +1305,13 @@ def test_refresh_replaces_the_secret_or_creates_it_the_first_time() -> None:
     def existing(method: str, url: str, body: bytes) -> None:
         calls.append((method, url))
 
-    assert refresher.refresh(existing, "https://k8s", "ns", "ecr-environments", "r", "pw") == "replaced"
-    assert calls == [("PUT", "https://k8s/api/v1/namespaces/ns/secrets/ecr-environments")]
+    assert (
+        refresher.refresh(existing, "https://k8s", "ns", "ecr-environments", "r", "pw")
+        == "replaced"
+    )
+    assert calls == [
+        ("PUT", "https://k8s/api/v1/namespaces/ns/secrets/ecr-environments")
+    ]
 
     calls.clear()
 
@@ -850,7 +1320,10 @@ def test_refresh_replaces_the_secret_or_creates_it_the_first_time() -> None:
         if method == "PUT":
             raise http_error(404)
 
-    assert refresher.refresh(missing, "https://k8s", "ns", "ecr-environments", "r", "pw") == "created"
+    assert (
+        refresher.refresh(missing, "https://k8s", "ns", "ecr-environments", "r", "pw")
+        == "created"
+    )
     assert calls[-1] == ("POST", "https://k8s/api/v1/namespaces/ns/secrets")
 
 
@@ -862,7 +1335,13 @@ def test_refresh_does_not_hide_a_refusal() -> None:
         refresher.refresh(forbidden, "https://k8s", "ns", "ecr-environments", "r", "pw")
 
 
-def test_the_refresher_program_fails_without_a_password(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    environ = {"REGISTRY": "r", "KUBERNETES_SERVICE_HOST": "10.0.0.1", "PASSWORD_FILE": str(tmp_path / "none")}
+def test_the_refresher_program_fails_without_a_password(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    environ = {
+        "REGISTRY": "r",
+        "KUBERNETES_SERVICE_HOST": "10.0.0.1",
+        "PASSWORD_FILE": str(tmp_path / "none"),
+    }
     assert refresher.main(environ, service_account=str(tmp_path)) == 1
     assert "cannot read" in capsys.readouterr().err

@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 import boto3
 import typer
+import yaml
 from botocore.exceptions import ClientError
 from rich import print
 from rich.table import Table
@@ -49,7 +50,12 @@ PRINCIPALS = ("builder", "puller", "reader")
 DENIED = {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation"}
 
 #: What AWS answers while an access key IAM has just created is not usable yet.
-NOT_YET_VALID = {"InvalidClientTokenId", "UnrecognizedClientException", "SignatureDoesNotMatch", "AuthFailure"}
+NOT_YET_VALID = {
+    "InvalidClientTokenId",
+    "UnrecognizedClientException",
+    "SignatureDoesNotMatch",
+    "AuthFailure",
+}
 #: How long a new key is given to become usable.
 NEW_KEY_TIMEOUT = 120
 
@@ -114,7 +120,13 @@ def _run(
 ) -> subprocess.CompletedProcess:
     """The one place a command runs, so a test can stand in for all of them."""
     return subprocess.run(
-        command, cwd=cwd, input=input_text, env=env, text=True, capture_output=True, check=False
+        command,
+        cwd=cwd,
+        input=input_text,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
 
@@ -144,7 +156,9 @@ def tfvars_argument(workspace: str) -> str:
     return f"{TFVARS_DIR}/{workspace}.tfvars"
 
 
-def keys_directory(keys_dir: Optional[Path], root: Optional[Path], workspace: Optional[str]) -> Path:
+def keys_directory(
+    keys_dir: Optional[Path], root: Optional[Path], workspace: Optional[str]
+) -> Path:
     if keys_dir:
         return keys_dir
     name = workspace or (current_workspace(root) if root else "default")
@@ -192,7 +206,9 @@ def _settings(
     kms_deletion_window: int = 30,
 ) -> Settings:
     return Settings(
-        region=region or os.getenv("DATALAYER_ECR_ENVIRONMENTS_REGION") or DEFAULT_REGION,
+        region=region
+        or os.getenv("DATALAYER_ECR_ENVIRONMENTS_REGION")
+        or DEFAULT_REGION,
         project_name=project_name,
         repository_prefix=repository_prefix,
         base_channels=list(base_channel or ("python-cpu", "python-cuda")),
@@ -225,7 +241,9 @@ def registry_scanning(ecr: Any, settings: Settings) -> Settings:
         for rule in current.get("rules", [])
         for item in rule.get("repositoryFilters", [])
     ]
-    if current.get("scanType") == "ENHANCED" and any(_covers(item, settings.repository_prefix) for item in filters):
+    if current.get("scanType") == "ENHANCED" and any(
+        _covers(item, settings.repository_prefix) for item in filters
+    ):
         print(
             f"Enhanced scanning already covers {settings.repository_prefix}/ ({', '.join(filters)}); "
             "the account's scanning configuration is left as it is."
@@ -246,14 +264,20 @@ def _hcl(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, dict):
-        return "{ " + ", ".join(f"{json.dumps(k)} = {_hcl(v)}" for k, v in value.items()) + " }"
+        return (
+            "{ "
+            + ", ".join(f"{json.dumps(k)} = {_hcl(v)}" for k, v in value.items())
+            + " }"
+        )
     return json.dumps(value)
 
 
 def write_tfvars(root: Path, settings: Settings) -> Path:
     path = root / tfvars_argument(settings.workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# Written by `clouder aws ecr-environments`: change its options, not this file."]
+    lines = [
+        "# Written by `clouder aws ecr-environments`: change its options, not this file."
+    ]
     lines += [f"{name} = {_hcl(value)}" for name, value in settings.tfvars().items()]
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -275,7 +299,12 @@ def terraform_command(root: Path) -> list[str]:
         home = "/tmp/terraform-home"  # noqa: S108 - inside the container
         command = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}"]
         # The root reaches its module through `../modules`, so its parent is mounted.
-        command += ["-v", f"{root.parent.resolve()}:/workspace", "-w", f"/workspace/{root.name}"]
+        command += [
+            "-v",
+            f"{root.parent.resolve()}:/workspace",
+            "-w",
+            f"/workspace/{root.name}",
+        ]
         command += ["-e", f"HOME={home}"]
         aws = Path.home() / ".aws"
         if aws.is_dir():
@@ -284,11 +313,15 @@ def terraform_command(root: Path) -> list[str]:
             if os.environ.get(name):
                 command += ["-e", name]
         return [*command, TERRAFORM_IMAGE]
-    print("[red]Terraform is needed: install it, or install docker to run the pinned image.[/red]")
+    print(
+        "[red]Terraform is needed: install it, or install docker to run the pinned image.[/red]"
+    )
     raise typer.Exit(1)
 
 
-def _terraform(root: Path, *arguments: str, codes: tuple[int, ...] = (0,)) -> subprocess.CompletedProcess:
+def _terraform(
+    root: Path, *arguments: str, codes: tuple[int, ...] = (0,)
+) -> subprocess.CompletedProcess:
     result = _run([*terraform_command(root), *arguments], cwd=root)
     if result.returncode not in codes:
         print(f"[red]terraform {' '.join(arguments[:2])} failed[/red]")
@@ -328,20 +361,35 @@ def outputs(root: Path, workspace: Optional[str] = None) -> dict[str, Any]:
         _terraform(root, "init", "-input=false", "-no-color")
         _terraform(root, "workspace", "select", workspace)
     result = _terraform(root, "output", "-json")
-    return {name: item.get("value") for name, item in json.loads(result.stdout or "{}").items()}
+    return {
+        name: item.get("value")
+        for name, item in json.loads(result.stdout or "{}").items()
+    }
 
 
-TerraformDirOption = typer.Option(None, "--terraform-dir", help="The environments-registry Terraform root.")
+TerraformDirOption = typer.Option(
+    None, "--terraform-dir", help="The environments-registry Terraform root."
+)
 WorkspaceOption = typer.Option(
-    None, "--workspace", help="The registry, by its workspace <project>-<prefix>; the last planned one by default."
+    None,
+    "--workspace",
+    help="The registry, by its workspace <project>-<prefix>; the last planned one by default.",
 )
 RegionOption = typer.Option(
-    None, "--region", help="AWS region; DATALAYER_ECR_ENVIRONMENTS_REGION, then us-east-1, by default."
+    None,
+    "--region",
+    help="AWS region; DATALAYER_ECR_ENVIRONMENTS_REGION, then us-east-1, by default.",
 )
-ProjectOption = typer.Option("datalayer", "--project-name", help="The first part of every IAM and KMS name.")
-PrefixOption = typer.Option("environments", "--repository-prefix", help="The prefix every policy is scoped to.")
+ProjectOption = typer.Option(
+    "datalayer", "--project-name", help="The first part of every IAM and KMS name."
+)
+PrefixOption = typer.Option(
+    "environments", "--repository-prefix", help="The prefix every policy is scoped to."
+)
 ChannelOption = typer.Option(
-    None, "--base-channel", help="A base channel repository, repeated; python-cpu and python-cuda by default."
+    None,
+    "--base-channel",
+    help="A base channel repository, repeated; python-cpu and python-cuda by default.",
 )
 ScanningOption = typer.Option(
     True,
@@ -349,28 +397,52 @@ ScanningOption = typer.Option(
     help="Own the account's registry scanning configuration, which is one per region.",
 )
 ScanFilterOption = typer.Option(
-    None, "--extra-scan-filter", help="Another repository wildcard to keep scanned, repeated."
+    None,
+    "--extra-scan-filter",
+    help="Another repository wildcard to keep scanned, repeated.",
 )
 KmsWindowOption = typer.Option(
-    30, "--kms-deletion-window", min=7, max=30, help="Days a deleted KMS key stays recoverable; 7 for a scratch registry."
+    30,
+    "--kms-deletion-window",
+    min=7,
+    max=30,
+    help="Days a deleted KMS key stays recoverable; 7 for a scratch registry.",
 )
 KeysDirOption = typer.Option(
-    None, "--keys-dir", help="Where the principals' key files live; ~/.clouder/ecr-environments/<workspace>/keys by default."
+    None,
+    "--keys-dir",
+    help="Where the principals' key files live; ~/.clouder/ecr-environments/<workspace>/keys by default.",
 )
-KubeconfigOption = typer.Option(None, "--kubeconfig", help="The kubeconfig of the plane.")
-ContextOption = typer.Option(None, "--context", help="The kubeconfig context of the plane.")
+KubeconfigOption = typer.Option(
+    None, "--kubeconfig", help="The kubeconfig of the plane."
+)
+ContextOption = typer.Option(
+    None, "--context", help="The kubeconfig context of the plane."
+)
 BuilderNamespaceOption = typer.Option(
-    None, "--builder-namespace", help="Where the durable worker runs; DATALAYER_DURABLE_NAMESPACE by default."
+    None,
+    "--builder-namespace",
+    help="Where the durable worker runs; DATALAYER_DURABLE_NAMESPACE by default.",
 )
 ReaderNamespaceOption = typer.Option(
-    DEFAULT_READER_NAMESPACE, "--reader-namespace", help="Where the Runtimes service runs."
+    DEFAULT_READER_NAMESPACE,
+    "--reader-namespace",
+    help="Where the Runtimes service runs.",
 )
 RuntimeNamespaceOption = typer.Option(
-    None, "--runtime-namespace", help="A namespace runtimes launch in, repeated; datalayer-runtimes by default."
+    None,
+    "--runtime-namespace",
+    help="A namespace runtimes launch in, repeated; datalayer-runtimes by default.",
 )
-ProbeImageOption = typer.Option(DEFAULT_PROBE_IMAGE, "--probe-image", help="A small public image to push.")
-ScanTimeoutOption = typer.Option(600, "--scan-timeout", help="Seconds to wait for the probe's scan.")
-YesOption = typer.Option(False, "--yes", "-y", help="Do not ask before changing AWS or Kubernetes.")
+ProbeImageOption = typer.Option(
+    DEFAULT_PROBE_IMAGE, "--probe-image", help="A small public image to push."
+)
+ScanTimeoutOption = typer.Option(
+    600, "--scan-timeout", help="Seconds to wait for the probe's scan."
+)
+YesOption = typer.Option(
+    False, "--yes", "-y", help="Do not ask before changing AWS or Kubernetes."
+)
 
 
 @ecr_environments_app.command("plan")
@@ -382,23 +454,36 @@ def plan(
     manage_registry_scanning: bool = ScanningOption,
     extra_scan_filter: Optional[list[str]] = ScanFilterOption,
     kms_deletion_window: int = KmsWindowOption,
-    json_output: bool = typer.Option(False, "--json", help="Also write tfplan.json, for review in CI."),
+    json_output: bool = typer.Option(
+        False, "--json", help="Also write tfplan.json, for review in CI."
+    ),
     terraform_dir: Optional[Path] = TerraformDirOption,
 ):
     """Plan the Environments registry into tfplan, changing nothing."""
     root = _root(terraform_dir)
     settings = _settings(
-        region, project_name, repository_prefix, base_channel, manage_registry_scanning, extra_scan_filter,
+        region,
+        project_name,
+        repository_prefix,
+        base_channel,
+        manage_registry_scanning,
+        extra_scan_filter,
         kms_deletion_window,
     )
     settings = registry_scanning(_client("ecr", region=settings.region), settings)
     changed = plan_registry(root, settings)
     if json_output:
-        (root / "tfplan.json").write_text(_terraform(root, "show", "-json", PLAN_FILE).stdout)
+        (root / "tfplan.json").write_text(
+            _terraform(root, "show", "-json", PLAN_FILE).stdout
+        )
     if changed:
-        print(f"[green]Plan for {settings.workspace} written to tfplan; `clouder aws ecr-environments apply` applies it.[/green]")
+        print(
+            f"[green]Plan for {settings.workspace} written to tfplan; `clouder aws ecr-environments apply` applies it.[/green]"
+        )
     else:
-        print(f"[green]No changes: registry {settings.workspace} already matches.[/green]")
+        print(
+            f"[green]No changes: registry {settings.workspace} already matches.[/green]"
+        )
 
 
 @ecr_environments_app.command("apply")
@@ -412,7 +497,10 @@ def apply(terraform_dir: Optional[Path] = TerraformDirOption):
 
 
 @ecr_environments_app.command("outputs")
-def show_outputs(workspace: Optional[str] = WorkspaceOption, terraform_dir: Optional[Path] = TerraformDirOption):
+def show_outputs(
+    workspace: Optional[str] = WorkspaceOption,
+    terraform_dir: Optional[Path] = TerraformDirOption,
+):
     """Show what one registry's root created."""
     values = outputs(_root(terraform_dir), workspace)
     table = Table(title="Environments registry")
@@ -468,13 +556,17 @@ def ensure_keys(values: dict[str, Any], keys_dir: Path) -> list[tuple[str, str]]
                 f"`clouder aws ecr-environments rotate-keys --principal {name}` makes a new one.[/red]"
             )
             raise typer.Exit(1)
-        results.append((name, f"created {_create_key(iam, name, values, keys_dir)} in {path}"))
+        results.append(
+            (name, f"created {_create_key(iam, name, values, keys_dir)} in {path}")
+        )
     return results
 
 
 @ecr_environments_app.command("rotate-keys")
 def rotate_keys(
-    principal: str = typer.Option("all", "--principal", help="builder, puller, reader or all."),
+    principal: str = typer.Option(
+        "all", "--principal", help="builder, puller, reader or all."
+    ),
     keys_dir: Optional[Path] = KeysDirOption,
     retire_old: bool = typer.Option(
         False,
@@ -507,7 +599,8 @@ def rotate_keys(
     for name in names:
         user = values[f"{name}_user"]
         keys = sorted(
-            iam.list_access_keys(UserName=user)["AccessKeyMetadata"], key=lambda key: key["CreateDate"]
+            iam.list_access_keys(UserName=user)["AccessKeyMetadata"],
+            key=lambda key: key["CreateDate"],
         )
         if retire_old:
             for key in keys[:-1]:
@@ -527,7 +620,9 @@ def rotate_keys(
 
 def _key_file(path: Path) -> dict[str, str]:
     if not path.is_file():
-        print(f"[red]{path} is missing: run `clouder aws ecr-environments rotate-keys` first.[/red]")
+        print(
+            f"[red]{path} is missing: run `clouder aws ecr-environments rotate-keys` first.[/red]"
+        )
         raise typer.Exit(1)
     values = dict(
         line.split("=", 1)
@@ -553,7 +648,9 @@ def _kube(kubeconfig: Optional[Path], context: Optional[str]) -> list[str]:
     return command
 
 
-def _kubectl(kube: list[str], *arguments: str, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
+def _kubectl(
+    kube: list[str], *arguments: str, input_text: Optional[str] = None
+) -> subprocess.CompletedProcess:
     result = _run([*kube, *arguments], input_text=input_text)
     if result.returncode != 0:
         print(f"[red]kubectl {' '.join(arguments[:3])} failed[/red]")
@@ -565,14 +662,36 @@ def _kubectl(kube: list[str], *arguments: str, input_text: Optional[str] = None)
 def _confirm_context(kube: list[str], context: Optional[str], yes: bool) -> None:
     current = context or _kubectl(kube, "config", "current-context").stdout.strip()
     print(f"Kubernetes context: [bold]{current}[/bold]")
-    if not yes and not typer.confirm(f"Write the Environments registry's Secrets and refresher into {current}?"):
+    if not yes and not typer.confirm(
+        f"Write the Environments registry's Secrets and refresher into {current}?"
+    ):
         raise typer.Exit(1)
 
 
 def apply_manifests(kube: list[str], manifests: list[dict]) -> None:
-    """Server-side apply, which keeps no copy of a Secret's data in an annotation."""
-    text = "\n---\n".join(json.dumps(manifest) for manifest in manifests)
-    arguments = ("apply", "--server-side", f"--field-manager={FIELD_MANAGER}", "--force-conflicts", "-f", "-")
+    """Server-side apply, which keeps no copy of a Secret's data in an annotation.
+
+    Written as YAML, not JSON (found live, kubectl 1.29 client against a
+    1.32 server): `kubectl apply -f -` sniffs the stream's format from its
+    first document and, once it commits to JSON, a `---` ahead of a second
+    document is not a document boundary to it — there is no such thing as
+    multi-document JSON — so it reads the dashes as the start of a number
+    and refuses: "invalid character '-' in numeric literal". YAML documents
+    joined by `---` are what `-f -` was always meant to receive; every
+    manifest here is still built as a plain dict; only how it is written
+    changed.
+    """
+    text = "\n---\n".join(
+        yaml.safe_dump(manifest, default_flow_style=False) for manifest in manifests
+    )
+    arguments = (
+        "apply",
+        "--server-side",
+        f"--field-manager={FIELD_MANAGER}",
+        "--force-conflicts",
+        "-f",
+        "-",
+    )
     typer.echo(_kubectl(kube, *arguments, input_text=text).stdout)
 
 
@@ -596,18 +715,26 @@ def placements(
 
 
 def secret_manifests(keys_dir: Path, where: dict[str, list[str]]) -> list[dict]:
-    namespaces = dict.fromkeys(namespace for names in where.values() for namespace in names)
+    namespaces = dict.fromkeys(
+        namespace for names in where.values() for namespace in names
+    )
     manifests = [_namespace(namespace) for namespace in namespaces]
     for name, targets in where.items():
         values = _key_file(keys_dir / f"{name}.env")
-        data = {key: base64.b64encode(values[key].encode()).decode() for key in KEY_NAMES}
+        data = {
+            key: base64.b64encode(values[key].encode()).decode() for key in KEY_NAMES
+        }
         for namespace in dict.fromkeys(targets):
             manifests.append(
                 {
                     "apiVersion": "v1",
                     "kind": "Secret",
                     "type": "Opaque",
-                    "metadata": {"name": f"{PULL_SECRET}-{name}", "namespace": namespace, "labels": dict(LABELS)},
+                    "metadata": {
+                        "name": f"{PULL_SECRET}-{name}",
+                        "namespace": namespace,
+                        "labels": dict(LABELS),
+                    },
                     "data": data,
                 }
             )
@@ -618,7 +745,9 @@ def _principals(requested: Optional[list[str]]) -> tuple[str, ...]:
     names = tuple(dict.fromkeys(requested or PRINCIPALS))
     unknown = [name for name in names if name not in PRINCIPALS]
     if unknown:
-        print(f"[red]--principal is one of {', '.join(PRINCIPALS)}, not {', '.join(unknown)}.[/red]")
+        print(
+            f"[red]--principal is one of {', '.join(PRINCIPALS)}, not {', '.join(unknown)}.[/red]"
+        )
         raise typer.Exit(1)
     return names
 
@@ -626,7 +755,9 @@ def _principals(requested: Optional[list[str]]) -> tuple[str, ...]:
 @ecr_environments_app.command("secrets")
 def secrets(
     principal: Optional[list[str]] = typer.Option(
-        None, "--principal", help="builder, reader or puller, repeated; all three by default."
+        None,
+        "--principal",
+        help="builder, reader or puller, repeated; all three by default.",
     ),
     keys_dir: Optional[Path] = KeysDirOption,
     builder_namespace: Optional[str] = BuilderNamespaceOption,
@@ -640,7 +771,9 @@ def secrets(
 ):
     """Create the principals' Kubernetes Secrets from their key files."""
     _require("kubectl")
-    where = placements(_principals(principal), builder_namespace, reader_namespace, runtime_namespace)
+    where = placements(
+        _principals(principal), builder_namespace, reader_namespace, runtime_namespace
+    )
     directory = keys_dir or keys_directory(None, _root(terraform_dir), workspace)
     manifests = secret_manifests(directory, where)
     kube = _kube(kubeconfig, context)
@@ -654,7 +787,11 @@ def refresher_manifests(namespace: str, registry: str) -> list[dict]:
     def metadata(name: str) -> dict:
         return {"name": name, "namespace": namespace, "labels": dict(LABELS)}
 
-    hardened = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}}
+    hardened = {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
     pod = {
         "serviceAccountName": REFRESHER,
         "restartPolicy": "OnFailure",
@@ -668,12 +805,19 @@ def refresher_manifests(namespace: str, registry: str) -> list[dict]:
             {
                 "name": "password",
                 "image": AWS_CLI_IMAGE,
-                "command": ["sh", "-c", 'aws ecr get-login-password --region "$AWS_REGION" > /work/password'],
+                "command": [
+                    "sh",
+                    "-c",
+                    'aws ecr get-login-password --region "$AWS_REGION" > /work/password',
+                ],
                 "envFrom": [{"secretRef": {"name": f"{PULL_SECRET}-puller"}}],
                 "env": [{"name": "HOME", "value": "/work"}],
                 "volumeMounts": [{"name": "work", "mountPath": "/work"}],
                 "securityContext": hardened,
-                "resources": {"requests": {"cpu": "10m", "memory": "64Mi"}, "limits": {"memory": "256Mi"}},
+                "resources": {
+                    "requests": {"cpu": "10m", "memory": "64Mi"},
+                    "limits": {"memory": "256Mi"},
+                },
             }
         ],
         "containers": [
@@ -692,7 +836,10 @@ def refresher_manifests(namespace: str, registry: str) -> list[dict]:
                     {"name": "refresher", "mountPath": "/refresher", "readOnly": True},
                 ],
                 "securityContext": hardened,
-                "resources": {"requests": {"cpu": "10m", "memory": "32Mi"}, "limits": {"memory": "128Mi"}},
+                "resources": {
+                    "requests": {"cpu": "10m", "memory": "32Mi"},
+                    "limits": {"memory": "128Mi"},
+                },
             }
         ],
         "volumes": [
@@ -708,7 +855,12 @@ def refresher_manifests(namespace: str, registry: str) -> list[dict]:
             "kind": "Role",
             "metadata": metadata(REFRESHER),
             "rules": [
-                {"apiGroups": [""], "resources": ["secrets"], "resourceNames": [PULL_SECRET], "verbs": ["get", "update"]},
+                {
+                    "apiGroups": [""],
+                    "resources": ["secrets"],
+                    "resourceNames": [PULL_SECRET],
+                    "verbs": ["get", "update"],
+                },
                 {"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]},
             ],
         },
@@ -716,14 +868,22 @@ def refresher_manifests(namespace: str, registry: str) -> list[dict]:
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "RoleBinding",
             "metadata": metadata(REFRESHER),
-            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": REFRESHER},
-            "subjects": [{"kind": "ServiceAccount", "name": REFRESHER, "namespace": namespace}],
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "Role",
+                "name": REFRESHER,
+            },
+            "subjects": [
+                {"kind": "ServiceAccount", "name": REFRESHER, "namespace": namespace}
+            ],
         },
         {
             "apiVersion": "v1",
             "kind": "ConfigMap",
             "metadata": metadata(REFRESHER),
-            "data": {"refresh.py": Path(ecr_environments_refresher.__file__).read_text()},
+            "data": {
+                "refresh.py": Path(ecr_environments_refresher.__file__).read_text()
+            },
         },
         {
             "apiVersion": "batch/v1",
@@ -760,8 +920,20 @@ def install_refresher(kube: list[str], namespaces: list[str], registry: str) -> 
             raise typer.Exit(1)
         apply_manifests(kube, refresher_manifests(namespace, registry))
         job = f"{REFRESHER}-{int(time.time())}"
-        _kubectl(kube, "-n", namespace, "create", "job", f"--from=cronjob/{REFRESHER}", job)
-        waited = _run([*kube, "-n", namespace, "wait", "--for=condition=complete", f"job/{job}", "--timeout=180s"])
+        _kubectl(
+            kube, "-n", namespace, "create", "job", f"--from=cronjob/{REFRESHER}", job
+        )
+        waited = _run(
+            [
+                *kube,
+                "-n",
+                namespace,
+                "wait",
+                "--for=condition=complete",
+                f"job/{job}",
+                "--timeout=180s",
+            ]
+        )
         if waited.returncode != 0:
             print(
                 f"[red]The first refresh in {namespace} did not complete: "
@@ -858,7 +1030,9 @@ def _registry_password(ecr: Any) -> str:
 def _docker_config(directory: Path, registry: str, password: str) -> Path:
     """A docker config holding one login to the registry, for cosign, readable by this user only."""
     auth = base64.b64encode(f"AWS:{password}".encode()).decode()
-    _write_private(directory / "config.json", json.dumps({"auths": {registry: {"auth": auth}}}))
+    _write_private(
+        directory / "config.json", json.dumps({"auths": {registry: {"auth": auth}}})
+    )
     return directory
 
 
@@ -869,11 +1043,18 @@ def cosign_command(docker_config: Path) -> list[str]:
     if _which("docker"):
         command = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}"]
         command += ["--tmpfs", "/tmp", "-e", "HOME=/tmp"]  # noqa: S108 - inside the container
-        command += ["-v", f"{docker_config}:/cosign-docker:ro", "-e", "DOCKER_CONFIG=/cosign-docker"]
+        command += [
+            "-v",
+            f"{docker_config}:/cosign-docker:ro",
+            "-e",
+            "DOCKER_CONFIG=/cosign-docker",
+        ]
         for name in AWS_ENVIRONMENT:
             command += ["-e", name]
         return [*command, COSIGN_IMAGE]
-    print("[red]cosign is needed: install it, or install docker to run the pinned image.[/red]")
+    print(
+        "[red]cosign is needed: install it, or install docker to run the pinned image.[/red]"
+    )
     raise typer.Exit(1)
 
 
@@ -897,19 +1078,35 @@ def _environment(session: Any, region: str, docker_config: Path) -> dict[str, st
 
 
 def _login(registry: str, password: str) -> Step:
-    result = _run(["docker", "login", "--username", "AWS", "--password-stdin", registry], input_text=password)
+    result = _run(
+        ["docker", "login", "--username", "AWS", "--password-stdin", registry],
+        input_text=password,
+    )
     return Step("log in", result.returncode == 0, result.stderr.strip()[-200:])
 
 
-def _command(name: str, command: list[str], env: Optional[dict[str, str]] = None) -> Step:
+def _command(
+    name: str, command: list[str], env: Optional[dict[str, str]] = None
+) -> Step:
     result = _run(command, env=env)
-    return Step(name, result.returncode == 0, (result.stderr or result.stdout).strip()[-200:])
+    return Step(
+        name, result.returncode == 0, (result.stderr or result.stdout).strip()[-200:]
+    )
 
 
-def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_timeout: int) -> list[Step]:
+def run_check(
+    values: dict[str, Any], keys_dir: Path, probe_image: str, scan_timeout: int
+) -> list[Step]:
     """Every step of the check, in order; a step whose prerequisite failed is skipped."""
-    region, registry, prefix = values["region"], values["registry"], values["repository_prefix"]
-    sessions = {name: _principal_session(keys_dir / f"{name}.env", region) for name in PRINCIPALS}
+    region, registry, prefix = (
+        values["region"],
+        values["registry"],
+        values["repository_prefix"],
+    )
+    sessions = {
+        name: _principal_session(keys_dir / f"{name}.env", region)
+        for name in PRINCIPALS
+    }
     builder, puller, reader = (sessions[name].client("ecr") for name in PRINCIPALS)
     repository = f"{prefix}/u/clouder-check/probe"
     tag = f"check-{uuid.uuid4().hex[:12]}"
@@ -923,20 +1120,33 @@ def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_tim
         builder_password = await_new_key(lambda: _registry_password(builder))
     except ClientError as error:
         return [Step("log in as the builder", False, str(error))]
-    with tempfile.TemporaryDirectory() as builder_directory, tempfile.TemporaryDirectory() as puller_directory:
-        builder_config = _docker_config(Path(builder_directory), registry, builder_password)
+    with (
+        tempfile.TemporaryDirectory() as builder_directory,
+        tempfile.TemporaryDirectory() as puller_directory,
+    ):
+        builder_config = _docker_config(
+            Path(builder_directory), registry, builder_password
+        )
         login = _login(registry, builder_password)
         steps.append(Step("log in as the builder", login.ok, login.detail))
         try:
             builder.create_repository(
                 repositoryName=repository,
                 imageTagMutability="IMMUTABLE",
-                encryptionConfiguration={"encryptionType": "KMS", "kmsKey": values["encryption_key_arn"]},
+                encryptionConfiguration={
+                    "encryptionType": "KMS",
+                    "kmsKey": values["encryption_key_arn"],
+                },
             )
             steps.append(Step(f"create {repository}", True))
         except ClientError as error:
-            exists = error.response.get("Error", {}).get("Code") == "RepositoryAlreadyExistsException"
-            steps.append(Step(f"create {repository}", exists, "" if exists else str(error)))
+            exists = (
+                error.response.get("Error", {}).get("Code")
+                == "RepositoryAlreadyExistsException"
+            )
+            steps.append(
+                Step(f"create {repository}", exists, "" if exists else str(error))
+            )
         if not failed():
             reference = f"{registry}/{repository}:{tag}"
             for step in (
@@ -948,7 +1158,9 @@ def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_tim
                 if not step.ok:
                     break
         if not failed():
-            details = builder.describe_images(repositoryName=repository, imageIds=[{"imageTag": tag}])
+            details = builder.describe_images(
+                repositoryName=repository, imageIds=[{"imageTag": tag}]
+            )
             digest = details["imageDetails"][0]["imageDigest"]
             pinned = f"{registry}/{repository}@{digest}"
             signing = f"awskms:///{values['signing_key_alias']}"
@@ -967,11 +1179,21 @@ def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_tim
             except ClientError as error:
                 steps.append(Step("log in as the puller", False, str(error)))
             else:
-                puller_config = _docker_config(Path(puller_directory), registry, puller_password)
+                puller_config = _docker_config(
+                    Path(puller_directory), registry, puller_password
+                )
                 login = _login(registry, puller_password)
                 steps.append(Step("log in as the puller", login.ok, login.detail))
-                steps.append(_command("pull by digest as the puller", ["docker", "pull", pinned]))
-                verify = ["verify", "--insecure-ignore-tlog=true", "--key", signing, pinned]
+                steps.append(
+                    _command("pull by digest as the puller", ["docker", "pull", pinned])
+                )
+                verify = [
+                    "verify",
+                    "--insecure-ignore-tlog=true",
+                    "--key",
+                    signing,
+                    pinned,
+                ]
                 steps.append(
                     _command(
                         "verify the signature as the puller",
@@ -985,11 +1207,23 @@ def run_check(values: dict[str, Any], keys_dir: Path, probe_image: str, scan_tim
         outside = f"clouder-check-outside-{uuid.uuid4().hex[:8]}"
         builder.create_repository(repositoryName=outside)
         builder.delete_repository(repositoryName=outside, force=True)
-        steps.append(Step("the builder is refused outside the prefix", False, f"{outside} was created"))
+        steps.append(
+            Step(
+                "the builder is refused outside the prefix",
+                False,
+                f"{outside} was created",
+            )
+        )
     except ClientError as error:
-        steps.append(Step("the builder is refused outside the prefix", _denied(error), str(error)))
+        steps.append(
+            Step(
+                "the builder is refused outside the prefix", _denied(error), str(error)
+            )
+        )
     if digest:
-        steps.append(_base_reader_refusal(sessions["builder"], values, repository, digest))
+        steps.append(
+            _base_reader_refusal(sessions["builder"], values, repository, digest)
+        )
         ids = builder.list_images(repositoryName=repository).get("imageIds", [])
         if ids:
             builder.batch_delete_image(repositoryName=repository, imageIds=ids)
@@ -1005,7 +1239,9 @@ def _scan(reader: Any, repository: str, digest: str, timeout: int) -> Step:
             )
             status = findings.get("imageScanStatus", {}).get("status", "")
             if status in {"COMPLETE", "ACTIVE"}:
-                counts = findings.get("imageScanFindings", {}).get("findingSeverityCounts", {})
+                counts = findings.get("imageScanFindings", {}).get(
+                    "findingSeverityCounts", {}
+                )
                 return Step("read the scan as the reader", True, json.dumps(counts))
             if status in {"FAILED", "UNSUPPORTED_IMAGE"}:
                 return Step("read the scan as the reader", False, status)
@@ -1015,18 +1251,28 @@ def _scan(reader: Any, repository: str, digest: str, timeout: int) -> Step:
             if _code(error) not in {"ScanNotFoundException", *NOT_YET_VALID}:
                 return Step("read the scan as the reader", False, str(error))
         if time.monotonic() >= deadline:
-            return Step("read the scan as the reader", False, f"no scan result after {timeout} s")
+            return Step(
+                "read the scan as the reader",
+                False,
+                f"no scan result after {timeout} s",
+            )
         time.sleep(10)
 
 
-def _base_reader_refusal(builder_session: Any, values: dict[str, Any], repository: str, digest: str) -> Step:
+def _base_reader_refusal(
+    builder_session: Any, values: dict[str, Any], repository: str, digest: str
+) -> Step:
     name = "the base-reader is refused a user image"
     credentials = builder_session.client("sts").assume_role(
-        RoleArn=values["base_reader_role_arn"], RoleSessionName="clouder-check", DurationSeconds=900
+        RoleArn=values["base_reader_role_arn"],
+        RoleSessionName="clouder-check",
+        DurationSeconds=900,
     )["Credentials"]
     ecr = _assumed_session(credentials, values["region"]).client("ecr")
     try:
-        ecr.batch_get_image(repositoryName=repository, imageIds=[{"imageDigest": digest}])
+        ecr.batch_get_image(
+            repositoryName=repository, imageIds=[{"imageDigest": digest}]
+        )
     except ClientError as error:
         return Step(name, _denied(error), str(error))
     return Step(name, False, f"the base-reader read {repository}")
@@ -1038,7 +1284,11 @@ def _print_steps(steps: list[Step]) -> None:
     table.add_column("Result")
     table.add_column("Detail", style="dim")
     for step in steps:
-        table.add_row(step.name, "[green]ok[/green]" if step.ok else "[red]failed[/red]", step.detail)
+        table.add_row(
+            step.name,
+            "[green]ok[/green]" if step.ok else "[red]failed[/red]",
+            step.detail,
+        )
     print(table)
     if any(not step.ok for step in steps):
         raise typer.Exit(1)
@@ -1056,7 +1306,11 @@ def check(
     _require("docker")
     root = _root(terraform_dir)
     values = outputs(root, workspace)
-    _print_steps(run_check(values, keys_directory(keys_dir, root, workspace), probe_image, scan_timeout))
+    _print_steps(
+        run_check(
+            values, keys_directory(keys_dir, root, workspace), probe_image, scan_timeout
+        )
+    )
 
 
 # --- deploy and destroy ------------------------------------------------------------------
@@ -1077,8 +1331,14 @@ def deploy(
     runtime_namespace: Optional[list[str]] = RuntimeNamespaceOption,
     kubeconfig: Optional[Path] = KubeconfigOption,
     context: Optional[str] = ContextOption,
-    skip_kubernetes: bool = typer.Option(False, "--skip-kubernetes", help="Stop after the keys: no Secrets, no refresher."),
-    skip_check: bool = typer.Option(False, "--skip-check", help="Leave out the final check."),
+    skip_kubernetes: bool = typer.Option(
+        False,
+        "--skip-kubernetes",
+        help="Stop after the keys: no Secrets, no refresher.",
+    ),
+    skip_check: bool = typer.Option(
+        False, "--skip-check", help="Leave out the final check."
+    ),
     probe_image: str = ProbeImageOption,
     scan_timeout: int = ScanTimeoutOption,
     yes: bool = YesOption,
@@ -1086,19 +1346,30 @@ def deploy(
 ):
     """Deploy the Environments registry end to end: Terraform, keys, Secrets, refresher, check."""
     root = _root(terraform_dir)
-    _require(*(() if skip_kubernetes else ("kubectl",)), *(() if skip_check else ("docker",)))
+    _require(
+        *(() if skip_kubernetes else ("kubectl",)), *(() if skip_check else ("docker",))
+    )
     terraform_command(root)
     try:
         identity = get_aws_identity()
     except Exception as error:  # noqa: BLE001 - whatever boto3 raises, the answer is the same
-        print(f"[red]No usable AWS credentials: {error}. `clouder aws configure` shows the ways.[/red]")
+        print(
+            f"[red]No usable AWS credentials: {error}. `clouder aws configure` shows the ways.[/red]"
+        )
         raise typer.Exit(1) from error
-    print(f"AWS account [bold]{identity.get('account_id', '?')}[/bold] as {identity.get('arn', '?')}")
+    print(
+        f"AWS account [bold]{identity.get('account_id', '?')}[/bold] as {identity.get('arn', '?')}"
+    )
     kube = _kube(kubeconfig, context)
     if not skip_kubernetes:
         _confirm_context(kube, context, yes)
     settings = _settings(
-        region, project_name, repository_prefix, base_channel, manage_registry_scanning, extra_scan_filter,
+        region,
+        project_name,
+        repository_prefix,
+        base_channel,
+        manage_registry_scanning,
+        extra_scan_filter,
         kms_deletion_window,
     )
     print(f"Registry workspace: [bold]{settings.workspace}[/bold]")
@@ -1114,12 +1385,16 @@ def deploy(
     for name, result in ensure_keys(values, directory):
         print(f"{name}: {result}")
     if not skip_kubernetes:
-        where = placements(PRINCIPALS, builder_namespace, reader_namespace, runtime_namespace)
+        where = placements(
+            PRINCIPALS, builder_namespace, reader_namespace, runtime_namespace
+        )
         apply_manifests(kube, secret_manifests(directory, where))
         install_refresher(kube, where["puller"], values["registry"])
     if not skip_check:
         _print_steps(run_check(values, directory, probe_image, scan_timeout))
-    print("[green]The Environments registry is deployed.[/green] Add to the datalayerrc of each plane:")
+    print(
+        "[green]The Environments registry is deployed.[/green] Add to the datalayerrc of each plane:"
+    )
     typer.echo(f"export DATALAYER_ECR_ENVIRONMENTS_REGION={values['region']}")
     typer.echo(f"export DATALAYER_ECR_ENVIRONMENTS_REGISTRY={values['registry']}")
 
@@ -1142,10 +1417,18 @@ def _repositories(ecr: Any, prefix: str) -> list[str]:
 
 @ecr_environments_app.command("destroy")
 def destroy(
-    workspace: str = typer.Option(..., "--workspace", help="The registry to destroy, by its workspace <project>-<prefix>."),
-    confirm: Optional[str] = typer.Option(None, "--confirm", help="The workspace again, to go ahead without being asked."),
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        help="The registry to destroy, by its workspace <project>-<prefix>.",
+    ),
+    confirm: Optional[str] = typer.Option(
+        None, "--confirm", help="The workspace again, to go ahead without being asked."
+    ),
     delete_environment_images: bool = typer.Option(
-        False, "--delete-environment-images", help="Also delete the user and platform environment images it holds."
+        False,
+        "--delete-environment-images",
+        help="Also delete the user and platform environment images it holds.",
     ),
     keys_dir: Optional[Path] = KeysDirOption,
     terraform_dir: Optional[Path] = TerraformDirOption,
@@ -1157,12 +1440,16 @@ def destroy(
     deletion, after the window the registry was deployed with.
     """
     if workspace == "default":
-        print("[red]`default` names no registry; destroy one by its workspace, <project>-<prefix>.[/red]")
+        print(
+            "[red]`default` names no registry; destroy one by its workspace, <project>-<prefix>.[/red]"
+        )
         raise typer.Exit(1)
     root = _root(terraform_dir)
     tfvars = root / tfvars_argument(workspace)
     if not tfvars.is_file():
-        print(f"[red]No variables for {workspace} at {tfvars}: it was not deployed from this root.[/red]")
+        print(
+            f"[red]No variables for {workspace} at {tfvars}: it was not deployed from this root.[/red]"
+        )
         raise typer.Exit(1)
     values = outputs(root, workspace)
     prefix = values["repository_prefix"]
@@ -1172,7 +1459,10 @@ def destroy(
     held = [
         name
         for name in repositories
-        if (name.startswith(f"{prefix}/u/") and not name.startswith(f"{prefix}/u/clouder-check/"))
+        if (
+            name.startswith(f"{prefix}/u/")
+            and not name.startswith(f"{prefix}/u/clouder-check/")
+        )
         or name.startswith(f"{prefix}/platform/")
     ]
     if held and not delete_environment_images:
@@ -1182,15 +1472,25 @@ def destroy(
         )
         raise typer.Exit(1)
     keys = {
-        name: [key["AccessKeyId"] for key in iam.list_access_keys(UserName=values[f"{name}_user"])["AccessKeyMetadata"]]
+        name: [
+            key["AccessKeyId"]
+            for key in iam.list_access_keys(UserName=values[f"{name}_user"])[
+                "AccessKeyMetadata"
+            ]
+        ]
         for name in PRINCIPALS
     }
     table = Table(title=f"Destroying registry {workspace}")
     table.add_column("What", style="cyan")
     table.add_column("Removed")
     table.add_row("repositories", ", ".join(repositories) or "none")
-    table.add_row("access keys", ", ".join(key for ids in keys.values() for key in ids) or "none")
-    table.add_row("Terraform", "IAM users, the base-reader role, the base repositories, both KMS keys")
+    table.add_row(
+        "access keys", ", ".join(key for ids in keys.values() for key in ids) or "none"
+    )
+    table.add_row(
+        "Terraform",
+        "IAM users, the base-reader role, the base repositories, both KMS keys",
+    )
     print(table)
     if confirm != workspace and not typer.confirm(f"Destroy registry {workspace}?"):
         raise typer.Exit(1)
@@ -1199,7 +1499,13 @@ def destroy(
     for name, key_ids in keys.items():
         for key_id in key_ids:
             iam.delete_access_key(UserName=values[f"{name}_user"], AccessKeyId=key_id)
-    arguments = ("destroy", "-input=false", "-no-color", "-auto-approve", f"-var-file={tfvars_argument(workspace)}")
+    arguments = (
+        "destroy",
+        "-input=false",
+        "-no-color",
+        "-auto-approve",
+        f"-var-file={tfvars_argument(workspace)}",
+    )
     typer.echo(_terraform(root, *arguments).stdout)
     _terraform(root, "workspace", "select", "default")
     _terraform(root, "workspace", "delete", workspace)
@@ -1209,7 +1515,11 @@ def destroy(
     if directory.is_dir() and not any(directory.iterdir()):
         directory.rmdir()
     # The default layout gives each workspace a directory of its own around its keys.
-    if keys_dir is None and directory.parent.is_dir() and not any(directory.parent.iterdir()):
+    if (
+        keys_dir is None
+        and directory.parent.is_dir()
+        and not any(directory.parent.iterdir())
+    ):
         directory.parent.rmdir()
     tfvars.unlink()
     print(
