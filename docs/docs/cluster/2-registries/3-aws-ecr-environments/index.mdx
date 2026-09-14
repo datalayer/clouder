@@ -203,6 +203,10 @@ clouder aws ecr-environments refresher --workspace datalayer-environments --cont
 
 Both ask before writing into the context. Run `deploy` again without `--skip-kubernetes` to do both in one go: it plans no changes and keeps the keys it has.
 
+:::info A bug only a real cluster caught, fixed 2026-09-14
+`secrets` and `refresher` apply through `kubectl apply --server-side -f -`, fed several manifests joined by `---`. The first run against a real plane (r1) refused outright: `invalid character '-' in numeric literal`. The manifests were being written as JSON, one document per `---`-separated piece — but JSON has no multi-document form, so `kubectl` reads the dashes as the start of a number the moment it commits to parsing the stream as JSON rather than YAML. Fixed by writing the stream as YAML instead (`---` is exactly what `-f -` expects there); each manifest is still built as the same plain dict, only how it is serialized changed. The existing unit tests never caught this because their own recorder decoded each `---`-piece as its own JSON object rather than validating the whole stream as one — fixed the same way, with a regression test asserting the real stream parses as YAML and fails as JSON.
+:::
+
 ## Rotate keys
 
 IAM allows two keys per user, so a rotation never leaves a plane without a working key:
