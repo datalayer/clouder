@@ -133,6 +133,21 @@ data "aws_iam_policy_document" "builder" {
     resources = ["*"]
   }
 
+  # Enhanced scan findings are Amazon Inspector's, not ECR's own, even
+  # though the call a caller makes is ecr:DescribeImageScanFindings (right
+  # below, and already granted) -- that action refuses on its own without
+  # this, found live, 2026-09-14, the first build ever to reach the scan
+  # this worker's own `attest` step waits for: AccessDeniedException on
+  # inspector2:ListCoverage. Mirrors the reader's own "ReadFindings"
+  # statement below, since the same policy gap would refuse it too, and
+  # the build worker is the one that actually calls this today (`attest`
+  # runs in the same process `mint_build_credential` minted for).
+  statement {
+    sid       = "ReadFindings"
+    actions   = ["inspector2:ListFindings", "inspector2:ListCoverage"]
+    resources = ["*"]
+  }
+
   statement {
     sid = "EnvironmentRepositories"
     actions = [
