@@ -115,7 +115,7 @@ A version with no lock is resolved by the workflow's `resolve` step before anyth
 | --- | --- | --- |
 | `DATALAYER_ENVIRONMENTS_RESOLVER` | `buildkit` | Where the solve runs: `buildkit` is the solve `FROM` the resolved base digest, which needs `buildctl` and the build pool; `local` runs `uv` in the worker, which is what `plane local` has. |
 | `DATALAYER_BUILDKIT_ADDR` | the default socket | `buildkitd`'s address. |
-| `DATALAYER_APT_SNAPSHOT` | unset | The snapshot mirror apt versions are pinned against, at the base channel's date. |
+| `DATALAYER_APT_SNAPSHOT` | unset | Overrides the Ubuntu snapshot apt versions are pinned against: a `snapshot.ubuntu.com` id such as `20260914T150000Z`, never a URL. Unset uses the base channel's own snapshot, recorded beside its digest (code-sandboxes 1.9.5). |
 
 - **What a resolve refuses, and how it reads:** a requirement that contradicts a protected pin is `DL_ENV_PROTECTED_PACKAGE` with the range that is supported; two requirements that cannot both hold are `DL_ENV_RESOLVE_CONFLICT` naming the pair; a package no index has is `DL_ENV_PACKAGE_NOT_FOUND`. A failure that is not about the version at all — an index unreachable — is `DL_ENV_PROVIDER_ERROR`, which is retryable.
 - **What a resolve waits for here:** no channel of the approved base has a published digest yet, so a resolve answers `DL_ENV_ARTIFACT_MISSING` with the reason `base_channel_unpublished`, naming the channel and the repository it resolves from once it is pushed.
