@@ -96,6 +96,36 @@ Once a User Environment's build produces an artifact — an image under `environ
 - **What a refusal looks like**, in the Operator's log and in the pod's own event: `DL_ENV_SIGNATURE_INVALID`, naming the image, the digest, and the reason `cosign` gave — a missing signature, one from another key, or a tampered payload.
 - **Deploying it**: set `DATALAYER_ENVIRONMENTS_KMS_KEY` (the same `awskms:///alias/…` cosign itself takes) and `DATALAYER_ENVIRONMENTS_VERIFY_TIMEOUT` if the default 20 seconds is wrong for this plane, and make sure `cosign` is on the Operator image's `PATH` — nothing else to configure. Until the key is set, every `environments/` pod is refused, which is expected: there is no artifact to launch before [E1-06](/services/environments/#builds) deploys the registry and the builder.
 
+### Deploying the builder
+
+Three pieces, each with its own page, deployed in this order:
+
+1. **The registry.** [`clouder aws ecr-environments deploy`](/cluster/registries/aws-ecr-environments) — the ECR repositories, the KMS keys, the three IAM principals (builder, puller, reader) and their Secrets, and the pull-secret refresher. Everything below reads from this; nothing here repeats it.
+2. **The build pool.** `plane up datalayer-buildkit` — one rootless `buildkitd` replica in `datalayer-builds`, reached only by the durable `environments` worker over mTLS. See [its own section](/services/environments/#build-pool-datalayer-buildkit) for the chart's contents, the node label and taint it expects already applied by hand (`role.datalayer.io/build=true`, `datalayer.io/build=true:NoSchedule` — deliberately not the chart's own to apply), and the two Kubernetes-specific rootless-BuildKit gaps found standing it up on r1 (no client here ever spoke the mTLS it requires; the daemon cannot sandbox a `RUN` step on Kubernetes without `--oci-worker-no-process-sandbox`), both fixed and both worth knowing before touching this chart again.
+3. **The `environments` queue**, in the [Environments](/services/environments/) page's own deploy order (E1-12) — IAM before Runtimes' own launch route accepts the environment on a reservation, Runtimes before Durable starts builds against it, Durable's `environments` queue Deployment last, once its own three pieces are in place: `DATALAYER_BUILDKIT_ADDR` and the `DATALAYER_BUILDKIT_TLSCERT`/`TLSKEY`/`TLSCACERT` trio (a volume mount of the client certificate the build pool's own chart already minted, cross-namespace, into `datalayer-durable`), and `ecr-environments-builder`'s AWS credential (`envFrom`, never through `--set` — the same reason the DBOS connection string is read from a Secret and not passed as a value). `plane up datalayer-durable` carries all of it once the rc has `DATALAYER_ECR_ENVIRONMENTS_REGION`/`REGISTRY`, `DATALAYER_BUILDKIT_ADDR` and `DATALAYER_ENVIRONMENTS_KMS_KEY` set.
+
+Verify the chain reaches the daemon before trusting a build to it:
+
+```bash
+kubectl -n datalayer-builds rollout status deployment/datalayer-buildkit
+kubectl -n datalayer-builds exec deploy/datalayer-buildkit -- \
+  buildctl --addr=unix:///run/user/1000/buildkit/buildkitd.sock debug workers
+kubectl -n datalayer-durable get deploy datalayer-durable-environments \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="DATALAYER_BUILDKIT_ADDR")].value}'
+```
+
+### Draining builders before a roll
+
+`datalayer-buildkit` is one replica with `strategy: Recreate` — a build's own layer cache lives on the pod that made it, so a rolling update would run two builders with two half-warm caches for no benefit over replacing the one there is (the chart's own README says so). The cost of that: restarting it — `plane up datalayer-buildkit` on a changed chart, or a node drain that evicts it — kills whatever build is running mid-solve, the same as killing any other single-replica stateful daemon. Before restarting it on purpose:
+
+```bash
+BASE="${DATALAYER_RUNTIMES_URL%/}/api/runtimes/v1"
+curl -s -H "Authorization: Bearer $DATALAYER_API_KEY" \
+  "$BASE/environment-builds?status=resolving,building&variant=datalayer"
+```
+
+An empty list means nothing is mid-flight. A non-empty one names builds still running — wait for them to reach a terminal status (`ready`, `partially_ready` or `failed`), or accept that each one in flight ends `failed` with `DL_ENV_PROVIDER_ERROR` (retryable) the moment the daemon it was talking to disappears; a retry after the roll starts over from `resolving`, since nothing about a killed solve is resumable. There is no drain signal the daemon itself understands — this check, run by hand before the deploy, is the whole mechanism.
+
 ## The home
 
 Every Environment declares **`spec.home`**, where its image's user lives: `/home/datalayer` for every platform image, as `sandbox-contract/v1` fixes it. The Operator mounts home folders, Contents and Volumes under it. It refuses to spawn any runtime of an Environment that declares no home, or a different one, because the Node Mount Gateway delivers under `/home/datalayer` whatever the image expects. The custom resource requires the field, so an Environment without it is refused when it is applied.
