@@ -528,6 +528,21 @@ reservation whose pod is gone. An `execution-tree` reservation has no pod: both
 leave it alone, and it is closed when its tree ends. IAM ships before the
 Operator for this change.
 
+:::warning An `environment-build` reservation needs the same exemption, found live 2026-09-14
+A build's own IAM reservation (E1-13) also has no pod for as long as it runs —
+the work happens on `datalayer-buildkit`, not on anything the sweep can see —
+and the sweep was closing it 180 s in regardless, "ghost" by the same rule
+that correctly closes an abandoned runtime's. The build's own `release_build`
+step then found nothing open, IAM answered `500`, and the version never
+settled: stuck `building` forever, retried by durable until it gave up. Fixed
+in `usage_operator.py`: `environment-build` reservations get a 2-hour grace
+(`ENVIRONMENT_BUILD_GRACE_SEC`) alongside `execution-tree`'s permanent one,
+long enough to outlast any real build; and IAM now answers `404`, not `500`,
+for a reservation that is already closed, so a late release from a build that
+did finish in time is a no-op rather than an error. `operator:1.0.28`,
+`iam:1.1.7`.
+:::
+
 ## Tear Down Datalayer Operator
 
 If needed, tear down.

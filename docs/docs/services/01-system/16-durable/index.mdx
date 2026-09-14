@@ -652,6 +652,21 @@ already has one.
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (and `_METRICS_`, `_LOGS_`) | Where a run's trace goes. The chart used to carry only the generic `OTEL_EXPORTER_OTLP_ENDPOINT`, empty, and nothing installed an SDK provider, so every span was recorded into a no-op — indistinguishable from working, from inside. Set the way the gateway sets them so both halves of a trace, the call and the run, reach one collector |
 | `DATALAYER_OTEL_API_KEY` | Which account the points are exported under. Supplied by `plane up`, never in chart values. A run's spans are additionally stamped with the caller's own account (see below), which is what makes them findable |
 
+:::warning r1's chart kept the in-cluster collector default, found live 2026-09-14
+Only prod1 runs an in-cluster OTEL collector; r1's `datalayer-otel` namespace
+is empty. Runtimes and the Operator on r1 already point at prod1's public
+OTLP route (`https://prod1.datalayer.run/api/otel/v1/otlp/v1/…`,
+`http/protobuf`), but durable's chart still carried the gRPC in-cluster
+default, `datalayer-otel-otel-collector-svc…:4317`, which resolves to
+nothing on r1 — every export failed with `UNAVAILABLE`, silently, since a
+failed export is not why a workflow step fails. `up.sh` now gives durable
+the same four `OTEL_EXPORTER_OTLP_*` settings Runtimes already had, matching
+across services rather than left per-plane. Verified after the fix: durable's
+build metrics (`environments.builds` and friends, see
+[Environments](/services/environments/)) read back through the OTEL query
+API.
+:::
+
 `check_configuration()` runs at startup and refuses rather than failing later
 and somewhere else:
 

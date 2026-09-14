@@ -21,7 +21,7 @@ The registry API, its four Solr collections, and the environment recorded on res
 
 1. **The collections**, on the runtimes plane, with the Runtimes set of `plane solr-init`. The init image must carry the current configset, `*_stored` included, as the [Solr page](/services/system/solr/) explains.
 2. **IAM**, before any Operator that sends the environment on reservations. IAM refuses a metadata key it does not know, and every runtime start fails if the Operator is deployed first.
-3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships. r1 runs `code-sandboxes` 1.8.1 as of 2026-09-13 (`runtimes:1.0.11`, `operator:1.0.26`, `durable:0.1.19`) — the floor is not just 1.6.0 in practice: 1.8.1 carries the cosign transparency-log fix "The signature" below depends on, and the protected-pin check E3-01's `dependencyFile` source needs. An older image still starts, but signs and verifies wrongly (see below).
+3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships. r1 runs `code-sandboxes` 1.9.11 as of 2026-09-14 (`durable:0.1.36`) — the floor is not just 1.6.0 in practice: 1.9.11 carries the scan-pagination fix and the corrected sign/verify roundtrip "The signature" below depends on, and the protected-pin check E3-01's `dependencyFile` source needs. An older image still starts, but scans, signs and verifies wrongly (see below).
 4. **Durable and the keys**, when builds run. Three keys go in the plane's rc, and both Runtimes and Durable must be deployed after all three are there:
    - `DATALAYER_RUNTIMES_DURABLE_API_KEY`: Runtimes starting a build on Durable. `plane up` sets it on both.
    - `DATALAYER_DURABLE_RUNTIMES_API_KEY`: Durable reading and writing a build on Runtimes' internal routes. Runtimes needs its own copy too, to check it. Without it on either side, a build stays `queued` for good, and Durable's log says the key "is not configured".
@@ -134,7 +134,7 @@ The Datalayer builder generates the Dockerfile from the lock, never from the spe
 
 Builds run on [BuildKit](/services/system/buildkit/): one rootless `buildkitd` in `datalayer-builds`, reached only by this worker, over mTLS. That page covers the chart, the build node it needs, the builder's AWS permissions, and the fixes a real install needed.
 
-Proven live on r1, 2026-09-14, against the real daemon and the real registry: a solve (164.20 s cold), a build that pushed a 2.7 GB image, a retried build with no collision, and `exists` and `delete`. Through the real Runtimes API and `EnvironmentBuildWorkflow`, a build reaches the push. Until the builder's `ReadFindings` statement was added, the same day, it then stopped at the scan read. Not yet proven: signing (E1-09) at the end of that chain, and the resolver's p95 under 45 s over 20 runs.
+Proven live on r1, 2026-09-14, against the real daemon and the real registry: a solve (164.20 s cold), a build that pushed a 2.7 GB image, a retried build with no collision, and `exists` and `delete`. Through the real Runtimes API and `EnvironmentBuildWorkflow`, a build now reaches the full `attest` step: it scans clean against the patched base channel, signs with the KMS key, and a `cosign verify` run by hand against the pushed signature exits `0`. What stops every build afterward is not attest — it is `smoke_test`'s own missing internal trial route (E1-14), the one piece left before a version can reach `ready`. Not yet proven: the resolver's p95 under 45 s over 20 runs, and the Operator's own verify-before-launch gate running as a service against a real digest on r1 (it needs a pod actually launched from one, which needs that same missing route).
 
 ### What a build costs, and what refuses one
 
@@ -247,13 +247,15 @@ aws iam get-user-policy --user-name datalayer-environments-builder \
 
 **The signature.** Once the scan passes, and before the smoke test, cosign
 signs the digest with the KMS key named by `DATALAYER_ENVIRONMENTS_KMS_KEY`.
-The signature sits beside the image in the same repository, at cosign's own
-`sha256-<hex>.sig` tag, and a replayed attestation finds it rather than
-pushing a second one — which the immutable tags refuse, and which would be two
-words about one artifact. A worker with no key or no cosign refuses **before**
-asking the registry anything: an artifact nobody can sign can never be used,
-so spending the scan's wait to reach the same refusal would only make the log
-read as though the scan were the problem.
+The signature sits beside the image in the same repository — as an **OCI 1.1
+referrer**, an untagged manifest linked to the signed digest, not cosign's
+older `sha256-<hex>.sig` sidecar tag (see the 2026-09-14 gotcha below) — and a
+replayed attestation finds it rather than pushing a second one, which the
+immutable tags refuse and which would be two words about one artifact. A
+worker with no key or no cosign refuses **before** asking the registry
+anything: an artifact nobody can sign can never be used, so spending the
+scan's wait to reach the same refusal would only make the log read as though
+the scan were the problem.
 
 :::warning A gotcha found live, 2026-09-13, worth knowing before touching either side
 `cosign sign` reaches for the public Rekor transparency log by default, which for a
@@ -267,6 +269,36 @@ a real signature before this date; both are fixed in `code-sandboxes` 1.8.1 (the
 builder's `Attestor.sign`) and in `operator:1.0.26`'s `environment_signatures.py`
 verifier. clouder's own deploy-check already had both flags right — the one place in
 the codebase that did — and neither side had read from it.
+:::
+
+:::warning cosign 3.1.3 changed two more things, found live 2026-09-14
+**`--use-signing-config` now defaults `true`,** and names its own service
+URLs including a transparency log — `--tlog-upload=false` alone no longer
+overrides that combination, and `cosign sign` exits rather than signing. Fixed
+by also passing `--use-signing-config=false`.
+
+**Signature storage moved to the OCI 1.1 referrers API by default,** not the
+classic `sha256-<hex>.sig` tag. The first fix attempted here,
+`--registry-referrers-mode=legacy` on `sign`, was wrong — confirmed live,
+twice — the flag only ever governs *reading* referrers (`cosign sign --help`'s
+own wording: "mode for **fetching** references from the registry"), never
+where `sign` itself writes one. The real fix: stop trying to out-guess
+cosign's storage choice. The builder's own replay check, and the reference it
+records, now both ask `cosign verify --key <key> --insecure-ignore-tlog=true
+<digest-reference>` directly — the exact question "is this already signed by
+this key", answered by cosign itself rather than assumed from where a
+signature is expected to live. `cosign verify` needs no matching flag: it has
+none for this, and already checks referrers by default. Proven against a real
+digest on r1, 2026-09-14: a fresh signature written by `cosign sign`, found by
+a `cosign verify` run by hand moments later, exit `0`. Both fixed in
+`code-sandboxes` 1.9.11 (`can_verify`), `durable:0.1.36`.
+
+**A separate, unrelated bug found the same session, in the scan itself:**
+`describe_image_scan_findings` paginates, and the builder read only its first
+page — a 1,547-finding image (31 critical) passed a decision that should have
+blocked, because the one page a single call happened to see held none of
+them. Fixed in `code-sandboxes` 1.9.8: every page is read and merged before
+the policy decides, capped at 50 pages.
 :::
 
 ### What the Operator does with it
