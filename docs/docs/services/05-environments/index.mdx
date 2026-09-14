@@ -22,7 +22,16 @@ The registry API, its four Solr collections, and the environment recorded on res
 1. **The collections**, on the runtimes plane, with the Runtimes set of `plane solr-init`. The init image must carry the current configset, `*_stored` included, as the [Solr page](/services/system/solr/) explains.
 2. **IAM**, before any Operator that sends the environment on reservations. IAM refuses a metadata key it does not know, and every runtime start fails if the Operator is deployed first.
 3. **Runtimes**, on `code-sandboxes` 1.6.0 or later: its writes import `code_sandboxes.environments`, appending a build's log needs that package's redactor, and retrying a build needs its rule for which failures may be retried. An image built on an older one answers `503` on those two routes and works otherwise. The Runtimes image copies `solr/`, `common/`, `dao/` and `tech/datalayer/core` from the checkout it is built in. Build it from a clean one, so that nobody's uncommitted work ships. r1 runs `code-sandboxes` 1.8.1 as of 2026-09-13 (`runtimes:1.0.11`, `operator:1.0.26`, `durable:0.1.19`) — the floor is not just 1.6.0 in practice: 1.8.1 carries the cosign transparency-log fix "The signature" below depends on, and the protected-pin check E3-01's `dependencyFile` source needs. An older image still starts, but signs and verifies wrongly (see below).
-4. **Durable and the key**, when builds run: `DATALAYER_RUNTIMES_DURABLE_API_KEY` goes in the plane's rc, and `plane up` sets it into the durable release's Secret and into the Runtimes Deployment, beside `DATALAYER_DURABLE_URL`.
+4. **Durable and the keys**, when builds run. Three keys go in the plane's rc, and both Runtimes and Durable must be deployed after all three are there:
+   - `DATALAYER_RUNTIMES_DURABLE_API_KEY`: Runtimes starting a build on Durable. `plane up` sets it on both.
+   - `DATALAYER_DURABLE_RUNTIMES_API_KEY`: Durable reading and writing a build on Runtimes' internal routes. Runtimes needs its own copy too, to check it. Without it on either side, a build stays `queued` for good, and Durable's log says the key "is not configured".
+   - `DATALAYER_IAM_API_KEY`: Runtimes reserving a build against its owner (E1-13). Without it, a build fails at the reservation with `503 DL_ENV_UNAVAILABLE`.
+
+   r1 runs `code-sandboxes` 1.9.2 as of 2026-09-14 (`durable:0.1.27`). 1.9.1 added mTLS to the build pool, and 1.9.2 lowercases the owner's ECR repository name: a real owner uid is uppercase, and ECR refuses one.
+
+   :::caution A key change needs its pods restarted, on a chart older than this note
+   A key reaches a worker only when its pod starts. Before the durable chart carried a `checksum/secret` annotation, a `plane up` that changed only a key rewrote the Secret and left every pod on the old value. On such a release, restart the queue after the deploy: `kubectl -n datalayer-durable rollout restart deployment/datalayer-durable-environments`.
+   :::
 
 ```bash
 source ~/.datalayer/datalayerrc-r1
@@ -227,6 +236,23 @@ again. An organization tightens the threshold in E3-06.
 A scan that never finishes inside the bound, or a scanner that refuses the
 image, is `DL_ENV_PROVIDER_ERROR`: retryable, because nothing about the
 version is wrong.
+
+:::warning The build worker reads the scan with the builder's credential
+The worker reads the findings with the AWS credential it builds with, the
+builder principal's. Enhanced scan findings belong to Amazon Inspector, so
+`ecr:DescribeImageScanFindings` alone is refused: the builder also needs
+`inspector2:ListFindings` and `inspector2:ListCoverage`. Without them, every
+build fails right after its push with `DL_ENV_PROVIDER_ERROR`, naming
+`inspector2:ListCoverage`. The Terraform module grants both since 2026-09-14.
+A registry deployed before that needs the module applied again, or the
+builder's policy updated by hand:
+
+```bash
+aws iam get-user-policy --user-name datalayer-environments-builder \
+  --policy-name datalayer-environments-builder --query 'PolicyDocument.Statement[].Sid'
+# ReadFindings must be listed
+```
+:::
 
 **The signature.** Once the scan passes, and before the smoke test, cosign
 signs the digest with the KMS key named by `DATALAYER_ENVIRONMENTS_KMS_KEY`.
