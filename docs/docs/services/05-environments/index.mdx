@@ -73,6 +73,10 @@ A write takes `If-Match` with the ETag read before it, which is the document's `
 
 `DELETE` asks the Operator which runtimes of the environment are running, on `GET /api/operator/v1/environments/{uid}/runtimes`, with the Runtimes key. When the Operator cannot answer, the deletion is refused with `503` and nothing is deleted. So the Operator deploys with Runtimes, or before it.
 
+### The internal smoke-test route
+
+`POST`/`DELETE /internal/environment-builds/{uid}/smoke-test` (durable's own key only, `environment-builds:smoke-test` scope) is the trial route's internal counterpart: `POST …/trial` above needs a version already `ready` or `partially_ready`, but a build's own smoke test runs *before* either is true — its artifact has no recorded status yet. The launch body is the build's own artifact reference, checked structurally against what this exact `build_uid` could have pushed (its own owner-and-environment repository, its own operability tag, D-10) — never trusted as a free-form image, and never re-verifying the signature a second time, since the Operator's own D-11 gate already runs on every pod it creates. Answers `{runtimeUid, runtimeName, ingress, jupyterToken, sizeClass}`, enough for durable to attach a kernel client directly, no second lookup. `DELETE` stops the pod by `build_uid` alone, replay-safe like every other internal write. Built and deployed 2026-09-15 (`durable:0.1.37`, `runtimes:1.0.14`, code-sandboxes 1.9.12); not yet drilled against a real build reaching it on r1.
+
 ## Builds
 
 A build is recorded `queued` by the registry and run by the durable service, on its own `environments` queue, one run per build.
@@ -134,7 +138,9 @@ The Datalayer builder generates the Dockerfile from the lock, never from the spe
 
 Builds run on [BuildKit](/services/system/buildkit/): one rootless `buildkitd` in `datalayer-builds`, reached only by this worker, over mTLS. That page covers the chart, the build node it needs, the builder's AWS permissions, and the fixes a real install needed.
 
-Proven live on r1, 2026-09-14, against the real daemon and the real registry: a solve (164.20 s cold), a build that pushed a 2.7 GB image, a retried build with no collision, and `exists` and `delete`. Through the real Runtimes API and `EnvironmentBuildWorkflow`, a build now reaches the full `attest` step: it scans clean against the patched base channel, signs with the KMS key, and a `cosign verify` run by hand against the pushed signature exits `0`. What stops every build afterward is not attest — it is `smoke_test`'s own missing internal trial route (E1-14), the one piece left before a version can reach `ready`. Not yet proven: the resolver's p95 under 45 s over 20 runs, and the Operator's own verify-before-launch gate running as a service against a real digest on r1 (it needs a pod actually launched from one, which needs that same missing route).
+Proven live on r1, 2026-09-14, against the real daemon and the real registry: a solve (164.20 s cold), a build that pushed a 2.7 GB image, a retried build with no collision, and `exists` and `delete`. Through the real Runtimes API and `EnvironmentBuildWorkflow`, a build reaches the full `attest` step: it scans clean against the patched base channel, signs with the KMS key, and a `cosign verify` run by hand against the pushed signature exits `0`.
+
+What stopped every build after that — `smoke_test`'s own missing internal trial route (E1-14) — was built and deployed 2026-09-15: `POST`/`DELETE /internal/environment-builds/{uid}/smoke-test`, letting durable launch a build's own artifact as a trial pod before its version has any recorded status. The Operator needed no new code for it — E1-10/E1-11's own "launch from an explicit signed artifact digest, no `RuntimeEnvironment` record" path already did exactly this; see [the internal smoke-test route](#the-internal-smoke-test-route) below. `durable:0.1.37` and `runtimes:1.0.14` (code-sandboxes 1.9.12) are live on r1, both confirmed with a clean startup log. Not yet proven: a real build actually reaching `smoke_test` and launching a pod through this route on r1 — the concrete next drill — and the resolver's p95 under 45 s over 20 runs.
 
 ### What a build costs, and what refuses one
 
