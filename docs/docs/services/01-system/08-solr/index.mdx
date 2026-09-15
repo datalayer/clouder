@@ -274,6 +274,7 @@ Platform collections used by the main Datalayer services:
 | `spaces` | Workspace spaces |
 | `success` | Success tracking |
 | `usage` | Platform usage metrics |
+| `usage-aws` | AWS Marketplace metering ledger and run heartbeats |
 
 Note: The `notifications` collection stores user-facing notifications, while `events` stores lifecycle and system events.
 
@@ -335,7 +336,7 @@ backs the Home Folder and the Volumes, and the registry belongs to Runtimes:
 | `environment-artifacts` | Built artifacts per version, variant and region, with the cache key and the retention state the collector scans |
 | `environment-builds` | Environment builds, and their logs as chunks written once each |
 
-The inventory is 18 Core plus 7 AI plus 12 Runtimes collections, 37 in total.
+The inventory is 19 Core plus 7 AI plus 12 Runtimes collections, 38 in total.
 Always verify the arrays and manifests rather than relying on these numbers
 alone (`scripts/check_solr_collections_parity.py` in the Services repository
 asserts them against both canonical lists, and refuses a collection that
@@ -489,7 +490,7 @@ plane solr-init
 # Select:
 #   1) Core       - Platform collections (18 collections)
 #   2) Runtimes   - Runtimes collections (12 collections, Contents and Environments included)
-#   3) All        - All collections (37 collections)
+#   3) All        - All collections (38 collections)
 #   4) AI         - AI collections (7 collections: ai-agents, evals, orchestration,
 #                   tool-approvals, mcp-gateway, mcp-tasks, mcp-audit)
 #
@@ -530,7 +531,7 @@ export PATH=$SOLR_HOME/bin:$PATH
 export YELLOW='\x1b[33m'
 export RESET='\x1b[0m'
 
-for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants orchestration outbounds schedules secrets spaces success tool-approvals usage mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit environments environment-versions environment-artifacts environment-builds
+for COLLECTION in ai-agents api-keys contacts credits evals events iam inbounds invites library notifications oauth-clients oauth-codes oauth-grants orchestration outbounds schedules secrets spaces success tool-approvals usage usage-aws mcp-gateway mcp-tasks mcp-audit ray runtime-registrations runtime-checkpoints sandbox-snapshots contents content-objects content-operations content-audit environments environment-versions environment-artifacts environment-builds
 do
     echo
     echo -e $YELLOW"Creating Solr collection $COLLECTION"$RESET
@@ -550,9 +551,9 @@ resource names so their coordinated schedules can run beside the full backup:
 
 | File | Scope | CR Name |
 |------|-------|---------|
-| `datalayer-backup-s3.yaml` | All 37 collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3.yaml` | All 38 collections | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-ai.yaml` | The 7 AI collections | `datalayer-solr-ai-backups` |
-| `datalayer-backup-s3-core.yaml` | 18 Core collections | `datalayer-solr-collection-backups` |
+| `datalayer-backup-s3-core.yaml` | 19 Core collections | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-runtimes.yaml` | 12 Runtimes collections, the four Contents and four Environments ones included | `datalayer-solr-collection-backups` |
 | `datalayer-backup-s3-contents.yaml` | 4 Contents collections | `datalayer-solr-contents-backups` |
 | `datalayer-backup-s3-mcp.yaml` | 3 Jupyter MCP Server collections | `datalayer-solr-mcp-backups` |
@@ -616,6 +617,7 @@ spec:
     - success
     - tool-approvals
     - usage
+    - usage-aws
     - content-operations
     - ray
     - runtime-registrations
