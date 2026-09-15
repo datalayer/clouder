@@ -9,16 +9,20 @@ For small devevelopment cluster, you can create a single Nodepool. Every node sh
 - role.datalayer.io/api=true
 - role.datalayer.io/solr=true
 # Useful for the Runtime pods.
-- role.datalayer.io/jupyter=true
+- role.datalayer.io/runtime=true
 - node.datalayer.io/variant=medium
 - xpu.datalayer.io/cpu=true
 ```
 
 :::tip Quick labelling
 
-Run `plane k8s-label-nodes` to apply all the above labels to every worker node in one go. This is the fastest way to set up a small development cluster.
+Run to apply all the above labels to every worker node in one go. This is the fastest way to set up a small development cluster.
 
 :::
+
+```bash
+plane k8s-label-nodes
+```
 
 Use your favorite tool to create those nodes, or use [Clouder](https://clouder.sh), a tool to ease the Kubernetes cluster creation and sharing.
 
@@ -57,22 +61,22 @@ Ensure the nodes are labelled with the following details.
 - role.datalayer.io/solr=true
 ```
 
-## Nodepool `jupyter-cpu-medium`
+## Nodepool `runtime-cpu-medium`
 
 Ensure the nodes are labelled with the following details.
 
 ```yaml
-- role.datalayer.io/jupyter=true
+- role.datalayer.io/runtime=true
 - node.datalayer.io/variant=default
 - xpu.datalayer.io/cpu=true
 ```
 
-## Nodepool `jupyter-gpu-cuda-medium`
+## Nodepool `runtime-gpu-cuda-medium`
 
 Ensure the nodes are labelled with the following details.
 
 ```yaml
-- role.datalayer.io/jupyter=true
+- role.datalayer.io/runtime=true
 - node.datalayer.io/variant=default
 - xpu.datalayer.io/gpu-cuda=true
 ```

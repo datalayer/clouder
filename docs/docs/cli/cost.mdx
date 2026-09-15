@@ -1,0 +1,32 @@
+---
+title: clouder cost
+sidebar_position: 5
+---
+
+# clouder cost
+
+Pricing and node SKU cost helpers.
+
+## Commands
+
+### `clouder cost list`
+
+List known node types for a cloud and region, including hourly prices when available.
+
+```bash
+clouder cost ls [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cloud` | current context cloud | Cloud provider (`azure` or `aws`) |
+| `--region` | `westeurope` | Cloud region (reserved for future pricing backends) |
+
+**Examples:**
+
+```bash
+clouder cost ls
+clouder cost ls --cloud aws --region us-east-1
+```
+
+If the current context is not AWS or Azure, Clouder falls back to Azure pricing defaults unless `--cloud` is explicitly set.

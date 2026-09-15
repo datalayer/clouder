@@ -1,0 +1,28 @@
+# Scaling
+
+The platform operator [provisions](/management/) the Kubernetes cluster with Runtime Contents, Runtime Environments, and Runtime Pools.
+
+Based on user traffic, the operator sizes Kubernetes Nodepools and Runtime Pools to balance availability and costs.
+
+Nodepool and Runtime Pool sizes can be updated based on expected traffic. This is how you achieve scalability.
+
+The API services can be scaled up to serve in parallel more traffic in needed, ensuring parrallel scalability.
+
+Read the available [benchmarks](/benchmarks/) to get more information on the various up- and down- scaling cases.
+
+## Scaling Up
+
+Scaling-up is achieved by giving more nodes to the related [Nodepools](/cluster/kubernetes/labels/), e.g. `jupyter-cpu-medium`, `jupyter-cuda-medium`...
+.
+
+## Scaling Down
+
+Scaling-down is achieved by giving less nodes to the related [Nodepools](/cluster/kubernetes/labels/), e.g. `jupyter-cpu-medium`, `jupyter-cuda-medium`...
+
+## Benchmarks
+
+Benchmarks are being worked out and will be published on this page as soon as available.
+
+The benchmarks focus on the balance between Runtime availability and costs.
+
+[Contact us](/support) if you want to know more.

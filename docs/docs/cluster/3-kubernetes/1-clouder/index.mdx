@@ -1,9 +1,9 @@
 ---
-title: Clouder K8S
+title: Kubeadm
 sidebar_position: 1
 ---
 
-# Clouder
+# Kubeadm
 
 Clouder uses [Kubeadm](https://kubernetes.io/docs/cluster/production-environment/tools/Kubeadm/) to bootstrap production-grade Kubernetes clusters on cloud VMs with built-in support for [CRIU](https://criu.org/) (Checkpoint/Restore In Userspace).
 
@@ -15,7 +15,7 @@ This design document describes how Clouder orchestrates Kubeadm across Azure (an
 ┌─────────────────────────────────────────────────────────┐
 │                    Clouder CLI                          │
 │                                                         │
-│  clouder k8s create <cluster-name> --provider azure     │
+│  clouder kubernetes create <cluster-name> --provider azure     │
 └───────────────────────┬─────────────────────────────────┘
                         │
            ┌────────────▼────────────┐
@@ -58,7 +58,7 @@ A Clouder-managed cluster consists of:
 
 ## Cloud Provider Setup
 
-Use one of the sections below before running `clouder kubeadm vm-create`.
+Use one of the sections below before running `clouder kubeadm create`.
 
 ### Azure
 
@@ -101,7 +101,7 @@ clouder azure configure \
   --no-interactive
 ```
 
-Credentials are stored in `~/.clouder/azure/azure.yaml` with mode `600`.
+Credentials are stored in `~/.clouder/clouds/azure/azure.yaml` with mode `600`.
 
 #### Verify Azure Access
 
@@ -118,10 +118,11 @@ clouder azure vm-ls
 ```bash
 # Initialize and select context
 clouder ctx init
+clouder ctx sync
 clouder ctx set azure <SUBSCRIPTION_ID>
 
 # Create VM set (1 master + 3 workers by default)
-clouder kubeadm vm-create my-cluster --region eastus --workers 3
+clouder kubeadm create my-cluster --region eastus --workers 3
 
 # Setup Kubernetes + CRIU + Azure storage
 clouder kubeadm setup my-cluster
@@ -194,10 +195,11 @@ clouder aws vm-ls --region us-east-1
 ```bash
 # Initialize and select context
 clouder ctx init
+clouder ctx sync
 clouder ctx set aws <AWS_ACCOUNT_ID>
 
 # Create VM set (1 master + 3 workers by default)
-clouder kubeadm vm-create my-cluster --region us-east-1 --workers 3
+clouder kubeadm create my-cluster --region us-east-1 --workers 3
 
 # Setup Kubernetes + CRIU + AWS storage/LB integration
 clouder kubeadm setup my-cluster
@@ -210,7 +212,7 @@ clouder kubeadm get-config my-cluster
 
 - `Unable to locate credentials`: run `aws configure` or `aws sso login`.
 - `AuthFailure` or `UnauthorizedOperation`: verify IAM permissions and region.
-- No EC2 key pair found: create/import one in the selected region before `vm-create`.
+- No EC2 key pair found: create/import one in the selected region before `create`.
 
 ## CLI Quick Start
 
@@ -228,6 +230,7 @@ clouder --help
 
 ```bash
 clouder ctx init
+clouder ctx sync
 clouder ctx ls
 clouder ctx show
 
@@ -249,7 +252,7 @@ clouder aws vm-ls --region us-east-1
 # SSH and keys
 clouder ssh-key ls
 clouder ssh-key create my-key
-clouder ssh connect <vm-name>
+clouder ssh <vm-name>
 
 # S3 buckets
 clouder s3 ls
@@ -268,11 +271,11 @@ Clouder provisions VMs using the selected cloud provider context. For a cluster,
 ```bash
 # Azure example
 clouder ctx set azure <SUBSCRIPTION_ID>
-clouder kubeadm vm-create my-cluster --region eastus --workers 2
+clouder kubeadm create my-cluster --region eastus --workers 2
 
 # AWS example
 clouder ctx set aws <AWS_ACCOUNT_ID>
-clouder kubeadm vm-create my-cluster --region us-east-1 --workers 2
+clouder kubeadm create my-cluster --region us-east-1 --workers 2
 ```
 
 This will:
@@ -438,10 +441,10 @@ See the [Kubeadm CLI reference](/cli/kubeadm) for details on manual installation
 
 ```bash
 # Interactive mode - prompts for all settings
-clouder k8s create my-cluster
+clouder kubernetes create my-cluster
 
 # Full specification
-clouder k8s create my-cluster \
+clouder kubernetes create my-cluster \
     --provider azure \
     --region eastus \
     --control-plane-size Standard_B4ms \
@@ -453,24 +456,24 @@ clouder k8s create my-cluster \
 ```
 
 :::note
-CRIU support is now built into `clouder kubeadm setup` by default. The `--enable-criu` flag above is for the future `clouder k8s create` managed interface.
+CRIU support is now built into `clouder kubeadm setup` by default. The `--enable-criu` flag above is for the future `clouder kubernetes create` managed interface.
 :::
 
 ### Get Kubeconfig
 
 ```bash
 # Download kubeconfig for the cluster
-clouder k8s kubeconfig my-cluster
+clouder kubernetes kubeconfig my-cluster
 
 # Set as current context
-clouder k8s use my-cluster
+clouder kubernetes use my-cluster
 ```
 
 ### Add Worker Nodes
 
 ```bash
 # Add a GPU worker node pool
-clouder k8s create-nodepool my-cluster \
+clouder kubernetes create-nodepool my-cluster \
     gpu-workers \
     --flavor Standard_NC6s_v3 \
     --min 0 --desired 1 --max 5 \
@@ -481,13 +484,13 @@ clouder k8s create-nodepool my-cluster \
 
 ```bash
 # List clusters
-clouder k8s ls
+clouder kubernetes ls
 
 # Scale workers
-clouder k8s update-nodepool my-cluster workers --desired 5
+clouder kubernetes update-nodepool my-cluster workers --desired 5
 
 # Delete cluster (removes all VMs and resources)
-clouder k8s delete my-cluster
+clouder kubernetes delete my-cluster
 ```
 
 ## References

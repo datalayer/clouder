@@ -22,7 +22,10 @@ classifiers = [
 #    "avionix",
 dependencies = [
     "boto3",
-    "datalayer_core",
+    # 1.1.63 is where `contents_node_mount_gateway` — the Node Mount Gateway
+    # wire format the node agent reads — first exists. An older core builds
+    # an image that cannot import `clouder.csi` at all.
+    "datalayer-core>=1.1.65",
     "jupyter-server",
     "kopf",
     "kubernetes",
@@ -41,8 +44,17 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
+# The Local CSI node plugin (`python -m clouder.csi`): gRPC and the generated
+# CSI stubs. The bridge filesystem itself comes from `code_sandboxes`, which
+# the datalayer-local-csi image installs beside this extra.
+csi = [
+    "grpcio>=1.67",
+    "protobuf>=5.27,<7",
+]
 test = [
     "coverage",
+    "grpcio>=1.67",
+    "protobuf>=5.27,<7",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

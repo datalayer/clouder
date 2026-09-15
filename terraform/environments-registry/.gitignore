@@ -1,0 +1,3 @@
+# Written by `clouder aws ecr-environments plan`; a plan can carry sensitive values.
+tfplan
+tfplan.json

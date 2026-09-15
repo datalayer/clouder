@@ -1,0 +1,143 @@
+---
+title: Datalayer Scheduler
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import { Label, Stack } from '@primer/react-brand';
+
+# ☰ 📅 Datalayer Scheduler
+
+<Stack direction="horizontal" alignItems="flex-start" padding="none" style={{marginBottom: 30}}>
+  <Label color="blue">Kubernetes</Label>
+  <Label color="red">Service</Label>
+</Stack>
+
+`Datalayer Scheduler` stores schedule definitions, plans runs, and executes notebook runs and benchmark launches in the background.
+
+## Deploy Datalayer Scheduler
+
+<Tabs groupId="k8s">
+  <TabItem value="plane" label="Plane" default>
+```bash
+plane up datalayer-scheduler
+```
+  </TabItem>
+  <TabItem value="terraform" label="Terraform">
+```bash
+cd terraform
+...
+```
+  </TabItem>
+</Tabs>
+
+Remove scheduler:
+
+```bash
+plane down datalayer-scheduler
+```
+
+Local development:
+
+```bash
+plane pf-local
+plane local
+```
+
+`plane local` starts the scheduler on `http://localhost:9920` and wires service URLs for IAM/Spacer/Runtimes local ports.
+
+## Responsibilities
+
+- Persist schedule definitions (`type_s=schedule`) and runs (`type_s=schedule_run`) in Solr.
+- Poll due planned runs every 10 seconds by default.
+- Execute due runs in background worker threads (the default, inline path), or hand each due run to [`datalayer-durable`](/services/system/durable/) as a workflow when the cut-over is enabled (see below).
+- Mark run outcomes and create next planned runs from cron expressions.
+
+A schedule targets one `target_kind_s`: `notebook` (the original target,
+`notebook_uid_s` also written for the legacy field) or `evalset` — a
+benchmark that runs itself, on a cron. `target_uid_s` names the target
+either way; `config_json_t` on an `evalset` schedule carries the launch body
+(`experiment_ids`, `run_mode`, `config`) an evalset launch needs — an empty
+`experiment_ids` means every live experiment, resolved at execution time
+rather than frozen into the schedule, so a schedule stays current as
+experiments are added or retired. A due `evalset` run creates a launch the
+same way the wizard does, as the schedule's owner, on their credits
+(`_launch_evalset_for_schedule`); a due `notebook` run takes the inline or
+durable-dispatch path described below. One schedule per owner and target:
+creating a second one for the same target replaces the first rather than
+adding beside it.
+
+## APIs
+
+- `GET /api/scheduler/v1/ping`
+- `GET /api/scheduler/v1/status` (platform admin)
+- `GET /api/scheduler/v1/status/self-check` (platform admin)
+- `GET /api/scheduler/v1/schedules`
+- `GET /api/scheduler/v1/schedules/{id}`
+- `GET /api/scheduler/v1/schedules/{id}/runs`
+- `GET /api/scheduler/v1/schedules/runs`
+- `POST /api/scheduler/v1/schedules` (upsert: creating a schedule for a target that already has one replaces it)
+- `PUT /api/scheduler/v1/schedules/{id}`
+- `POST /api/scheduler/v1/schedules/{id}/disable`
+
+## Required Environment Variables
+
+- `DATALAYER_SOLR_ZK_HOST`
+- `DATALAYER_JWT_ISSUER`
+- `DATALAYER_JWT_SECRET`
+- `DATALAYER_JWT_ALGORITHM`
+- `DATALAYER_IAM_URL`
+- `DATALAYER_SPACE_URL`
+- `DATALAYER_RUNTIMES_URL`
+
+## Optional Environment Variables
+
+- `DATALAYER_SCHEDULER_INTERVAL_SECONDS` (default: `10`)
+- `DATALAYER_SCHEDULER_RUNTIME_ENVIRONMENT` (default: `ai-agent-env`)
+- `DATALAYER_SCHEDULER_RUNTIME_CREDITS_FRACTION` (default: `0.5`)
+- `DATALAYER_SCHEDULER_EXEC_TIMEOUT_SECONDS` (default: `300`)
+- `DATALAYER_SCHEDULER_SERVICE_TOKEN`
+
+### Durable dispatch (opt-in)
+
+By default the scheduler runs each due run inline in a worker thread, so a run
+is lost if the pod moves mid-execution. It can instead hand each due run to
+[`datalayer-durable`](/services/system/durable/) as a
+`ScheduledNotebookRunWorkflow`, which outlives the worker that started it:
+the workflow mints a temporary key for the schedule's owner, launches a
+runtime as them through a child `SandboxWorkflow`, reads the notebook from
+Spacer, runs it with `datalayer exec` on that runtime — no agent — releases
+the runtime, and hands the outcome to this service's outcome route,
+`POST /api/scheduler/v1/schedules/runs/{uid}/outcome`, called as the owner.
+That route persists the executed notebook and the result in object storage
+and marks the run through the same function the inline path uses, so a run
+reads the same whichever way it ran; a run already recorded is answered, not
+recorded twice. The run's record passes through the `dispatched` state on
+the way.
+
+This is **off by default** and gated on all three variables below; unset any
+of them and the inline path stays.
+
+- `DATALAYER_SCHEDULER_USE_DURABLE` (default: `false`) — the cut-over switch.
+- `DATALAYER_DURABLE_URL` — the `/api/durable` ingress of the durable service on the runtimes plane.
+- `DATALAYER_SCHEDULER_DURABLE_API_KEY` — this service's own **workload** key to the durable API, which durable knows as the `scheduler` caller. Not the same as `DATALAYER_SCHEDULER_API_KEY`, which is an administrator JWT; the durable key is a separate variable on purpose. The same value is written into the durable Secret as `serviceApiKeys.scheduler`.
+- `DATALAYER_SCHEDULER_DURABLE_WORKFLOW` (default: `ScheduledNotebookRunWorkflow`) and `DATALAYER_SCHEDULER_DURABLE_QUEUE` (default: `agent`) — which workflow a due run is started as, and on which queue. Overridable so a deployment can retarget without a code change.
+
+Durable, for its part, needs `DATALAYER_SCHEDULER_URL` (the outcome route's
+public origin) and `DATALAYER_SPACER_URL`; `plane up datalayer-durable`
+supplies both from the environment.
+
+:::note Turning it on
+Set the three variables on the scheduler and the `scheduler` key on durable,
+`plane up` both, and walk one scheduled run: its record moves `planned` →
+`dispatched` → `executed`, its executed notebook lands in object storage
+under the run, and the runtime the workflow launched is gone afterwards.
+An unreachable durable service never fails a run: the poll worker falls
+through to the inline path and says so in its log.
+:::
+
+## Ingress
+
+- Scheduler chart now provides an ingress route on `/api/scheduler` (same host pattern as IAM ingress).
+- For GKE clusters, scheduler chart also provides a `BackendConfig` template and service annotation.
+- UI and CLI should target scheduler via dedicated scheduler URL configuration, not through generic run URL fallback.

@@ -1,0 +1,235 @@
+---
+title: Continuity
+---
+
+# Continuity
+
+Datalayer recovery combines control-plane backups with backups or versioning
+for the bytes referenced by that control plane. A Solr backup alone does not
+contain User Folder files, Dataset objects, provider data or Vault secrets.
+
+For Contents, operate these recovery units together:
+
+| Recovery unit | State | Protection |
+| --- | --- | --- |
+| Contents catalog | `contents`, `content-objects`, `content-operations`, `content-audit` Solr collections | Dedicated recurring `SolrBackup` |
+| Managed objects | User Folder, Dataset revision and staging object prefixes | Object-store versioning, retention and replication, and the object manifest written with each backup |
+| Credential references | Vault secret paths and policies | Vault snapshot and restore procedure |
+| Provider-owned data | External cloud storage and Dataservers | Provider backup policy; Datalayer only restores its references |
+
+For the AI services, two nested units:
+
+| Recovery unit | State | Protection |
+| --- | --- | --- |
+| AI plane | `ai-agents`, `evals`, `tool-approvals`, `mcp-gateway`, `mcp-tasks`, `mcp-audit` Solr collections | Dedicated recurring `SolrBackup` (`datalayer-solr-ai-backups`) |
+| Jupyter MCP Server | `mcp-gateway`, `mcp-tasks`, `mcp-audit` — a subset of the AI unit | Its own tighter `SolrBackup` (`datalayer-solr-mcp-backups`) |
+
+The `mcp` unit exists inside the `ai` one so the gateway can be recovered
+without the rest of the AI plane, and on a tighter schedule. Restoring `ai`
+restores the gateway too; restoring `mcp` leaves `ai-agents`, `evals` and
+`tool-approvals` where they were.
+
+What each gateway collection costs to lose differs, and the schedules follow:
+
+- **`mcp-audit`** is the one with no other copy. It is append-only, one row
+  per call and decision, and it is what an auditor reads. Its retention window
+  is reported by `GET /api/mcp/v1/audit` as `retention_days`; a restore older
+  than that window returns rows that have since aged out elsewhere.
+- **`mcp-gateway`** holds handles, the worker directory and rate windows —
+  short-lived records with their own TTLs. Losing it costs live sessions their
+  handles, which clients recover by calling `use_notebook` again. It is the
+  reason the `mcp` schedule is tight rather than the reason it exists.
+- **`mcp-tasks`** is a projection. It can be behind without being wrong.
+
+
+:::note What a Solr backup holds
+A backup captures the committed index, not the transaction log. Under the
+shared configset Solr hard-commits every 15 s (`autoCommit`), so a backup can
+be missing at most the last 15 s of writes; a drill that seeds and backs up
+at once must commit first — `make -C contents local-backup-drill` does.
+:::
+
+## The object store, as one unit with the catalog
+
+A Solr backup says which object versions the catalog holds; the bucket
+holds the bytes; nothing in either says whether they still agree. Contents
+ties them together with a **manifest** — every published object, its size
+and its checksum, as of the moment the collections were backed up — and a
+**reconciliation** that compares the restored catalog with the store both
+ways. The operator configures the bucket; Contents writes and checks the
+rest.
+
+What the bucket (`DATALAYER_CONTENTS_STORAGE_BUCKET`) must have:
+
+- **Versioning on.** The catalog names object versions by key; a version's
+  bytes are never rewritten, but a key can be overwritten by a retry and
+  deleted by retention. Versioning is what lets a restore recover the
+  object that was there at the backup's moment rather than whatever came
+  after. The local stack turns it on (`mc version enable`), so a drill
+  behaves as the cluster does.
+- **A retention (lifecycle) rule on non-current versions at least as long
+  as the Solr backup retention** — the supplied schedule keeps 200 snapshots
+  at ten-minute intervals, so about a day and a half; keep non-current
+  object versions for longer than the oldest backup you would restore.
+- **Replication to a second region or account**, when the recovery
+  objectives call for it. A single-region bucket is a single point of
+  failure the Solr backups do not cover.
+- **Deletion of the bucket itself refused** to the service's credentials:
+  Contents deletes objects, never buckets.
+
+What Contents does with it:
+
+```bash
+# Beside each backup: what the store held. Run from the worker's pod, which
+# has the bucket's credentials; keep the file with the backup generation.
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest write /tmp/objects.json
+kubectl cp datalayer-api/$(kubectl get pod -n datalayer-api -l app=contents-worker -o name | head -1 | cut -d/ -f2):/tmp/objects.json ./objects-$(date +%Y%m%d%H%M).json
+
+# After restoring the collections, before trusting the catalog: is the store
+# the one the manifest describes? Exit 1 names what is missing or changed.
+kubectl cp ./objects-YYYYMMDDHHMM.json datalayer-api/<worker-pod>:/tmp/objects.json
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-manifest verify /tmp/objects.json
+
+# Then both ways, against the restored catalog.
+kubectl exec deploy/datalayer-contents-worker -- datalayer-contents-reconcile --verify --json /tmp/report.json
+```
+
+The worker also reconciles on its own every
+`DATALAYER_CONTENTS_RECONCILE_INTERVAL_SECONDS` and answers the last report
+at `GET /operations/reconcile`; the `ContentsReconcileDiscrepancies` alert
+fires when the two sides disagree, which is how drift between a backup and
+a bucket is noticed before a restore needs it. On one machine,
+`make -C contents local-backup-drill` runs the whole loop — backup, manifest,
+drop, restore, verify, reconcile — and `make -C contents test-local-stack`
+runs it as a test.
+
+## Recovery objectives
+
+Choose and record an RPO and RTO for each deployment. The supplied Solr
+schedule runs every 10 minutes and retains 200 snapshots, but that does not by
+itself establish an end-to-end RPO: managed object and Vault protection must be
+at least as frequent. Alert when any member of the recovery unit misses its
+target.
+
+## Enable and monitor backups
+
+The `contents` scope creates a distinct
+`datalayer-solr-contents-backups` resource, so it can run beside the complete
+platform backup without replacing it.
+
+```bash
+# Apply the coordinated four-collection schedule.
+plane solr-backups-apply contents
+plane solr-backups-apply ai       # the six AI collections
+plane solr-backups-apply mcp      # the gateway alone, inside the AI unit
+
+# Inspect the resource and its per-collection results.
+plane solr-backups-status contents
+plane solr-backups-status ai
+plane solr-backups-status mcp
+kubectl describe solrbackup datalayer-solr-contents-backups \
+  -n datalayer-solr
+
+# Inspect current collection and replica health.
+plane solr-status contents
+plane solr-status content-objects
+plane solr-status content-operations
+plane solr-status content-audit
+```
+
+Also verify that object-store versioning and retention are active, that a
+manifest was written with the latest backup generation, that a recent Vault
+snapshot exists, and that each reported Solr `s3Prefix` contains backup
+artifacts. See [Solr](/services/system/solr/) for diagnostics and task
+cleanup commands.
+
+## Contents recovery drill
+
+Run this drill regularly in an isolated recovery environment. Never delete or
+overwrite production collections to test a restore.
+
+1. Record the selected Solr backup generation, the object manifest written
+   with it, the object-store version or snapshot, and the Vault snapshot.
+   They must represent a mutually acceptable recovery point.
+2. Prevent writes in the recovery environment. Stop the Contents API and any
+   enabled worker, Flight, and bridge deployments before restoring state.
+3. Restore Vault and managed object storage according to their provider
+   runbooks. Preserve immutable object keys and versions referenced by
+   `content-objects`.
+4. Restore the four Solr collections from the dedicated backup:
+
+   ```bash
+   plane solr-restore contents
+   plane solr-restore-status contents
+   ```
+
+   Solr restore requests are asynchronous. Do not continue until all four have
+   completed successfully. A collection must be absent or prepared according
+   to the Solr restore procedure before invoking the command.
+5. Deploy or restart Datalayer Contents and wait for readiness:
+
+   ```bash
+   plane up datalayer-contents
+   kubectl rollout status deployment/datalayer-contents -n datalayer-api
+   kubectl port-forward -n datalayer-api service/datalayer-contents-svc 9400:9400
+   curl --fail http://localhost:9400/api/contents/v1/ready
+   ```
+6. Reconcile and verify before reopening writes — first the store against
+   the manifest (`datalayer-contents-manifest verify`), then the catalog
+   against the store (`datalayer-contents-reconcile --verify`), and then:
+   - every Content and grant references an existing object or provider source;
+   - immutable Dataset revisions resolve to their recorded object versions;
+   - object sizes and checksums match `content-objects` metadata;
+   - nested Solr blocks can be queried with their parent/child relationships;
+   - no operation is left indefinitely in `running`; and
+   - audit events remain append-only and ordered.
+7. Run representative download, Dataset revision, Dataserver query and sandbox
+   materialization checks. Record measured RPO, RTO, missing artifacts and any
+   manual repair.
+8. Resume the API first, then workers and data-plane gateways. Monitor error
+   rates, operation retries and object-store access.
+
+## Failure and rollback
+
+If validation fails, keep writes disabled. Preserve logs and the failed restore
+environment, select the previous known-good coordinated recovery point, and
+repeat the drill in a fresh recovery environment. Do not repair catalog links
+by changing immutable object versions in place.
+
+Removing a deployment with `plane down datalayer-contents` does not remove its
+Solr collections, managed objects, Vault secrets or backups. Data deletion is
+a separate, audited lifecycle operation.
+
+:::tip
+
+[Contact us](/support) before a production recovery if the required Solr,
+object-store and Vault recovery points cannot be aligned.
+
+:::
+
+## The Jupyter MCP Server recovery unit (`mcp`)
+
+The three `mcp-*` collections of the Core set — `mcp-gateway` (handles, the
+worker directory, rate windows, fired alerts), `mcp-tasks` (the task
+projection) and `mcp-audit` (the append-only audit trail) — are one recovery
+unit, the `mcp` scope: `plane solr-backups-apply mcp` creates the distinct
+`datalayer-solr-mcp-backups` resource beside the complete schedule,
+`plane solr-backups-status mcp`, `plane solr-restore mcp`,
+`plane solr-restore-status mcp` and `plane solr-backups-clean-tasks mcp`
+operate on it. What each holds after a restore:
+
+- `mcp-gateway` is hot, short-lived state: a restored copy is at most a few
+  minutes stale, and every record in it expires or is refreshed on use — a
+  handle a client presents that the restore does not know is answered as
+  unknown and the client re-binds; nothing is lost that a reconnect does not
+  rebuild.
+- `mcp-tasks` is a projection: the workflow engine (`datalayer-durable`) is
+  the authority for open runs, and the gateway's startup reconciler repairs
+  the projection from the engine's workflow listing after a restore.
+- `mcp-audit` is the record: append-only, kept for the organization's
+  retention, exported to a SIEM by the forwarder when one is configured. A
+  restore that loses audit rows must be recorded as such; nothing recreates
+  them.
+
+Restore the unit as a whole, in that order of trust: audit first (it cannot
+be rebuilt), then tasks (reconciled), then gateway (rebuilt by use).

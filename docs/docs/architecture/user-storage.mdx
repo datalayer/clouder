@@ -1,0 +1,34 @@
+---
+title: User Persistent Storage
+sidebar_position: 2
+---
+
+# User Persistent Storage
+
+Data analysis requires the data to be stored close to the computing power. When it concerns the code snippets define in
+notebook cells, it is fine to forward it to the kernel through the network. However when it comes to dataset to be
+consume by the code, those have first to be transferred to the kernel (the notebook computing core) located in a
+remote cloud.
+
+As a data may be needed multiple times, a way to speed up the analysis is to store that data in the cloud. For that
+purpose, we provide the user with an option to access a persistent storage on the remote runtimes.
+
+## Under the Hood
+
+User persistent storage is provided through the Shared File System layer.
+
+The current primary deployment path is NFS-based shared storage, with Ceph available as an alternative backend for environments that require it.
+
+You can find storage provider configuration and deployment details in [Shared File System](/services/system/shared-filesystem/).
+
+When a user enables persistent storage in a remote runtime, how the folder arrives depends on whether the [Node Mount Gateway](/services/system/node-mount-gateway/) is deployed.
+
+Without it, the scheduler creates a dedicated pod rather than reusing an already warmed-up one, and that pod mounts the user home folder through a PVC (using `subPath`) backed by the configured shared filesystem provider. A pod's volumes are fixed when it is created, so a pod that was warmed before anyone knew whose folder it would carry cannot have the mount — which is why persistent storage used to cost a cold start.
+
+With the gateway on, the warmed pod is reused and a node agent binds the folder into it after it is running, out of the same claim, at the same path. The user waits for a bind rather than for a pod.
+
+:::note
+
+The Remote Runtime Linux user is receiving read-write access to the user platform folder through a `fsGroup` rule.
+
+:::

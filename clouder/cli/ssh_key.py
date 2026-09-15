@@ -24,6 +24,7 @@ def ssh_key_default(ctx: typer.Context):
 def ssh_key_create(
     name: str = typer.Argument(..., help="Name for the SSH key."),
     key_type: str = typer.Option("ed25519", "--type", "-t", help="Key type: ed25519, rsa."),
+    region: str | None = typer.Option(None, "--region", "-r", help="AWS region for key pair import (AWS only)."),
 ):
     """Create an SSH key pair locally (and register in cloud if supported)."""
     key_path = SSH_FOLDER / name
@@ -38,17 +39,36 @@ def ssh_key_create(
     key_path.chmod(0o600)
     print(f"[green]Key pair created: {key_path}[/green]")
 
-    # Register in cloud if OVH
+    # Register in cloud where supported.
     (cloud, context_id) = get_current_context()
     if cloud == "ovh":
         public_key = (SSH_FOLDER / f"{name}.pub").read_text().strip()
         from ..cloud.ovh.api import create_ovh_ssh_key
         res = create_ovh_ssh_key(context_id, name, public_key)
         print(res)
+    elif cloud == "aws":
+        public_key = (SSH_FOLDER / f"{name}.pub").read_text().strip()
+        from ..cloud.aws.api import _client
+
+        ec2 = _client("ec2", region=region)
+        try:
+            ec2.import_key_pair(
+                KeyName=name,
+                PublicKeyMaterial=public_key.encode("utf-8"),
+            )
+            print(f"[green]Imported key pair '{name}' to AWS region {ec2.meta.region_name}.[/green]")
+        except Exception as exc:
+            msg = str(exc)
+            if "InvalidKeyPair.Duplicate" in msg:
+                print(f"[yellow]AWS key pair '{name}' already exists in {ec2.meta.region_name}.[/yellow]")
+            else:
+                raise
 
 
 @ssh_key_app.command("ls")
-def ssh_key_list():
+def ssh_key_list(
+    region: str | None = typer.Option(None, "--region", "-r", help="AWS region to list key pairs from (AWS only)."),
+):
     """List SSH keys (local and cloud)."""
     # Local keys
     table = Table(title="SSH Keys Local")
@@ -66,6 +86,20 @@ def ssh_key_list():
     (cloud, context_id) = get_current_context()
     if cloud == "azure":
         print("[dim]Azure does not have a cloud SSH key registry. Showing local keys only.[/dim]")
+    elif cloud == "aws":
+        from ..cloud.aws.api import _client
+
+        ec2 = _client("ec2", region=region)
+        key_pairs = ec2.describe_key_pairs().get("KeyPairs", [])
+        table = Table(title=f"AWS EC2 Key Pairs ({ec2.meta.region_name})")
+        table.add_column("Name", justify="left", style="cyan")
+        table.add_column("Fingerprint", justify="left", style="green")
+        for kp in sorted(key_pairs, key=lambda item: item.get("KeyName", "")):
+            table.add_row(
+                kp.get("KeyName", ""),
+                kp.get("KeyFingerprint", ""),
+            )
+        print(table)
     else:
         from ..cloud.ovh.api import get_ovh_ssh_keys, get_ovh_project
         project = get_ovh_project(context_id)
@@ -91,7 +125,7 @@ def ssh_key_set_current():
 
     Lists available SSH keys in ~/.ssh/ and lets you pick one as the
     default.  The choice is persisted in ~/.clouder/clouder.yaml and
-    used automatically by 'clouder ssh connect', 'clouder kubeadm' commands,
+    used automatically by 'clouder ssh', 'clouder kubeadm' commands,
     etc. — unless overridden with --key/-i.
     """
     from rich.prompt import Prompt

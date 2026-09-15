@@ -7,6 +7,20 @@ sidebar_position: 2
 
 AWS cloud operations for Clouder contexts.
 
+## Setup
+
+Use standard AWS credentials (profile, env vars, or IAM role), then verify:
+
+```bash
+clouder aws info
+```
+
+Need setup help?
+
+```bash
+clouder aws configure
+```
+
 ## Commands
 
 ### `clouder aws info`
@@ -25,6 +39,19 @@ List available AWS regions for the current credentials.
 clouder aws regions
 ```
 
+Output columns:
+- Region
+- Endpoint
+- Opt-in
+
+Example output:
+
+| Region | Endpoint | Opt-in |
+|--------|----------|--------|
+| us-east-1 | ec2.us-east-1.amazonaws.com | opt-in-not-required |
+| eu-west-1 | ec2.eu-west-1.amazonaws.com | opt-in-not-required |
+| ap-east-1 | ec2.ap-east-1.amazonaws.com | opted-in |
+
 ### `clouder aws vm-ls`
 
 List EC2 instances visible to your current AWS credentials.
@@ -37,4 +64,136 @@ Optional region override:
 
 ```bash
 clouder aws vm-ls --region us-east-1
+```
+
+### `clouder aws vm-info`
+
+Show detailed information for one EC2 instance by VM Name tag.
+
+```bash
+clouder aws vm-info <vm-name>
+clouder aws vm-info <vm-name> --region us-east-1
+```
+
+Output includes:
+- Instance id, type, state
+- Public/private IP addresses
+- VPC and subnet ids
+- Key pair name
+- Associated ALB details (name, DNS, ARN, target groups)
+
+### `clouder aws resources`
+
+Show a quick regional inventory summary (EC2 instances, VPCs, subnets, security groups).
+
+```bash
+clouder aws resources
+clouder aws resources --region eu-west-1
+```
+
+### `clouder aws vm-sizes`
+
+List available current-generation EC2 instance types for a region.
+
+```bash
+clouder aws vm-sizes
+clouder aws vm-sizes --region us-west-2
+```
+
+Output columns:
+- Instance Type
+- Family
+- vCPUs
+- Memory (GiB)
+- Network
+- Arch
+- GPU (Yes/No)
+- GPU Count
+- GPU Type
+- GPU Mem (GiB)
+
+Notes:
+- GPU values are populated when AWS exposes accelerator metadata for the instance type.
+- Non-GPU families show `GPU = No`, `GPU Count = 0`, and `GPU Type/GPU Mem = N/A`.
+
+Example output:
+
+| Instance Type | Family | vCPUs | Memory (GiB) | Network | Arch | GPU | GPU Count | GPU Type | GPU Mem (GiB) |
+|---------------|--------|-------|--------------|---------|------|-----|-----------|----------|---------------|
+| t3.large | t3 | 2 | 8.0 | Up to 5 Gigabit | x86_64 | No | 0 | N/A | N/A |
+| m7i.xlarge | m7i | 4 | 16.0 | Up to 12.5 Gigabit | x86_64 | No | 0 | N/A | N/A |
+| g5.xlarge | g5 | 4 | 16.0 | Up to 10 Gigabit | x86_64 | Yes | 1 | NVIDIA A10G | 24.0 |
+
+### `clouder aws vm-create`
+
+Create an EC2 VM using the same interactive flow as `clouder vm create` on AWS.
+
+```bash
+clouder aws vm-create my-ec2
+clouder aws vm-create my-ec2 --region us-east-1 --vm-size t3.large
+```
+
+### `clouder aws vm-terminate`
+
+Terminate an EC2 VM by name (Name tag).
+
+```bash
+clouder aws vm-terminate my-ec2
+clouder aws vm-terminate my-ec2 --region us-east-1 --force
+```
+
+Behavior notes:
+- Clouder detects whether the instance is associated with one or more ALBs.
+- If ALBs are found, you are prompted to confirm ALB deletion first.
+- On confirmation, Clouder deletes ALB resources before requesting EC2 termination.
+
+### `clouder aws vm-ssh`
+
+SSH into an EC2 VM by Name tag.
+
+```bash
+clouder aws vm-ssh <vm-name> [OPTIONS]
+```
+
+Options:
+- `--user`, `-u` SSH username
+- `--key`, `-i` key file name from `~/.ssh/`
+- `--port`, `-p` SSH port (default: `22`)
+- `--command`, `-c` run a remote command without interactive shell
+
+Key resolution on AWS:
+- If no `--key` is provided, Clouder first discovers the EC2 key pair attached to the VM.
+- It looks for matching local files in `~/.ssh/` (`<key>`, `<key>.pem`, `<key>.key`).
+- If needed, it tries to import `<key>.pem` from common local download paths.
+- If still not found, it stops with guidance instead of silently using an unrelated key.
+
+Examples:
+
+```bash
+clouder aws vm-ssh oss
+clouder aws vm-ssh oss --user ubuntu --key oss-key.pem
+clouder aws vm-ssh oss --command "uname -a"
+```
+
+### `clouder vm add-alb`
+
+Create/reuse an AWS Application Load Balancer in front of an EC2 VM with HTTPS termination.
+
+```bash
+clouder vm add-alb <vm-name> --certificate-arn <acm-certificate-arn> [OPTIONS]
+```
+
+`--certificate-arn` requires a full ACM certificate ARN.
+
+Notes:
+- This command is available under `clouder vm` and requires AWS as current context.
+- ALB name: `<vm-name>-alb`
+- Listener `443/HTTPS` uses the ACM certificate and forwards to target group.
+- Listener `80/HTTP` redirects to HTTPS.
+
+Example:
+
+```bash
+clouder ctx set aws <account-id>
+clouder vm add-alb oss --certificate-arn arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```

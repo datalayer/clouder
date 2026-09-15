@@ -114,6 +114,23 @@ def get_ovh_project(project_id):
     """Get the OVHcloud project."""
     return ovh_client.get(f'/cloud/project/{project_id}')
 
+
+def list_ovh_regions(project_id):
+    """List available OVHcloud regions for a project."""
+    return ovh_client.get(f'/cloud/project/{project_id}/region')
+
+
+def list_ovh_flavors(project_id, region=None):
+    """List OVHcloud flavors for a project, optionally filtered by region."""
+    path = f'/cloud/project/{project_id}/flavor'
+    if region:
+        try:
+            return ovh_client.get(path, region=region)
+        except Exception:
+            # Some OVH API versions may not accept region query filter.
+            pass
+    return ovh_client.get(path)
+
 ### Applications.
 
 def get_ovh_applications():
@@ -173,11 +190,11 @@ def delete_ovh_ssh_key(project_name, key_id):
 
 ### Virtual machines.
 
-def create_ovh_vm(project_id, vm_name, region):
+def create_ovh_vm(project_id, vm_name, region, flavor_id="B3-8"):
     return ovh_client.post(f'/cloud/project/{project_id}/instance',
         name         = vm_name,
         region       = region,
-        flavorId     = "B3-8",
+        flavorId     = flavor_id,
     )
 
 def get_ovh_vm(project_id):
@@ -211,7 +228,7 @@ template = {
         "annotations": {},
         "finalizers": [],
         "labels": {
-            "role.datalayer.io/jupyter": "true",
+            "role.datalayer.io/runtime": "true",
             "node.datalayer.io/xpu": "cpu",
         }
     },

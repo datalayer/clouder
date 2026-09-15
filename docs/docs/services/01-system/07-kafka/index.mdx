@@ -6,14 +6,14 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { Label, Stack } from '@primer/react-brand';
 
-# Kafka
+# ☰ 🪳 Datalayer Kafka
 
 [Apache Kakfa](https://kafka.apache.org) is an open-source distributed event streaming platform used by thousands of companies for high-performance data pipelines, streaming analytics, data integration, and mission-critical applications.
 
 Define the pub sub engine as `kafka`.
 
 ```bash
-DATALAYER_PUB_SUB_ENGINE=kafka
+DATALAYER_PUBSUB_ENGINE=kafka
 ```
 
 Install Kakfa with the [Strimzi Operator](https://strimzi.io).
@@ -40,7 +40,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-kafka.sh
 ```
   </TabItem>

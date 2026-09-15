@@ -1,11 +1,15 @@
 """Clouder CLI - SSH into a virtual machine."""
 
 import os
+import shutil
 import subprocess
+import sys
+from typing import Optional
 
 import typer
 from rich import print
 from rich.prompt import Prompt
+from rich.table import Table
 
 from .ctx import get_current_context, get_default_ssh_key
 from ..util.utils import SSH_FOLDER
@@ -15,45 +19,75 @@ ssh_app = typer.Typer(no_args_is_help=True)
 
 
 @ssh_app.callback(invoke_without_command=True)
-def ssh_default(ctx: typer.Context):
-    """SSH into a VM if no subcommand given."""
-    if ctx.invoked_subcommand is None:
-        typer.echo("Usage: clouder ssh connect <vm-name>")
-        raise typer.Exit(0)
-
-
-@ssh_app.command("connect")
-def ssh_connect(
-    vm_name: str = typer.Argument(..., help="Name of the virtual machine to SSH into."),
+def ssh_default(
+    ctx: typer.Context,
+    vm_name: Optional[str] = typer.Argument(None, help="Name of the virtual machine to SSH into."),
     user: str = typer.Option(None, "--user", "-u", help="SSH username."),
     key: str = typer.Option(None, "--key", "-i", help="SSH key name (from ~/.ssh/)."),
     port: int = typer.Option(22, "--port", "-p", help="SSH port."),
     command: str = typer.Option(None, "--command", "-c", help="Command to run on the remote host (non-interactive)."),
 ):
     """SSH into a virtual machine by name."""
-    (cloud, context_id) = get_current_context()
+    if ctx.invoked_subcommand is not None:
+        return
+    if not vm_name:
+        typer.echo("Usage: clouder ssh <vm-name>")
+        raise typer.Exit(1)
+
+    ssh_to_vm(vm_name=vm_name, user=user, key=key, port=port, command=command)
+
+
+def ssh_to_vm(
+    vm_name: str,
+    user: str | None = None,
+    key: str | None = None,
+    port: int = 22,
+    command: str | None = None,
+    cloud: str | None = None,
+    context_id: str | None = None,
+):
+    """SSH into a VM, optionally forcing a cloud/context.
+
+    This helper powers both `clouder ssh` and cloud-scoped wrappers.
+    """
+    if cloud and context_id:
+        selected_cloud, selected_context_id = cloud, context_id
+    else:
+        selected_cloud, selected_context_id = get_current_context()
 
     # Resolve the VM's IP address
-    ip = _resolve_vm_ip(cloud, context_id, vm_name)
+    ip = _resolve_vm_ip(selected_cloud, selected_context_id, vm_name)
     if not ip:
         typer.echo(f"Could not determine IP address for VM '{vm_name}'.", err=True)
         raise typer.Exit(1)
 
     # Default user
     if not user:
-        if cloud == "azure":
+        if selected_cloud == "azure":
             user = "azureuser"
         else:
             user = "ubuntu"
 
     # Resolve SSH key
-    key_path = _resolve_ssh_key(key, vm_name)
+    key_path = _resolve_ssh_key(key, vm_name, selected_cloud, selected_context_id)
 
     # Build SSH command
     ssh_cmd = ["ssh"]
     if key_path:
         ssh_cmd.extend(["-i", str(key_path)])
-    ssh_cmd.extend(["-p", str(port), "-o", "StrictHostKeyChecking=accept-new", f"{user}@{ip}"])
+    ssh_cmd.extend(
+        [
+            "-p",
+            str(port),
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+            f"{user}@{ip}",
+        ]
+    )
 
     if command:
         ssh_cmd.append(command)
@@ -84,13 +118,21 @@ def _resolve_vm_ip(cloud: str, context_id: str, vm_name: str) -> str:
         ip = get_azure_vm_public_ip(rg, vm_name, subscription_id=context_id)
         return ip
     elif cloud == "aws":
-        from ..cloud.aws.api import list_aws_vms
-        vms = list_aws_vms()
-        match = [vm for vm in vms if vm["name"] == vm_name]
-        if not match:
+        from ..cloud.aws.api import get_aws_vm_elastic_ip
+
+        vm = _resolve_aws_vm_record(vm_name)
+        if not vm:
             typer.echo(f"VM '{vm_name}' not found.", err=True)
             raise typer.Exit(1)
-        return match[0].get("public_ip")
+
+        vm_region = vm.get("region")
+        vm_id = vm.get("id")
+        if vm_id:
+            eip = get_aws_vm_elastic_ip(vm_id, region=vm_region)
+            if eip:
+                return eip
+
+        return vm.get("public_ip")
     else:
         from ..cloud.ovh.api import get_ovh_vm
         vms = get_ovh_vm(context_id)
@@ -106,7 +148,73 @@ def _resolve_vm_ip(cloud: str, context_id: str, vm_name: str) -> str:
         return None
 
 
-def _resolve_ssh_key(key_name: str, vm_name: str) -> str:
+def _resolve_aws_vm_record(vm_name: str) -> dict | None:
+    """Resolve an AWS VM by name, trying current/default region then all enabled regions."""
+    from ..cloud.aws.api import list_aws_regions, list_aws_vms
+
+    def _select(candidates: list[dict]) -> dict:
+        if len(candidates) == 1:
+            return candidates[0]
+
+        if not sys.stdin.isatty():
+            # Non-interactive fallback for scripted usage.
+            chosen = candidates[0]
+            print(
+                "[yellow]Multiple running AWS instances share this name. "
+                f"Using first match: {chosen.get('id')} ({chosen.get('region')}).[/yellow]"
+            )
+            return chosen
+
+        table = Table(title=f"Multiple running AWS VMs named '{vm_name}'")
+        table.add_column("#", style="cyan", no_wrap=True)
+        table.add_column("Instance ID", style="green")
+        table.add_column("Region", style="green")
+        table.add_column("Public IP", style="yellow")
+        table.add_column("Private IP", style="dim")
+        for idx, vm in enumerate(candidates, 1):
+            table.add_row(
+                str(idx),
+                vm.get("id") or "N/A",
+                vm.get("region") or "N/A",
+                vm.get("public_ip") or "N/A",
+                vm.get("private_ip") or "N/A",
+            )
+        print(table)
+
+        choice = Prompt.ask(
+            "Select VM number",
+            default="1",
+        )
+        if not choice.isdigit() or not (1 <= int(choice) <= len(candidates)):
+            typer.echo(f"Invalid selection: {choice}", err=True)
+            raise typer.Exit(1)
+        return candidates[int(choice) - 1]
+
+    # First pass: current/default region.
+    initial = list_aws_vms()
+    running = [vm for vm in initial if vm.get("name") == vm_name and vm.get("state") == "running"]
+    if running:
+        return _select(running)
+
+    # Fallback: scan enabled regions.
+    running_all_regions: list[dict] = []
+    for region in list_aws_regions():
+        region_name = region.get("name")
+        if not region_name:
+            continue
+        try:
+            vms = list_aws_vms(region=region_name)
+        except Exception:
+            continue
+        running = [vm for vm in vms if vm.get("name") == vm_name and vm.get("state") == "running"]
+        running_all_regions.extend(running)
+
+    if running_all_regions:
+        return _select(running_all_regions)
+    return None
+
+
+def _resolve_ssh_key(key_name: str, vm_name: str, cloud: str, context_id: str) -> str:
     """Resolve the SSH key path, prompting if needed."""
     if key_name:
         path = SSH_FOLDER / key_name
@@ -114,6 +222,51 @@ def _resolve_ssh_key(key_name: str, vm_name: str) -> str:
             return str(path)
         typer.echo(f"SSH key '{key_name}' not found at {path}.", err=True)
         raise typer.Exit(1)
+
+    # Cloud-specific key discovery (AWS): prefer the key pair attached to the instance.
+    if cloud == "aws":
+        _ = context_id
+        vm = _resolve_aws_vm_record(vm_name)
+        if vm:
+            instance_key_name = str(vm.get("key_name") or "")
+            if instance_key_name:
+                candidates = [
+                    SSH_FOLDER / instance_key_name,
+                    SSH_FOLDER / f"{instance_key_name}.pem",
+                    SSH_FOLDER / f"{instance_key_name}.key",
+                ]
+                for candidate in candidates:
+                    if candidate.exists():
+                        print(f"[dim]Using EC2 key pair for VM: {candidate}[/dim]")
+                        return str(candidate)
+
+                # Attempt local import from a common download location.
+                download_candidates = [
+                    os.path.expanduser(f"~/Downloads/{instance_key_name}.pem"),
+                    os.path.expanduser(f"~/{instance_key_name}.pem"),
+                ]
+                for src in download_candidates:
+                    if os.path.isfile(src):
+                        dst = SSH_FOLDER / f"{instance_key_name}.pem"
+                        SSH_FOLDER.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+                        dst.chmod(0o600)
+                        print(f"[dim]Imported EC2 key from local download: {dst}[/dim]")
+                        return str(dst)
+
+                typer.echo(
+                    (
+                        "Could not find the EC2 key pair file locally for this VM. "
+                        f"Expected a key named '{instance_key_name}' (or .pem variant) in ~/.ssh/."
+                    ),
+                    err=True,
+                )
+                typer.echo(
+                    "AWS does not allow re-downloading private key material after key pair creation. "
+                    "Place the private key file in ~/.ssh/ and retry.",
+                    err=True,
+                )
+                raise typer.Exit(1)
 
     # Try to find a key matching the VM name
     vm_key = SSH_FOLDER / f"{vm_name}-key"

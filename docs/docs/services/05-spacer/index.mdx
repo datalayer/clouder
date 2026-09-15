@@ -13,12 +13,12 @@ import { Label, Stack } from '@primer/react-brand';
   <Label color="red">REST API</Label>
 </Stack>
 
-the `Datalayer Spacer` service provides collaborative spaces for data analysis. A space manages the following features.
+`Datalayer Spacer` service provides collaborative spaces for data analysis. A space manages the following features.
 
 ```
 🛂 Identities and permissions that grant users and organisations access to the space.
 
-💼 Contents (Dataset, Cell, Notebook) stored in Git repositories.
+💼 Items (Cell, Notebook, Document) stored in Git repositories. Datasets are owned by the Contents service.
 
 🧑‍🤝‍🧑 RTC (Realtime Collaboration) documents to ease collaboration.
 ```
@@ -37,7 +37,7 @@ cd terraform
 terraform init
 terraform apply
 ./generated/clouder-Kubeadm-setup.sh
-export KUBECONFIG=~/.clouder/kubeconfigs/kubeconfig-<cluster-name>
+export KUBECONFIG=~/.clouder/kubeadm/<cluster-name>/kubeconfig
 ./generated/services/deploy-datalayer-spacer.sh
 ```
   </TabItem>
@@ -67,6 +67,264 @@ Check the availability of the Datalayer Spacer Endpoints.
 open https://${DATALAYER_RUN_HOST}/api/spacer/version
 open https://${DATALAYER_RUN_HOST}/api/spacer/v1/ping
 ```
+
+`/version` is liveness — the process is up — and is what the Kubernetes
+readiness probe reads. `/ping` asks **Solr**, and answers `503` when it
+cannot be reached: a Spacer that cannot reach Solr serves nothing at all, and
+until 2026-09-04 this route said `success: true` for the process being up and
+nothing else. Three things read it as a health check — the MCP gateway
+reports it as a dependency, the scheduler gates its self-check on it, and
+`plane local` waits for it — so all three were told a broken Spacer was
+fine. The probe stays on `/version` deliberately, so a Solr outage is
+reported rather than turned into a crash-loop that takes Spacer down with
+it.
+
+## Notebook versions
+
+A version is a notebook's bytes at a moment, kept on purpose — by a person
+pressing *snapshot*, by an agent's `snapshot_notebook` through the
+[Jupyter MCP Server](/services/jupyter-mcp-server/), or by a restore.
+Autosave is not a version: the collaboration room saves continuously, and a
+history of every keystroke is not one anybody reads.
+
+| Route | Access | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/notebooks/{id}/versions` | `view` | The versions, newest first, each naming its actor |
+| `POST …/versions` `{"message": "…"}` | `update` | Keep the notebook as it is now |
+| `GET …/versions/{version}` | `view` | One version, with its content as `model_s` |
+| `POST …/versions/{version}/restore` | `update` | Make it current — after keeping what it replaces |
+
+Versions live beside the notebook in the same bucket
+(`<s3_path>.versions/<stamp>-<uid>.ipynb`), with the actor and message on
+the object's own metadata; nothing else records them, so there is one place
+a version can be. A restore keeps the current content first, as a `restore`
+version by the same actor, so restoring the wrong one is a second restore
+away and not a loss. A notebook a caller cannot read answers `403`, not
+`404`: "not found" would send them looking for a typo.
+
+## Document versions
+
+Lexical documents keep versions by the same rules, in their own bucket
+(`<s3_path>.versions/<stamp>-<uid>.json`), through the same service:
+
+| Route | Access | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/lexicals/{id}/versions` | `view` | The versions, newest first, each naming its actor |
+| `POST …/versions` `{"message": "…"}` | `update` | Keep the document as its editors see it now |
+| `GET …/versions/{version}` | `execute` | One version, with its content as `model_s` — the access reading the document itself asks |
+| `POST …/versions/{version}/restore` | `update` | Make it current — after keeping what it replaces |
+
+A document differs from a notebook in the one way that matters here: its
+Loro room holds what its editors see and saves it to S3 at most once a
+minute. So a snapshot first saves the room's unsaved edits, and answers
+`503` keeping nothing when they cannot be saved. A restore is refused with
+`409` while an editor is in the document — the room's next save would
+overwrite it, and its editors would go on with the content it replaced —
+and, with nobody connected, saves the warm copy's edits into the `restore`
+version and then drops the warm copy, so the next editor opens what was
+restored. Nothing here starts the Loro server: a process where nobody has
+opened a document has no room to consult.
+
+## Comments
+
+A document's or a notebook's comments are records of the `spaces`
+collection (`type_s: comment`, `datalayer_solr/spaces_comments.py`), beside
+the item rather than inside it, so they can be listed, assigned and notified
+without opening the document. The editor's comment plug-in used to keep its
+threads as nodes of the document; a platform document now reads and writes
+them through these routes, and only the highlight of the commented text stays
+in the document.
+
+A **thread** is its first comment. It names one anchor — `mark_id` (the
+highlighted text), `block_id` (a report's evidence block), `case_id` (a task)
+or `datum` on a document; `cell_id`, `case_id` or `datum` on a notebook — the
+text it quotes, and its state, `open` or `resolved`. A **reply** names its
+thread. Records are top-level documents, never children of the space, so no
+listing of a space's items finds one, and deleting an item deletes its
+comments.
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/spacer/v1/lexicals/{id}/comments?status=` | `view` | The comments in the order written, deleted ones in their place; with `status`, the threads in that state with their replies |
+| `POST …/comments` `{"body", "anchor", "quote", "link", "mentions", "assignee_uid"}` or `{"body", "thread_uid", "mentions"}` | whoever the item is shared with | Open a thread, or reply in one; the author is whom the token names |
+| `GET` and `POST /api/spacer/v1/notebooks/{id}/comments` | the same | The same on a notebook |
+| `PATCH /api/spacer/v1/comments/{uid}` `{"body", "mentions", "assignee_uid", "deleted"}` | see below | Changes only what the request names; `"assignee_uid": null` unassigns |
+| `POST …/comments/{uid}/resolve` `{"resolution"}` and `…/reopen` | see below | Settle a thread, recording who and why |
+
+Reading the comments is reading the item, a public item included. Writing
+one needs the item shared with you — its owner, a member of its space, a
+grantee at any level — and never only the public, or every signed-in person
+could write on every public document. A comment's words and mentions are its
+author's. Deleting is the author's or of whoever may `update` the item, and a
+deleted comment keeps its place and loses its words. Assigning, resolving and
+reopening a thread are its author's, its assignee's or an editor's. A comment
+on an item the caller cannot read is `404`, a malformed one `422`; a reply in
+a resolved or deleted thread, a second resolve and a reopen of an open thread
+are `409`.
+
+**Mentions and assignees** (B4-02). A comment's `mentions` and a thread's
+assignee are people, by uid, and each must be able to read the item: anybody
+else — or a uid that is nobody — is refused `422` by name, rather than sent a
+link that fails with the words of a comment on something they cannot read.
+Each person newly mentioned, and a thread's new assignee, gets a notification
+Spacer writes itself (`comment.mentioned`, `comment.assigned`, through
+`datalayer_solr.evals_notifications`), linking to the page the thread was
+opened on — its `link`, a path of the app, which a thread that names somebody
+must give — with its evidence as `?block=`, `?case=` or `?cell=`. Nobody is
+told of their own doing, and a notice that cannot be written is logged and
+never fails the comment. The answer names the assignee as a person (`uid`,
+`handle`, `name`), looked up in IAM. A comment written by an agent acting for
+somebody names the agent too (`author.agent_uid`, from the token), so what
+happened on a document is attributed to both.
+
+**Live.** `/api/spacer/v1/comments/ws/{item_uid}?token=` admits whom the item
+admits, as the rooms do (`4001` without a token, `4003` otherwise), says
+`{"type": "subscribed"}` once it listens, and then sends `{"type": "comment",
+"comment": …}` for every comment written through the routes. A client reads
+the comments again on `subscribed`, since what was written before it listened
+was not heard. The channel lives in the process, as the Loro rooms do: Spacer
+runs one replica, and a second replica would need the channel carried between
+processes.
+
+Comments are stamped at least a millisecond apart within a process, so a
+reply an agent writes in its thread's millisecond still reads after it.
+
+**Counted** (B4-12). The comment lines of the benchmark funnel's collaboration
+measures are Spacer's, where comments are written: `spacer.comments.written`
+(thread or reply, the item type, a thread's anchor kind, and `through` a
+person or an agent), `spacer.comments.mentions` (people newly mentioned) and
+`spacer.comments.resolved` (with `evidence` true for a thread about a block, a
+task or a cell). They ride on the OTEL providers `instrument` installs when
+Spacer starts (`datalayer_spacer.telemetry`), as the evals counters do in AI
+Agents; reports shared, reviewers invited, approvals, reopened reports and
+decisions are counted there.
+
+## Searching a workspace
+
+`GET /spaces/items/search?q=&types=&max=` searches the caller's own notebooks,
+documents, datasets and files (the benchmarks plan, B5-11, section 19).
+
+It is **scoped to what that person may open** — what they own, what names them,
+and what was shared with them — through the same clauses
+`get_items_accessible_by_user` uses, and it never includes other people's public
+items: the Library has its own search, and mixing the two here would make "my
+workspace" mean something else.
+
+The scope is the point of the function rather than a refinement of it.
+`datalayer_solr.spaces.search_items` used to take a query, some types and
+`is_public`, and nothing about the person asking; it had no callers, which is
+the only reason that was harmless. A private search with nobody to scope it to
+now answers nothing rather than everything, and `search_query` — the function
+that builds the Solr query — is where that decision lives, so it can be checked
+without a cluster.
+
+## Sharing with an agent
+
+An item can be shared with an **agent** at any of the three levels, beside
+users and teams: `agentUids` under `view`, `update` or `execute` on the
+sharing routes (`shared_<level>_agent_uids_ss` on the item). The grant is
+matched on the token's own `agent_uid` and never on the person behind it, so
+sharing with one service agent does not share with its owner's other agents,
+or with the owner. Sharing with a person, as before, shares with everything
+that acts for them.
+
+The token's `agent_uid` and `client_id` reach the services at all now: the
+shared authentication (`datalayer_common.auth`) verified them and then
+dropped them with the rest of the top-level claims, so every service saw the
+person and none saw the agent.
+
+**The share dialog can now make that grant.** The routes read `agentUids`
+before anything offered an agent, so the grant existed and was unreachable
+from the UI. IAM's `GET /api/iam/v1/principals/shareable` now also answers the
+live service agents of every organization the caller belongs to
+(`kind: "agent"`, carrying the organization that owns it); a revoked agent is
+left out, because it can no longer act and offering it would be a grant that
+does nothing. The Core share dialog carries `agentUids` through the payload it
+saves and lists agents under **Agents**, drawn as a key with an "Agent" label
+rather than through the personal/team/organization avatar system — an agent has
+no picture, handle or banner, and must not be mistaken for a person. Agents are
+offered from that list rather than the typeahead: `/principals/search` is typed
+by `PrincipalsSearchResponseData` in datalayer-core, so putting them there would
+cost an OSS release and is not needed to make the grant.
+
+**The grant holds at both doors, which is the half that matters.** An agent
+reads a notebook through its collaboration room, not through the item
+routes, so a grant enforced only on the routes would hold nowhere it counts.
+`admitted` asks the item's own access check with the agent claims carried —
+the same question `get_item_permissions_service` answers — and both are
+pinned against the same case: shared with `agt-7`, refused to `agt-8` of the
+same person, and refused to that person unless they were shared with in their
+own right.
+
+**`agent_uid` is only ever an agent principal.** IAM stamps it for
+`client_credentials` (a service agent with its own uid) and for `jwt-bearer`
+(a registered client with no person behind it), and never for an ordinary
+OAuth client acting for somebody — that carries `client_id` instead. So
+sharing with an agent cannot widen into "everyone who uses that client",
+which is what it would mean if the claim were the client id.
+
+## Who last edited
+
+Every model save and every restore stamps the item with who did it and
+through what: `last_edited_by_uid_s`, `last_edited_by_agent_uid_s`,
+`last_edited_by_client_id_s` and `last_edited_at_dt`. The agent field is
+empty for a person's own edit, so a page says "edited by `<agent>`" only when
+there was one. The room-open event posted to the activity feed names its
+actor the same way — person or agent, with the agent uid and the client.
+
+## Who may join a document's room
+
+A notebook's collaboration room is opened with a **session id** that
+`GET /api/spacer/v1/documents/{id}/ws` hands out, and the websocket admits
+whoever carries it. That endpoint is the door, and it asks the item's own
+access check — the same one a read of the item passes: the owner, a grantee
+at any level, a member for a public item. Until 2026-09-04 it asked for no
+user at all, and the room asked for nothing but the id it handed out.
+
+A token carried to either room is verified and must admit, or the room
+closes with `4003`; the reference middleware's authentication had been
+commented out and an invalid token was logged and let through. The lexical
+room takes no session id, and the platform's own editors do not send it a
+token yet, so a token-less lexical client is still admitted by document id
+alone — logged on every such join. Closing that door is a UI change: the
+editor's `websocketUrl` carrying `?token=`.
+
+**A notebook-scoped document token.** A full user token admits its bearer to
+every document they can reach, so a token handed to a runtime to open one
+notebook is, if it leaks, a key to all of them. The session-id door now issues
+a narrower one beside the session id: a short-lived capability (`token` in the
+`GET /api/spacer/v1/documents/{id}/ws` and `GET /api/spacer/v1/documents/{id}`
+responses) that names the single document it is good for. It is a JWT signed
+with the shared secret but with its own audience (`datalayer:spacer:document`),
+so no other service accepts it — it opens a room and reaches nowhere else — and
+it is verified without the session revocation cache, a short TTL bounding it
+instead. A room accepts it only for the document it names and refuses it at any
+other; a full user token still works, falling through to the session-token
+path. The room **still** runs the item's access check on connect, so the token
+narrows who a leaked credential can act for, never widens it. The consumer —
+the MCP worker (`jupyter-mcp-server` ≥ 2.1.14), which on a Datalayer document
+server fetches the session id with the caller's token and then opens the room
+with the scoped one — is built; until a Spacer and a gateway carrying both ship
+together the door behaves exactly as above, and the worker falls back to the
+caller token, so the two deploy in either order.
+
+## A token narrowed to resources
+
+A token carrying `authorization_details` (IAM's task grants, O1-06 — what an
+orchestration execution holds) reaches the notebooks, documents and cells it
+names, with the actions it names, and nothing else. `can_user_access_item_service`
+answers that first, before any grant and before the platform administrator's
+pass, and then decides as ever — so the token never adds to what the person
+may do; the space an item is in is checked as the person, since the token
+already named the item. `can_user_access_space_service` refuses a narrowed
+token outright: it lists, creates and opens no space. The routes, the rooms'
+admission and the permissions answer all go through those two checks.
+
+The person-wide listings read the same way: the items the Solr query finds
+for the person (`get_items_accessible_by_user_service`, behind "Shared with
+me" and the item listings) keep only what a narrowed token names, and the
+spaces listing answers it none — a listing would otherwise name the person's
+other items to a token that may not open them.
 
 ## Tear Down Datalayer Spacer
 

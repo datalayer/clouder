@@ -195,7 +195,14 @@ def info_me():
     if cloud == "azure":
         from ..cloud.azure.api import list_azure_subscriptions
         subs = list_azure_subscriptions()
-        sub = next((s for s in subs if s["subscription_id"] == context_id), None)
+        sub = next(
+            (
+                s
+                for s in subs
+                if s.get("id") == context_id or s.get("subscription_id") == context_id
+            ),
+            None,
+        )
         table = Table(title="Azure Account")
         table.add_column("Subscription ID", justify="left", style="cyan", no_wrap=True)
         table.add_column("Name", justify="left", style="green")
@@ -203,7 +210,8 @@ def info_me():
         table.add_column("Tenant ID", justify="left", style="dim")
         if sub:
             table.add_row(
-                sub["subscription_id"], sub["display_name"],
+                sub.get("id", sub.get("subscription_id", "N/A")),
+                sub.get("name", sub.get("display_name", "N/A")),
                 sub["state"], sub.get("tenant_id", "N/A"),
             )
         else:

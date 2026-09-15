@@ -5,9 +5,9 @@ sidebar_position: 1
 
 # CLI Reference
 
-Clouder provides a command-line interface built with [Typer](https://typer.tiangolo.com/) for managing cloud resources, Kubernetes clusters, and CRIU checkpoints.
+Clouder provides a command-line interface built with [Typer](https://typer.tiangolo.com/) for managing cloud resources, Kubernetes clusters, and CRIU checkpoint workflows.
 
-## Installation
+## Install
 
 ```bash
 pip install clouder
@@ -29,17 +29,23 @@ clouder --show-completion      # Print completion script
 | [`clouder aws`](./aws) | AWS cloud operations — verify identity, list regions, and inspect EC2 VMs |
 | [`clouder azure`](./azure) | Azure cloud operations — configure credentials, manage VMs, list resources |
 | [`clouder ctx`](./context) | Manage Clouder contexts (cloud provider projects) |
-| [`clouder k8s`](./kubernetes) | Manage Kubernetes clusters — create, scale node pools, kubeconfig |
-| [`clouder kubeadm`](./kubeadm) | Provision and set up Kubeadm clusters |
-| [`clouder kubectl`](./kubeadm#related-clouder-kubectl) | Run kubectl with persisted kubeconfig for a cluster |
-| [`clouder helm`](./kubeadm#related-clouder-helm) | Run helm with persisted kubeconfig for a cluster |
-| [`clouder vm`](./vm) | Manage virtual machines (multi-cloud: Azure, OVH) |
+| `clouder completion` | Install/show shell completion snippets for `clouder` and `c` |
+| [`clouder criu`](./criu) | CRIU checkpoint/restore lifecycle plus readiness and storage helpers |
+| [`clouder cost`](./cost) | List node SKU pricing helpers by cloud |
+| [`clouder kubernetes`](./kubernetes) | Manage OVH Managed Kubernetes clusters and node pools |
+| [`clouder kubeadm`](./kubeadm) | Provision and operate Kubeadm clusters on VMs |
+| `clouder k` | Alias for `clouder kubeadm` |
+| [`clouder kubectl`](./kubectl) | Run kubectl with persisted kubeconfig for a cluster |
+| [`clouder helm`](./helm) | Run helm with persisted kubeconfig for a cluster |
+| [`clouder node-mounts`](./kubeadm#local-csi-driver) | Check the Local CSI driver (`local.csi.datalayer.io`) installed with `clouder kubeadm setup --node-mounts` |
+| [`clouder vm`](./vm) | Manage virtual machines (multi-cloud: Azure, AWS, OVH) |
 | [`clouder ssh`](./ssh) | SSH into a virtual machine by name |
-| [`clouder ssh-key`](./ssh-key) | Manage SSH keys (local and cloud) |
-| [`clouder s3`](./s3) | Manage S3 buckets |
+| [`clouder ssh-key`](./ssh-key) | Manage SSH keys (local plus AWS/OVH cloud key registries) |
+| [`clouder s3`](./s3) | Manage S3 buckets (AWS and OVH contexts) |
 | [`clouder info`](./info) | Show context and user information |
 | [`clouder operator`](./operator) | Manage the Clouder Kubernetes operator |
 | [`clouder sh`](./shell) | Run predefined shell and sbin scripts |
+| `clouder about` | Show CLI and environment metadata |
 | `clouder server` | Start the Clouder Jupyter server extension |
 
 ## Quick Start
@@ -52,15 +58,15 @@ clouder azure configure
 clouder vm create my-server
 
 # 3. SSH into it
-clouder ssh connect my-server
+clouder ssh my-server
 
 # 4. Create a Kubeadm cluster (1 master + 3 workers)
-clouder kubeadm vm-create my-cluster
+clouder kubeadm create my-cluster
 
-# 5. Set up the cluster (containerd 2.x, CRIU, Kubeadm, Flannel CNI, feature gates, Azure CSI drivers)
+# 5. Set up the cluster (containerd 2.x, CRIU, Kubeadm, Flannel CNI, feature gates, cloud-specific CSI/LB bootstrap)
 clouder kubeadm setup my-cluster
 
-# 6. Get kubeconfig (saved to ~/.clouder/kubeconfigs/)
+# 6. Get kubeconfig (saved to ~/.clouder/kubeadm/<cluster>/)
 clouder kubeadm get-config my-cluster
 
 # 7. Use kubectl
@@ -84,22 +90,94 @@ clouder kubeadm disable-ingress-nginx my-cluster
 # OR: clouder kubeadm disable-ingress-traefik my-cluster
 
 # 13. Tear down when done
-clouder kubeadm vm-terminate my-cluster
+clouder kubeadm terminate my-cluster
 
 # 14. Check cluster info
 clouder info ctx
 ```
+
+### Kubeadm default cluster tip
+
+If you run kubeadm commands repeatedly against the same cluster, set a default once:
+
+```bash
+clouder kubeadm set-default my-cluster
+clouder kubeadm info
+clouder kubeadm get-config
+```
+
+See the full workflow in
+[`clouder kubeadm`](./kubeadm#clouder-kubeadm-set-default).
 
 ## Shell Completion
 
 Clouder supports tab completion for bash, zsh, and fish:
 
 ```bash
-# Install completion for your current shell
-clouder --install-completion
+# Install completion for both `clouder` and `c` alias
+clouder completion install
 
-# Or manually add to your shell config
-eval "$(clouder --show-completion bash)"   # bash
-eval "$(clouder --show-completion zsh)"    # zsh
-clouder --show-completion fish | source    # fish
+# Open a new terminal (or source your shell rc file)
+source ~/.bashrc
+```
+
+### Step-by-step setup
+
+1. Install completion hooks:
+
+```bash
+clouder completion install
+```
+
+2. Reload your shell:
+
+```bash
+# bash
+source ~/.bashrc
+
+# zsh
+source ~/.zshrc
+
+# fish
+source ~/.config/fish/config.fish
+```
+
+3. Test completion:
+
+```bash
+c az<TAB>
+clouder az<TAB>
+```
+
+Expected result: both complete to `azure`.
+
+### VS Code terminal note
+
+VS Code often launches bash as a login shell. `clouder completion install` writes the completion block to both `~/.bashrc` and `~/.bash_profile` so completion works in regular terminals and VS Code integrated terminals.
+
+If completion still does not trigger in VS Code:
+
+```bash
+source ~/.bash_profile
+source ~/.bashrc
+```
+
+Then open a new VS Code terminal tab and test again.
+
+### Manual setup (optional)
+
+Use manual setup only if you do not want to use `clouder completion install`:
+
+```bash
+# bash
+eval "$(c --show-completion bash)"
+eval "$(clouder --show-completion bash)"
+
+# zsh
+eval "$(c --show-completion zsh)"
+eval "$(clouder --show-completion zsh)"
+
+# fish
+c --show-completion fish | source
+clouder --show-completion fish | source
 ```

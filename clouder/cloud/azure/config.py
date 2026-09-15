@@ -3,10 +3,10 @@
 import yaml
 from pathlib import Path
 
-from ...util.utils import CLOUDER_CONFIG_FOLDER
+from ...util.utils import CLOUDER_CLOUDS_FOLDER
 
 
-AZURE_CONFIG_FOLDER = CLOUDER_CONFIG_FOLDER / "azure"
+AZURE_CONFIG_FOLDER = CLOUDER_CLOUDS_FOLDER / "azure"
 AZURE_CONFIG_FILE = AZURE_CONFIG_FOLDER / "azure.yaml"
 
 

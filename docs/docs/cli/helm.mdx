@@ -1,0 +1,51 @@
+---
+title: clouder helm
+sidebar_position: 7
+---
+
+# clouder helm
+
+Run Helm commands against a Clouder kubeadm cluster using the persisted kubeconfig.
+
+## Usage
+
+```bash
+clouder helm <name> <helm-args...>
+```
+
+- `<name>`: kubeadm cluster name.
+- `<helm-args...>`: any standard Helm arguments (for example `list -A`, `install ...`, `upgrade ...`).
+
+The kubeconfig path used by the wrapper is:
+
+```text
+~/.clouder/kubeadm/<name>/kubeconfig
+```
+
+If the kubeconfig is missing, run:
+
+```bash
+clouder kubeadm get-config <name>
+```
+
+## Examples
+
+```bash
+# List releases across all namespaces
+clouder helm my-cluster list -A
+
+# Install a chart
+clouder helm my-cluster install my-release my-chart
+
+# Upgrade a release
+clouder helm my-cluster upgrade my-release my-chart
+
+# Uninstall a release
+clouder helm my-cluster uninstall my-release
+```
+
+Equivalent direct Helm command:
+
+```bash
+helm --kubeconfig=~/.clouder/kubeadm/my-cluster/kubeconfig list -A
+```
